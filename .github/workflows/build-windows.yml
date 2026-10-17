@@ -21,7 +21,6 @@ jobs:
     env:
       QT_QPA_PLATFORM: offscreen
       SIMPLD_ALLOW_MOCK: "1"
-      SIMPLD_DB: ${{ runner.temp }}\test-factory.db
       # Unbuffered output: a crashed pytest otherwise loses its buffered
       # progress/failure text (learned from the first CI runs).
       PYTHONUNBUFFERED: "1"
@@ -43,7 +42,11 @@ jobs:
           pip install -r requirements.txt
           pip install pytest
 
+      # SIMPLD_DB must stay per-step: the runner context is not available
+      # in job-level env.
       - name: Run test suite
+        env:
+          SIMPLD_DB: ${{ runner.temp }}\test-factory.db
         run: python -m pytest tests -q -p no:cacheprovider
 
       # TEMPORARY CI diagnostics — remove once the suite is green.
@@ -56,6 +59,8 @@ jobs:
       - name: Diagnose (suite without concurrent LAN test, fail fast)
         if: failure()
         continue-on-error: true
+        env:
+          SIMPLD_DB: ${{ runner.temp }}\test-factory.db
         run: >-
           python -m pytest tests -q -p no:cacheprovider -x
           --deselect=tests/test_lan_transport.py::test_concurrent_roles_stay_isolated
@@ -63,6 +68,8 @@ jobs:
       - name: Diagnose (concurrent LAN test alone)
         if: failure()
         continue-on-error: true
+        env:
+          SIMPLD_DB: ${{ runner.temp }}\test-factory.db
         run: python -m pytest tests/test_lan_transport.py -q -p no:cacheprovider
 
   build:
