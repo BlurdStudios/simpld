@@ -6,6 +6,13 @@ creating mock records. The mock drivers in factory/hardware/mock.py are
 retained ONLY for test compatibility (SIMPLD_ALLOW_MOCK=1 in tests) and for
 the shared-instance plumbing below — never as production data sources.
 
+One exception, explicit and user-visible: the demo switch (config key
+`demo_mode`, toggled from the Packaging device strip, or SIMPLD_DEMO=1).
+Unlike SIMPLD_ALLOW_MOCK it IS honored in the frozen build, on purpose —
+the demo runs on a machine with no scale or printer. It is never silent:
+the user turns it on, a confirmation is shown, and the pills read "demo".
+Without the switch, blank config stays fail-closed exactly as below.
+
 Setting a port/name in the Devices dialog (or SIMPLD_SCALE_PORT /
 SIMPLD_PRINTER_NAME env, or data/hardware.json) selects the real driver
 after reload_hardware() — applied immediately, no restart. A real device
@@ -64,6 +71,8 @@ class _BrokenPrinter:
 
 def build_scale(cfg: dict):
     """Real Essae when a port is configured, else the demo/mock scale."""
+    if demo_mode(cfg):
+        return _mock.MockEssaeDS215(demo=True)
     port = str(cfg.get("scale_port") or "").strip()
     if not port:
         return _mock.MockEssaeDS215()
@@ -73,6 +82,8 @@ def build_scale(cfg: dict):
 
 def build_printer(cfg: dict):
     """Real Citizen (installed Qt printer) when named, else the log mock."""
+    if demo_mode(cfg):
+        return _mock.MockCitizenCLS621()
     name = str(cfg.get("printer_name") or "").strip()
     if not name:
         return _mock.MockCitizenCLS621()
@@ -141,13 +152,26 @@ def mock_allowed() -> bool:
     return os.environ.get("SIMPLD_ALLOW_MOCK") == "1"
 
 
+def demo_mode(cfg: dict | None = None) -> bool:
+    """True when the explicit demo switch is on (simulated hardware).
+
+    Unlike SIMPLD_ALLOW_MOCK this IS honored in the frozen build on
+    purpose: the switched-on demo runs on a machine with no scale or
+    printer. It is never silent — the user turns it on from the device
+    strip, a confirmation is shown, and the pills read "demo".
+    """
+    cfg = cfg if cfg is not None else _config.load()
+    return bool(cfg.get("demo_mode"))
+
+
 def require_scale(cfg: dict | None = None) -> None:
     """Fail closed when no scale is configured (and mock not test-enabled).
 
     Raises RuntimeError with a Devices-pointer message; callers surface it
     and leave the weigh card disarmed (0) instead of writing mock records.
+    The explicit demo switch also passes — see demo_mode().
     """
-    if scale_configured(cfg) or mock_allowed():
+    if scale_configured(cfg) or mock_allowed() or demo_mode(cfg):
         return
     raise RuntimeError("Scale not configured — open Devices to configure the scale.")
 
@@ -156,8 +180,9 @@ def require_printer(cfg: dict | None = None) -> None:
     """Fail closed when no printer is configured (and mock not test-enabled).
 
     Records stay pending/reprintable; nothing is marked printed.
+    The explicit demo switch also passes — see demo_mode().
     """
-    if printer_configured(cfg) or mock_allowed():
+    if printer_configured(cfg) or mock_allowed() or demo_mode(cfg):
         return
     raise RuntimeError("Printer not configured — open Devices to configure the printer.")
 
@@ -165,6 +190,7 @@ def require_printer(cfg: dict | None = None) -> None:
 def _override_suffix() -> str:
     """Short note when env vars override the stored file (env wins)."""
     active = [k for k in ("SIMPLD_SCALE_PORT", "SIMPLD_PRINTER_NAME",
+                          "SIMPLD_DEMO",
                           "SIMPLD_HW_JSON", "SIMPLD_DATA_DIR")
               if os.environ.get(k)]
     return f" · env override: {', '.join(active)}" if active else ""
@@ -173,7 +199,9 @@ def _override_suffix() -> str:
 def mode_text(cfg: dict | None = None) -> str:
     """Short explicit mode indication for the UI (never silent)."""
     cfg = cfg if cfg is not None else _config.load()
-    if is_mock_scale() and is_mock_printer():
+    if demo_mode(cfg):
+        base = "DEMO — simulated scale + printer (no hardware)"
+    elif is_mock_scale() and is_mock_printer():
         base = "Demo/mock — no device selected"
     else:
         scale = ("mock" if is_mock_scale()

@@ -137,12 +137,31 @@ class AboutDialog(QDialog):
 
         outer.addStretch(1)
         row = QHBoxLayout()
+        # Update entry point lives here (plus the silent startup check): the
+        # About dialog is the one place an operator looks for "what version".
+        self.update_btn = QPushButton("Check for updates")
+        self.update_btn.setMinimumHeight(36)
+        self.update_btn.setMinimumWidth(160)
+        from factory.ui.styles import style_button
+        style_button(self.update_btn, "outline")
+        self.update_btn.clicked.connect(self._check_updates)
+        row.addWidget(self.update_btn)
         row.addStretch(1)
         close = QPushButton("Close")
         close.setMinimumHeight(36)
         close.setMinimumWidth(96)
-        from factory.ui.styles import style_button
         style_button(close, "accent")
         close.clicked.connect(self.accept)
         row.addWidget(close)
         outer.addLayout(row)
+
+    def _check_updates(self):
+        from factory.ui import update_ui
+        self.update_btn.setEnabled(False)
+        self.update_btn.setText("Checking…")
+
+        def restore():
+            self.update_btn.setEnabled(True)
+            self.update_btn.setText("Check for updates")
+
+        update_ui.check_now(self, on_done=restore)

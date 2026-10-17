@@ -148,8 +148,30 @@ def test_reel_table_art_matches_photo_layout():
     assert sum(px[W // 2, H - 2][:3]) < 150, "bottom border"
     assert sum(px[1, H // 2][:3]) < 150, "left border"
     # merged right box: no horizontal grid through the Roll No# cell middle
-    mid_y = int(H * 0.55)
+    # (blank band between caption band ~0.52-0.58H and ident glyphs ~0.68-0.94H)
+    mid_y = int(H * 0.63)
     assert sum(px[int(W * 0.85), mid_y][:3]) > 600, "no line through roll box"
+
+
+def test_reel_sticker_shows_no_of_pieces():
+    from factory.hardware import labels as L
+    from factory.ui.label_preview import reel_label_text
+    reel = {"gross": 11.380, "core": 0.280, "net": 11.100,
+            "created_at": "2026-10-03 10:00:00", "roll_no": 23}
+    job = {"job_no": 4167, "job_name": "APPY FIZZ-160ML BODY", "wrappers_per_reel": 16500}
+    assert "No of Pieces:16500" in reel_label_text(job, reel)
+    img = L.render_reel(job, reel)
+    assert img.size == (812, 609), img.size
+    job_none = {"job_no": 4167, "job_name": "APPY FIZZ-160ML BODY", "wrappers_per_reel": None}
+    img_none = L.render_reel(job_none, reel)
+    assert img_none.size == (812, 609), img_none.size
+    assert img.tobytes() != img_none.tobytes(), \
+        "the count must be drawn into the art, not only stated"
+    # unknown job (no key at all — same shape as test_hardware_real._job_reel_detail)
+    job_unk = {"job_no": 4167, "job_name": "APPY FIZZ-160ML BODY"}
+    assert "No of Pieces:unknown" in reel_label_text(job_unk, reel)
+    img_unk = L.render_reel(job_unk, reel)
+    assert img_unk.size == (812, 609), img_unk.size
 
 
 def test_preview_writes_nothing():
@@ -244,6 +266,7 @@ if __name__ == "__main__":
     test_box_preview_in_carton_mode_needs_no_reels()
     test_mode_switch_changes_preview_only_without_writes()
     test_reel_table_art_matches_photo_layout()
+    test_reel_sticker_shows_no_of_pieces()
     test_preview_writes_nothing()
     test_customer_columns_migrated_and_inherited()
     test_preview_fits_padded_bounds_on_resize()

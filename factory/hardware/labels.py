@@ -2,10 +2,10 @@
 
 Type-1 (reel, NO QR) and Type-2 (carton, WITH QR) share the bordered table
 layout of the old system's sticker (see floor photo: company header, C.Name,
-Job Name, Date/Shift/No of Reels, Gross/Core/Net with big Roll No#, Supervisor;
-carton swaps the roll-number box for a QR). The PNG is what gets sent to the
-Windows spooler (Citizen Windows driver) — no EPL/ZPL emulation games needed,
-works with the stock Citizen USB driver.
+Job Name, Date/Shift/No of Reels, No of Pieces, Gross/Core/Net with big
+Roll No#, Supervisor; carton swaps the roll-number box for a QR). The PNG is
+what gets sent to the Windows spooler (Citizen Windows driver) — no EPL/ZPL
+emulation games needed, works with the stock Citizen USB driver.
 
 Fixed media: 4in wide (101.6mm) x 3in tall (76.2mm). No height option.
 
@@ -149,18 +149,18 @@ def _table_base(wt, ab_rows: set[int], weight_first: int,
     return img, d, rows, cols
 
 
-# Row weights: header, job, date, gross, core, net. No C.Name / shift /
+# Row weights: header, job, date, pieces, gross, core, net. No C.Name / shift /
 # supervisor on the sticker — customer lives on the dispatch order only.
-REEL_ROWS = [0.115, 0.135, 0.115, 0.155, 0.15, 0.23]
+REEL_ROWS = [0.115, 0.135, 0.115, 0.115, 0.155, 0.15, 0.23]
 
 
 def render_reel(job: dict, reel: dict, width_mm=LABEL_WIDTH_MM,
                 height_mm=LABEL_HEIGHT_MM, dpi=LABEL_DPI):
     """Type-1 single-reel sticker (NO QR). Bordered table per the old label."""
-    img, d, rows, cols = _table_base(REEL_ROWS, {4, 5}, 3, width_mm, height_mm, dpi)
+    img, d, rows, cols = _table_base(REEL_ROWS, {5, 6}, 4, width_mm, height_mm, dpi)
     A, B, C, E = cols["A"], cols["B"], cols["C"], cols["E"]
     (r0a, r0b), (r1a, r1b), (r2a, r2b) = rows[0], rows[1], rows[2]
-    (r3a, r3b), (r4a, r4b), (r5a, r5b) = rows[3], rows[4], rows[5]
+    (r3a, r3b), (r4a, r4b), (r5a, r5b), (r6a, r6b) = rows[3], rows[4], rows[5], rows[6]
     _cell_text(d, (A, r0a, C, r0b), COMPANY, 34)
     _cell_text(d, (C, r0a, E, r0b), f"J:{job['job_no']}", 34, right=True)
     _cell_text(d, (A, r1a, E, r1b), f"Job Name:{job['job_name']}", 30)
@@ -170,19 +170,25 @@ def render_reel(job: dict, reel: dict, width_mm=LABEL_WIDTH_MM,
         _date_txt += f" {_per}"
     _cell_text(d, (A, r2a, C, r2b), _date_txt, 28)
     _cell_text(d, (C, r2a, E, r2b), "No of Reels:1", 26)
-    _cell_text(d, (A, r3a, B, r3b), "Gross Wt:", 30)
-    _cell_text(d, (B, r3a, C, r3b), f"{reel['gross']:.3f} Kg", 40)
-    _cell_text(d, (A, r4a, B, r4b), "Core Wt:", 30)
-    _cell_text(d, (B, r4a, C, r4b), f"{reel['core']:.3f} Kg", 36)
-    _cell_text(d, (A, r5a, B, r5b), "Net Wt:", 30)
-    _cell_text(d, (B, r5a, C, r5b), f"{reel['net']:.3f} Kg", 40)
+    wpr = job.get("wrappers_per_reel")
+    try:
+        pieces_txt = f"No of Pieces:{int(wpr)}" if wpr is not None else "No of Pieces:unknown"
+    except (TypeError, ValueError):
+        pieces_txt = "No of Pieces:unknown"
+    _cell_text(d, (A, r3a, E, r3b), pieces_txt, 30)
+    _cell_text(d, (A, r4a, B, r4b), "Gross Wt:", 30)
+    _cell_text(d, (B, r4a, C, r4b), f"{reel['gross']:.3f} Kg", 40)
+    _cell_text(d, (A, r5a, B, r5b), "Core Wt:", 30)
+    _cell_text(d, (B, r5a, C, r5b), f"{reel['core']:.3f} Kg", 36)
+    _cell_text(d, (A, r6a, B, r6b), "Net Wt:", 30)
+    _cell_text(d, (B, r6a, C, r6b), f"{reel['net']:.3f} Kg", 40)
     # right box: small caption on top, huge roll identity below.
     # Month-qualified identity (RYYYYMM-NNNN) when present; legacy rows keep
     # their plain roll_no exactly as issued.
-    mid = r3a + (r5b - r3a) * 0.28
-    _cell_text(d, (C, r3a, E, mid), "Roll No#", 26)
+    mid = r4a + (r6b - r4a) * 0.28
+    _cell_text(d, (C, r4a, E, mid), "Roll No#", 26)
     ident = str(reel.get("roll_code") or reel["roll_no"])
-    _cell_text(d, (C, mid, E, r5b), ident, 120)
+    _cell_text(d, (C, mid, E, r6b), ident, 120)
     per = str(reel.get("roll_period") or "")
     if per:
         # compact month tag under the date cell is handled by callers;

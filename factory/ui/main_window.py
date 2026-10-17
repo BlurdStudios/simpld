@@ -181,6 +181,15 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage("F1–F6: switch pages.")
 
+        # One silent update check per process, a few seconds after the window
+        # is up (frozen fleet builds only; see factory/ui/update_ui.py). The
+        # only visible effect is a toast when a newer version exists.
+        try:
+            from factory.ui import update_ui
+            QTimer.singleShot(4000, lambda: update_ui.auto_check(self))
+        except Exception:
+            pass
+
     def _set_nav_icon(self, btn, name: str | None) -> None:
         """Attach a brand glyph and keep it in sync with the checked state.
 

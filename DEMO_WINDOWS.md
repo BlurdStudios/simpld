@@ -81,6 +81,15 @@ Verified at staging time (`tools/build_windows_wine.sh` aborts otherwise):
 - For native-serial proof on the real floor PC, plug the scale in, set the COM
   port in the app's hardware dialog, and weigh a reel live. That step cannot
   be proven under Wine/Linux — see §6.
+- **Demo switch (nothing plugged in at all)**: the Packaging device strip now
+  carries a **Demo** button. One click (plus a confirmation) switches to
+  simulated hardware for the whole flow — made-up weights, labels written to
+  the print log (`%LOCALAPPDATA%\Simpld\print_log.txt` when installed), and
+  the device pills read `demo · simulated`. It is off by default and stored
+  per machine (`hardware.json`); `SIMPLD_DEMO=1` forces it on at launch. The
+  switched-on state is honored in the frozen build on purpose — that is the
+  point: the demo runs from the installed `.exe`. Turn it off before real
+  production (unlike `SIMPLD_ALLOW_MOCK`, which stays dead when frozen).
 
 ## 5. Reproduce the build
 

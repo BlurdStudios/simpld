@@ -3,9 +3,16 @@ name: Build Windows
 # Real Windows .exe + installer, built on a cloud Windows runner.
 # (PyInstaller cannot cross-compile from Linux; the local Wine route is
 # documented as blocked in DEMO_WINDOWS.md.)
+#
+# Branch pushes -> build + artifacts (smoke test).
+# Version tags (v1.2.3) -> same build, then a GitHub Release carrying the
+# installer and its .sha256 — that release is what every installed copy of
+# Simpl'd auto-updates from (see UPDATES.md). The tag must match
+# factory/version.py, or the release job fails before anything is published.
 on:
   push:
     branches: [main, master]
+    tags: ["v*"]
   workflow_dispatch:
 
 jobs:
@@ -35,6 +42,8 @@ jobs:
   build:
     needs: test
     runs-on: windows-latest
+    permissions:
+      contents: write   # create the GitHub Release on version tags
     steps:
       - uses: actions/checkout@v4
 
@@ -49,6 +58,22 @@ jobs:
           pip install -r requirements.txt
           pip install -r build/windows/build_requirements.txt
 
+      - name: Resolve version (tag must match factory/version.py)
+        shell: pwsh
+        run: |
+          $declared = (python -c "from factory.version import VERSION; print(VERSION)").Trim()
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $tagged = "${{ github.ref_name }}".TrimStart("v")
+            if ($tagged -ne $declared) {
+              throw "Tag v$tagged does not match factory/version.py ($declared). Bump the version file in the tagged commit, or retag."
+            }
+            $appVersion = $tagged
+          } else {
+            $appVersion = $declared
+          }
+          echo "APP_VERSION=$appVersion" >> $env:GITHUB_ENV
+          echo "Building Simpl'd $appVersion"
+
       - name: Build exe (PyInstaller onedir)
         run: python -m PyInstaller --noconfirm build/windows/simpld.spec
 
@@ -60,7 +85,18 @@ jobs:
       - name: Compile installer (Inno Setup)
         run: |
           choco install innosetup -y
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" build\windows\simpld.iss
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DMyAppVersion=$env:APP_VERSION build\windows\simpld.iss
+
+      - name: Write installer checksum (.sha256)
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem dist/Simpld-Setup-*.exe | Select-Object -First 1
+          if (-not $exe) { throw "installer missing" }
+          $hash = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLower()
+          # sha256sum format: the updater and tools/publish_update.py read the
+          # first token, so the exact layout is part of the contract.
+          "$hash  $($exe.Name)" | Out-File -NoNewline -Encoding ascii "$($exe.FullName).sha256"
+          Get-Content "$($exe.FullName).sha256"
 
       - name: Upload app folder
         uses: actions/upload-artifact@v4
@@ -72,4 +108,18 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Simpld-Setup
-          path: dist/Simpld-Setup-*.exe
+          path: |
+            dist/Simpld-Setup-*.exe
+            dist/Simpld-Setup-*.exe.sha256
+
+      - name: Publish GitHub Release (version tags only)
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # pwsh does not expand wildcards for native commands — resolve
+          # the two asset paths first (gh does not glob either).
+          $exe = (Get-ChildItem dist/Simpld-Setup-*.exe | Select-Object -First 1).FullName
+          $sha = "$exe.sha256"
+          gh release create "${{ github.ref_name }}" "$exe" "$sha" --title "Simpl'd $env:APP_VERSION" --generate-notes

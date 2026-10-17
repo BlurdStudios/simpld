@@ -24,6 +24,10 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
+# The one version source (stdlib-only module) — the release workflow and the
+# updater read the same value. See factory/version.py + UPDATES.md.
+from factory.version import VERSION
+
 # ---- tokens (mirror of tools/build_brand_assets.py) -----------------------
 ACCENT = "#7C3AED"           # violet-600 — primary
 ACCENT_HOVER = "#6D28D9"     # violet-700
@@ -38,7 +42,6 @@ INK_FAINT = "#71717A"        # zinc-500
 
 PRODUCT_NAME = "Simpl'd"
 PARENT_NAME = "Blur'd"
-VERSION = "1.0.0"
 
 _ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 _BRAND = os.path.join(_ASSETS, "brand")

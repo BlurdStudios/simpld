@@ -12,15 +12,23 @@ Detection is deliberately honest: a pill says "not found" when nothing answers
 and never invents a port. The fail-closed behaviour in `devices.py` is
 untouched, so an undetected scale still blocks weighing rather than silently
 using the mock.
+
+The Packaging strip can also carry a Demo switch (`demo_switch=True`, a
+checkable ghost button): it toggles the explicit `demo_mode` config setting
+that simulates the weigh machine and label printer for trainings/audience
+demos. It asks for confirmation once and off-loads nothing silently; see
+`factory/hardware/devices.py` (demo_mode()).
 """
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QSize, QObject, QThread, Signal
 from PySide6.QtWidgets import (QWidget, QHBoxLayout, QLabel, QFrame, QSizePolicy,
-                               QPushButton)
+                               QPushButton, QMessageBox)
 
 from factory.hardware import status as HWStatus
 from factory.hardware import autodetect as Auto
+from factory.hardware import config as HWConfig
+from factory.hardware import devices as HWDevices
 from factory.ui import brand as _brand
 from factory.ui.styles import style_button
 
@@ -32,6 +40,7 @@ _STATE_STYLE = {
     "setup": "#B45309",
     "error": "#991B1B",
     "detecting": "#7C3AED",
+    "demo": "#BE185D",
 }
 
 
@@ -223,7 +232,8 @@ class DeviceStrip(QWidget):
     device_clicked = Signal(str)      # device key
     detected = Signal(dict)           # detection result
 
-    def __init__(self, station: str, parent=None, show_station_label: bool = False):
+    def __init__(self, station: str, parent=None, show_station_label: bool = False,
+                 demo_switch: bool = False):
         super().__init__(parent)
         self._station = station
         self._pills: list[DevicePill] = {}
@@ -244,6 +254,22 @@ class DeviceStrip(QWidget):
             pill.clicked.connect(self._on_pill)
             self._pills[spec["key"]] = pill
             outer.addWidget(pill, 0)
+
+        if demo_switch:
+            self.btn_demo = QPushButton("Demo")
+            self.btn_demo.setCheckable(True)
+            self.btn_demo.setMinimumHeight(28)
+            # "outline", not "ghost": the demo switch must be findable at a
+            # glance — a borderless transparent button disappears into the
+            # strip and operators/owners reported not seeing it at all.
+            style_button(self.btn_demo, "outline")
+            try:
+                self.btn_demo.setChecked(HWDevices.demo_mode())
+            except Exception:
+                self.btn_demo.setChecked(False)
+            self._demo_label(self.btn_demo.isChecked())
+            self.btn_demo.toggled.connect(self._toggle_demo)   # connect AFTER setChecked
+            outer.addWidget(self.btn_demo, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.btn_refresh = QPushButton("Refresh")
         self.btn_refresh.setMinimumHeight(28)
@@ -283,6 +309,59 @@ class DeviceStrip(QWidget):
 
     def _on_pill(self, key: str) -> None:
         self.detect(key)
+
+    def _demo_label(self, on: bool) -> None:
+        self.btn_demo.setText("Demo ON" if on else "Demo")
+        if on:
+            # Solid pink so "demo is running" is unmistakable in the strip.
+            self.btn_demo.setStyleSheet(
+                "QPushButton { background:#BE185D; color:white; "
+                "border:1px solid #BE185D; border-radius:8px; padding:0 14px; "
+                "font-weight:600; }"
+                "QPushButton:hover { background:#9D174D; border-color:#9D174D; }")
+        else:
+            self.btn_demo.setStyleSheet("")     # back to the outline QSS
+        self.btn_demo.setToolTip(
+            "Demo mode is ON — the weigh machine and label printer are simulated "
+            "(labels go to the print log, not paper). Click to turn it off."
+            if on else
+            "Turn on demo mode: simulate the weigh machine and label printer "
+            "so the app can run with no hardware.")
+
+    def _toggle_demo(self, on: bool) -> None:
+        on = bool(on)
+        if on:
+            ans = QMessageBox.question(
+                self, "Turn on demo mode?",
+                "Demo mode simulates the weigh machine and label printer.\n\n"
+                "Weights are made up and labels are written to the print log "
+                "instead of being printed. Turn it off before real production.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if ans != QMessageBox.StandardButton.Yes:
+                self.btn_demo.blockSignals(True)
+                self.btn_demo.setChecked(False)
+                self.btn_demo.blockSignals(False)
+                self._demo_label(False)
+                return
+        try:
+            cfg = HWConfig.load()
+            cfg["demo_mode"] = on
+            HWConfig.save(cfg)
+            HWDevices.reload_hardware(cfg)
+        except Exception as e:
+            self.btn_demo.blockSignals(True)
+            self.btn_demo.setChecked(not on)
+            self.btn_demo.blockSignals(False)
+            self._demo_label(not on)
+            try:
+                QMessageBox.warning(self, "Demo mode",
+                                    f"Could not change demo mode: {e}")
+            except Exception:
+                pass
+            return
+        self._demo_label(on)
+        self.refresh()
+        self.detected.emit({"demo": on})
 
     def _on_detected(self, result: dict) -> None:
         self.refresh()

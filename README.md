@@ -20,7 +20,23 @@ pip install -r requirements.txt
 python3 run.py
 ```
 
-No internet needed. Data in `data/factory.db` (SQLite). Print log in `data/print_log.txt`.
+No internet needed to run (the update check in UPDATES.md is optional and
+stays silent when offline). Data in `data/factory.db` (SQLite). Print log in
+`data/print_log.txt`.
+
+## Updates (automatic, WiFi / LAN)
+
+The app updates itself: it checks silently a few seconds after the window
+opens (GitHub Releases where there is internet, the packager's LAN channel
+where there is none, a local folder on the packager) and offers verified
+installs via **About → Check for updates**. Every installer is SHA-256
+verified before it runs; a failure never blocks the floor.
+
+Releasing a version = bump `factory/version.py`, then
+`git tag v1.0.1 && git push origin v1.0.1` — CI runs the tests, builds the
+installer, writes its checksum and publishes the GitHub Release the fleet
+updates from. Full procedures (LAN publishing, security properties,
+troubleshooting): **UPDATES.md**.
 
 ## Logins (offline, same software, different doors)
 
@@ -164,6 +180,13 @@ it never silently falls back to a mock scale. Full detail in
 - Weighing is explicit Reel/Carton mode chosen by the operator — the scale
   never auto-detects the object type from weight.
 - While the mock scale is active, Packaging shows small Mock rows — Reel/Carton on scale (weigh simulation) and Test data (+3 test reels, Pack test carton for dummy data). They hide themselves on real hardware.
+- **Demo mode (training / no-hardware demos)** — the Packaging device strip
+  has a **Demo** button: one click (plus a confirm) simulates the weigh
+  machine and label printer on a PC with nothing plugged in. Weights are
+  made up, labels land in the print log, the device pills read
+  `demo · simulated`, and it is off by default — leave it off for real
+  production. `SIMPLD_DEMO=1` forces it on at launch (per-machine setting in
+  `hardware.json`).
 - Fresh databases start **empty** (schema only — production bootstrap never
   creates jobs, reels, cartons, orders or logins; the first-run admin is set
   up in the login dialog). Test fixtures live in `seed_sample_data()`

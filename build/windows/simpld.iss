@@ -16,7 +16,12 @@
 ; (see DEMO_WINDOWS.md; the Wine route is documented as blocked).
 
 #define MyAppName "Simpl'd"
-#define MyAppVersion "1.0.0"
+; Version: local builds use this default; the release workflow passes
+; /DMyAppVersion=<tag version> after verifying it against factory/version.py,
+; so the installer, the About dialog and the release tag can never disagree.
+#ifndef MyAppVersion
+  #define MyAppVersion "1.0.0"
+#endif
 #define MyAppPublisher "Blur'd"
 #define MyAppExeName "Simpld.exe"
 
@@ -66,4 +71,9 @@ Name: "{autoprograms}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+; Relaunch leg of the auto-update: the app exits, this installer replaces the
+; files and must bring Simpl'd back up on its own — so NO `skipifsilent`.
+; `runasoriginaluser` matters on factory PCs: after an elevated install the
+; app must start as the logged-in operator (its data lives in that user's
+; %LOCALAPPDATA%), never as the admin account that approved UAC.
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall runasoriginaluser

@@ -27,24 +27,54 @@ def _default_log_path() -> str:
 
 
 class MockEssaeDS215(ScaleInterface):
-    """Pretends to be the Essae DS-215. Real version opens serial.Serial('/dev/ttyS0', 9600)."""
+    """Pretends to be the Essae DS-215. Real version opens serial.Serial('/dev/ttyS0', 9600).
 
-    def __init__(self):
+    demo=True (set only by devices.build_scale when the demo switch is on)
+    simulates plausible reel/carton weights so the app can be shown with no
+    hardware. Default instances keep the old manual-entry behavior tests use.
+    """
+
+    def __init__(self, demo: bool = False):
         self._manual = 0.0
         self._frozen: float | None = None
+        self._demo = bool(demo)
+        self._demo_base: float | None = None
 
     def set_manual(self, kg: float):
         self._manual = float(kg or 0)
         self._frozen = None
+        self._demo_base = None
+
+    def _demo_read_base(self) -> float:
+        if self._demo_base is None:
+            self._demo_base = random.uniform(4.0, 24.0)
+        return self._demo_base
 
     def read_weight(self) -> float:
-        base = self._frozen if self._frozen is not None else self._manual
-        jitter = random.uniform(-0.005, 0.005) if base else 0.0
-        return round(max(0.0, base + jitter), 3)
+        if self._manual:
+            base = self._frozen if self._frozen is not None else self._manual
+            jitter = random.uniform(-0.005, 0.005)
+            return round(max(0.0, base + jitter), 3)
+        if self._demo:
+            if self._frozen is not None:
+                return round(self._frozen, 3)
+            return round(self._demo_read_base() + random.uniform(-0.02, 0.02), 3)
+        return 0.0
 
     def freeze(self) -> float:
-        self._frozen = round(self._manual, 3)
+        if self._manual:
+            self._frozen = round(self._manual, 3)
+            return self._frozen
+        if self._demo:
+            self._frozen = round(self._demo_read_base(), 3)
+            return self._frozen
+        self._frozen = round(self._manual, 3)   # old behavior: 0.0
         return self._frozen
+
+    def unfreeze(self):
+        self._frozen = None
+        if self._demo and not self._manual:
+            self._demo_base = None   # next read = a new simulated reel
 
 
 class MockCitizenCLS621(PrinterInterface):

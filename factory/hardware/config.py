@@ -42,6 +42,7 @@ DEFAULTS = {
     "scale_stopbits": 1,
     # Citizen CL-S621 (USB): Windows printer share name from driver install.
     "printer_name": "",        # e.g. "Citizen CL-S621". "" = file-log/mock
+    "demo_mode": False,        # explicit demo switch: simulate scale+printer (no hardware)
     "label_width_mm": 100,     # 4-inch media default; dialog-adjustable
     "label_height_mm": 100,
     "label_dpi": 203,          # CL-S621 = 203dpi
@@ -62,6 +63,8 @@ def load(path: str | None = None) -> dict:
         cfg["scale_port"] = os.environ["SIMPLD_SCALE_PORT"]
     if os.environ.get("SIMPLD_PRINTER_NAME"):
         cfg["printer_name"] = os.environ["SIMPLD_PRINTER_NAME"]
+    if os.environ.get("SIMPLD_DEMO") == "1":
+        cfg["demo_mode"] = True
     return cfg
 
 

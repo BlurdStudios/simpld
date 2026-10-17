@@ -14,6 +14,18 @@ Wire protocol (stdlib only: http.server + urllib + ssl):
     POST /api   JSON {"op": "<allowlisted>", "args": {...}, "request_id": "...?"}
                 Header X-Session-Token: <opaque token> (except login)
     GET  /health  unauthenticated liveness probe -> {"ok": true, ...}
+    GET  /updates/latest.json   optional update channel: manifest
+    GET  /updates/<installer>   optional update channel: installer/.sha256
+                                (both only when --updates-dir is given)
+
+Update channel (see UPDATES.md): dispatcher machines with no internet fetch
+their next Simpl'd installer from here. It is deliberately unauthenticated —
+machines must be able to update before any operator logs in — but it is
+strictly allowlisted: only `latest.json` and `Simpld-Setup-<version>.exe`
+(plus its `.sha256`) from the configured updates directory, never any other
+file. Clients verify the installer SHA-256 from the same manifest before
+running anything, and TLS (with the LAN trust anchor) protects the bytes in
+transit. Publishing is done by tools/publish_update.py on the packager.
 
 Responses are always JSON: {"ok": true, "data": ...} or
 {"ok": false, "error": {"code": ..., "message": ...}} with an HTTP status of
@@ -52,6 +64,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import sqlite3
 import ssl
 import sys
@@ -84,6 +98,11 @@ _MAX_TRACKED_IPS = 512
 
 _LOGIN_FAILS: dict[str, list[float]] = {}
 _LOGIN_FAILS_LOCK = threading.Lock()
+
+# Update channel (optional --updates-dir): exact filename allowlist.
+UPDATE_MANIFEST_NAME = "latest.json"
+_UPDATE_FILE_RE = re.compile(
+    r"^Simpld-Setup-[0-9A-Za-z][0-9A-Za-z.\-]{0,63}\.exe(?:\.sha256)?$")
 
 
 def _login_allowed(ip: str) -> bool:
@@ -715,6 +734,7 @@ def _validate_request_id(value: Any) -> str | None:
 
 class _Handler(BaseHTTPRequestHandler):
     db_path: str = ""
+    updates_dir: str | None = None
     server_version = "SimpldLAN/1"
 
     def log_message(self, fmt: str, *log_args: Any) -> None:
@@ -737,7 +757,61 @@ class _Handler(BaseHTTPRequestHandler):
         if self.path == "/health":
             self._send(200, {"ok": True, "service": "simpld-lan"})
             return
+        if self.path.startswith("/updates/"):
+            self._serve_update_file()
+            return
         self._fail(404, "not_found", "Unknown endpoint.")
+
+    def _serve_update_file(self) -> None:
+        """Serve the optional LAN update channel (filename allowlist only).
+
+        Unauthenticated by design (machines update before login) — the
+        allowlist plus TLS plus client-side SHA-256 verification are what
+        keep it safe. Nothing outside the configured directory is ever
+        readable: the name must match `latest.json` or
+        `Simpld-Setup-*.exe[.sha256]` exactly, and the resolved real path
+        must stay inside the updates dir.
+        """
+        base = self.updates_dir
+        name = self.path[len("/updates/"):]
+        if "?" in name:
+            name = name.split("?", 1)[0]
+        if base and (name == UPDATE_MANIFEST_NAME
+                     or _UPDATE_FILE_RE.match(name)):
+            base_real = os.path.realpath(base)
+            path = os.path.realpath(os.path.join(base_real, name))
+            if (os.path.dirname(path) == base_real
+                    and os.path.isfile(path)):
+                self._send_file(path, name)
+                return
+        self._fail(404, "not_found", "No such update file.")
+
+    def _send_file(self, path: str, name: str) -> None:
+        if name.endswith(".json"):
+            ctype = "application/json"
+        elif name.endswith(".sha256"):
+            ctype = "text/plain; charset=utf-8"
+        else:
+            ctype = "application/octet-stream"
+        try:
+            size = os.path.getsize(path)
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(size))
+            self.end_headers()
+            with open(path, "rb") as f:
+                while True:
+                    chunk = f.read(256 * 1024)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+        except (ConnectionError, BrokenPipeError):
+            return
+        except OSError:
+            try:
+                self._fail(500, "server", "Internal error.")
+            except Exception:
+                pass
 
     def do_POST(self) -> None:
         if self.path != "/api":
@@ -873,18 +947,31 @@ def check_db_ready(db_path: str) -> None:
 
 
 def create_server(db_path: str, bind: str, port: int,
-                  certfile: str, keyfile: str) -> ThreadingHTTPServer:
-    """Build (not start) the TLS-wrapped server. Raises on bad config/DB."""
+                  certfile: str, keyfile: str,
+                  updates_dir: str | None = None) -> ThreadingHTTPServer:
+    """Build (not start) the TLS-wrapped server. Raises on bad config/DB.
+
+    `updates_dir` enables the optional LAN update channel (see UPDATES.md);
+    when omitted, /updates/* answers 404 like any other unknown endpoint.
+    """
     import os as _os
     for label, p in (("cert", certfile), ("key", keyfile)):
         if not p or not _os.path.isfile(p):
             raise RuntimeError(f"TLS {label} file not found: {p!r}. "
                                "Generate one per LAN_SETUP.md.")
+    if updates_dir is not None:
+        updates_dir = _os.path.realpath(updates_dir)
+        if not _os.path.isdir(updates_dir):
+            raise RuntimeError(
+                f"Updates directory not found: {updates_dir!r}. Create it "
+                "and publish at least one installer with "
+                "tools/publish_update.py, or drop --updates-dir.")
     check_db_ready(db_path)
 
     class _Bound(_Handler):
         pass
     _Bound.db_path = db_path
+    _Bound.updates_dir = updates_dir
 
     httpd = ThreadingHTTPServer((bind, port), _Bound)
     httpd.daemon_threads = True
@@ -905,17 +992,24 @@ def main(argv: list[str] | None = None) -> int:
                     help="Server-local SQLite file (created by main app)")
     ap.add_argument("--cert", required=True, help="PEM certificate file")
     ap.add_argument("--key", required=True, help="PEM private key file")
+    ap.add_argument("--updates-dir", default=None,
+                    help="Optional folder served as the LAN update channel "
+                         "(see UPDATES.md; publish with tools/publish_update.py)")
     ns = ap.parse_args(argv)
     if not (1 <= ns.port <= 65535):
         print("error: --port must be 1-65535", file=sys.stderr)
         return 2
     try:
-        httpd = create_server(ns.db, ns.bind, ns.port, ns.cert, ns.key)
+        httpd = create_server(ns.db, ns.bind, ns.port, ns.cert, ns.key,
+                              updates_dir=ns.updates_dir)
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     addr = httpd.server_address
-    print(f"[lan] serving user DB {ns.db} on https://{addr[0]}:{addr[1]}",
+    extras = ""
+    if ns.updates_dir:
+        extras = f"; updates from {httpd.RequestHandlerClass.updates_dir}"
+    print(f"[lan] serving user DB {ns.db} on https://{addr[0]}:{addr[1]}{extras}",
           file=sys.stderr)
     try:
         httpd.serve_forever()

@@ -201,6 +201,14 @@ def set_preview_label(label, px_or_text):
             pass
 
 
+def _pieces_txt(job: dict) -> str:
+    wpr = job.get("wrappers_per_reel")
+    try:
+        return f"No of Pieces:{int(wpr)}" if wpr is not None else "No of Pieces:unknown"
+    except (TypeError, ValueError):
+        return "No of Pieces:unknown"
+
+
 def reel_label_text(job: dict, reel: dict) -> str:
     ident = str(reel.get("roll_code") or reel["roll_no"])
     per = str(reel.get("roll_period") or "")
@@ -209,6 +217,7 @@ def reel_label_text(job: dict, reel: dict) -> str:
         f"{COMPANY}   J:{job['job_no']}\n"
         f"Job Name:{job['job_name']}\n"
         f"Date:{fmt_date_ddmmyy(reel['created_at'])}{per_txt}  |  No of Reels:1\n"
+        f"{_pieces_txt(job)}\n"
         f"Gross Wt:  {reel['gross']:.3f} Kg   |  Roll No# {ident}\n"
         f"Core Wt:   {reel['core']:.3f} Kg   |\n"
         f"Net Wt:    {reel['net']:.3f} Kg   |\n"

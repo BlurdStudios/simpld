@@ -288,7 +288,7 @@ class PackagingPage(QWidget, NewJobDialogMixin):
         # ~360px wide and two pills need ~560px, so inside the card they were
         # squeezed until the names overlapped the detail text. This is
         # page-level status anyway, so it belongs above the split.
-        self.devices = DeviceStrip("packaging", show_station_label=True)
+        self.devices = DeviceStrip("packaging", show_station_label=True, demo_switch=True)
         root.addWidget(self.devices)
 
         split = QSplitter(Qt.Horizontal)
@@ -330,7 +330,9 @@ class PackagingPage(QWidget, NewJobDialogMixin):
         # blocks weighing/printing via DEV.require_scale/require_printer
         # instead of fabricating records. The mock drivers stay only for
         # test compatibility (SIMPLD_ALLOW_MOCK=1); the floor sees none of
-        # this. Hardware status below is display-only.
+        # this. The one exception is the explicit demo switch (Demo button on
+        # the device strip above): user-visible, confirmed, pills read "demo".
+        # Hardware status below is display-only.
         self._mock_wrap = None
         self._hw_was_mock = isinstance(HW.scale, HW.MockEssaeDS215)
 
@@ -803,11 +805,13 @@ class PackagingPage(QWidget, NewJobDialogMixin):
             self.gross.setValue(0)
             self._refresh_state()
             return self.say(str(e), ok=False)
-        if isinstance(HW.scale, HW.MockEssaeDS215) and DEV.mock_allowed():
-            # Test-compat only (SIMPLD_ALLOW_MOCK=1): echo the manual entry.
-            # Production with blank config is blocked above and never reaches
-            # here, so no mock record can be created on the floor.
+        if isinstance(HW.scale, HW.MockEssaeDS215) and (DEV.mock_allowed() or DEV.demo_mode()):
+            # Test-compat (SIMPLD_ALLOW_MOCK, source checkout only) or the explicit
+            # demo switch: echo the manual entry or a fresh simulated reading. Demo
+            # unfreezes first so every Read starts a new reel, never a stale freeze.
             try:
+                if DEV.demo_mode() and hasattr(HW.scale, "unfreeze"):
+                    HW.scale.unfreeze()
                 self.gross.setValue(HW.scale.read_weight())
             except Exception as e:
                 self.gross.setValue(0)

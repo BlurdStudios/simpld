@@ -20,6 +20,7 @@ States
   detecting a probe is running right now
   idle     needs no config and has not been used this session
   active   needs no config and was used this session
+  demo     the explicit demo switch is on — simulated, not real
 """
 from __future__ import annotations
 
@@ -88,6 +89,8 @@ def _hhmmss(epoch: float) -> str:
 
 def _detail_scale(cfg: dict) -> tuple[str, str]:
     """Short pill text. Kept tight so pills never crowd each other."""
+    if _devices.demo_mode(cfg):
+        return "demo", "simulated"
     port = str(cfg.get("scale_port") or "").strip()
     if not port:
         return "setup", "not found"
@@ -97,6 +100,8 @@ def _detail_scale(cfg: dict) -> tuple[str, str]:
 
 
 def _detail_printer(cfg: dict) -> tuple[str, str]:
+    if _devices.demo_mode(cfg):
+        return "demo", "simulated"
     name = str(cfg.get("printer_name") or "").strip()
     if not name:
         return "setup", "not found"
@@ -172,6 +177,8 @@ def device_status(key: str, cfg: dict | None = None) -> dict:
         # The one thing an operator can do next, spelled out in the tooltip
         # rather than crowding the pill.
         out["hint"] = "Click to detect again."
+    elif state == "demo":
+        out["hint"] = "Demo mode is on — this device is simulated."
     return out
 
 
