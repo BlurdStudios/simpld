@@ -9,7 +9,7 @@ Source: the repo was initialized on 2026-10-17 (initial commit `85fb000` on `mai
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
 | 001 | Update slip-dialog test to expect the qualified roll label | P1 | S | — | DONE |
-| 002 | Run the test suite in Windows CI before building | P1 | S | 001 | DONE (note: a real GitHub run is still required) |
+| 002 | Run the test suite in Windows CI before building | P1 | S | 001 | DONE (first fully green `windows-latest` run 2026-10-17, run 39044699297: suite, native-platform PDF tests, exe build, version-resource check and installer all pass — the earlier "real GitHub run still required" note is resolved) |
 | 003 | Log crashes to a file and show an error dialog | P1 | M | — | DONE |
 | 004 | Ignore the mock-hardware override in the frozen app | P1 | S | — | DONE |
 | 005 | Fix malformed installer AppId and pin runtime deps | P2 | S | — | DONE (AppId replaced; four runtime pins and `pyinstaller==6.22.3` each confirmed as a win_amd64 cp312 wheel) |

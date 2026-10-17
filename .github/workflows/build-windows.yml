@@ -82,9 +82,11 @@ jobs:
           python -m pytest tests/test_slip_pdf.py tests/test_slip_evidence.py
           -q -p no:cacheprovider
 
-      # TEMPORARY CI diagnostics — remove once the suite is green.
-      # A pytest that dies mid-run never prints its failure summary, so on
-      # failure re-run fail-fast to capture the first real traceback.
+      # On failure, re-run fail-fast: a pytest that dies mid-run (native
+      # crash) never prints its failure summary, and this captures the
+      # first real traceback instead. Kept as insurance while the Windows
+      # access-violation root cause is open (2026-10-17 note in
+      # plans/README.md).
       - name: Diagnose (fail fast, first traceback)
         if: failure()
         continue-on-error: true
