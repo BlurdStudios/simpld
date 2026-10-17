@@ -117,12 +117,30 @@ def _dialog_preview_pixmaps(dlg):
 
 
 def _pdf_text(path):
-    if shutil.which("pdftotext") is None:
-        pytest.skip("pdftotext not available")
-    out = subprocess.run(["pdftotext", "-layout", path, "-"],
-                         capture_output=True, text=True, timeout=60)
-    assert out.returncode == 0, f"pdftotext failed: {out.stderr[:200]}"
-    return out.stdout
+    """Text of a generated PDF for the evidence assertions.
+
+    pdftotext is preferred when installed (independent tool), but some
+    Windows builds extract nothing at all from Qt-written PDFs — CI's
+    pdftotext returned a bare form feed while the same file rendered and
+    opened fine — so fall back to QPdfDocument, the Qt engine that wrote
+    the file. Returns "" when no extractor could read it; the caller then
+    fails loudly instead of skipping the evidence check.
+    """
+    if shutil.which("pdftotext") is not None:
+        out = subprocess.run(["pdftotext", "-layout", path, "-"],
+                             capture_output=True, text=True, timeout=60)
+        assert out.returncode == 0, f"pdftotext failed: {out.stderr[:200]}"
+        if out.stdout.strip():
+            return out.stdout
+    from PySide6.QtPdf import QPdfDocument
+    doc = QPdfDocument()
+    if doc.load(path) != QPdfDocument.Error.None_:
+        return ""
+    parts = []
+    for i in range(doc.pageCount()):
+        sel = doc.getAllText(i)          # QPdfSelection (Qt >= 6.4)
+        parts.append(sel.text() if hasattr(sel, "text") else str(sel))
+    return "\n".join(parts)
 
 
 def test_lan_slip_preview_uses_server_snapshot_no_local_db(lan):
@@ -175,6 +193,8 @@ def test_lan_slip_preview_uses_server_snapshot_no_local_db(lan):
             SP.save_pdf(job_id, out, bogus, slip=dlg._slip)
             assert os.path.getsize(out) > 0
             txt = _pdf_text(out)
+            assert txt.strip(), \
+                "no PDF text extractor (pdftotext/QtPdf) could read the file"
             for r in dlg._slip["reel_rows"]:
                 assert r["roll_label"] in txt, r["roll_label"]
             for b in boxes:

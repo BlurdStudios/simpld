@@ -31,10 +31,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          # Do not settle for the runner image's stale cached 3.12 build
-          # (it had 3.12.10 while 3.12.11+ fixes landed); 3.12 is a
-          # security-only series, so patch bumps are crash/security fixes.
-          check-latest: true
 
       - name: Install dependencies
         run: |
@@ -42,35 +38,37 @@ jobs:
           pip install -r requirements.txt
           pip install pytest
 
+      # Windows-only hazard: this file runs in its own process. In the same
+      # interpreter as the Qt tests, its concurrent test dies with an access
+      # violation (3/3 full-suite runs; the fault site moves between sqlite3
+      # and the TLS read, so it is process state, not this test — which then
+      # passes 3/3 in a fresh process). Root cause still open; see the
+      # 2026-10-17 CI note in plans/README.md.
+      - name: Run LAN transport tests (own process)
+        env:
+          SIMPLD_DB: ${{ runner.temp }}\test-factory.db
+        run: python -m pytest tests/test_lan_transport.py -q -p no:cacheprovider
+
       # SIMPLD_DB must stay per-step: the runner context is not available
       # in job-level env.
       - name: Run test suite
         env:
           SIMPLD_DB: ${{ runner.temp }}\test-factory.db
-        run: python -m pytest tests -q -p no:cacheprovider
+        run: >-
+          python -m pytest tests -q -p no:cacheprovider
+          --ignore=tests/test_lan_transport.py
 
       # TEMPORARY CI diagnostics — remove once the suite is green.
-      # A pytest that dies mid-run (access violation on Windows) never
-      # prints its failure summary, so on failure: (1) re-run the suite
-      # without the crash-prone concurrent test and stop at the first
-      # failure to capture a real traceback, (2) run that test alone in a
-      # fresh process to tell "unstable under the full suite" apart from
-      # "broken on its own".
-      - name: Diagnose (suite without concurrent LAN test, fail fast)
+      # A pytest that dies mid-run never prints its failure summary, so on
+      # failure re-run fail-fast to capture the first real traceback.
+      - name: Diagnose (fail fast, first traceback)
         if: failure()
         continue-on-error: true
         env:
           SIMPLD_DB: ${{ runner.temp }}\test-factory.db
         run: >-
           python -m pytest tests -q -p no:cacheprovider -x
-          --deselect=tests/test_lan_transport.py::test_concurrent_roles_stay_isolated
-
-      - name: Diagnose (concurrent LAN test alone)
-        if: failure()
-        continue-on-error: true
-        env:
-          SIMPLD_DB: ${{ runner.temp }}\test-factory.db
-        run: python -m pytest tests/test_lan_transport.py -q -p no:cacheprovider
+          --ignore=tests/test_lan_transport.py
 
   build:
     needs: test
@@ -84,7 +82,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          check-latest: true
 
       - name: Install dependencies
         run: |
@@ -115,6 +112,18 @@ jobs:
         run: |
           if (!(Test-Path "dist/Simpld/Simpld.exe")) { throw "Simpld.exe missing" }
           Get-ChildItem dist/Simpld | Select-Object -First 5 Name
+
+      # Guards the single-source rule: the exe's own version resource must
+      # carry the same version as factory/version.py, the installer and the
+      # tag (a one-time stale version_info.txt shipped 1.0.0 metadata).
+      - name: Verify exe version resource matches app version
+        shell: pwsh
+        run: |
+          $vi = (Get-Item "dist/Simpld/Simpld.exe").VersionInfo
+          if ($vi.ProductVersion -ne $env:APP_VERSION) {
+            throw "Simpld.exe ProductVersion '$($vi.ProductVersion)' != '$env:APP_VERSION'"
+          }
+          echo "exe version resource OK: $($vi.ProductVersion)"
 
       - name: Compile installer (Inno Setup)
         run: |
