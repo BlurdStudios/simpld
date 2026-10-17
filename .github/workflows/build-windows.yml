@@ -20,6 +20,12 @@ jobs:
     runs-on: windows-latest
     env:
       QT_QPA_PLATFORM: offscreen
+      # Offscreen on Windows uses Qt's FreeType font database, which only
+      # scans QT_QPA_FONTDIR (Qt ships no fonts, and the Windows GDI font
+      # list is invisible to it). Unset, no text renders at all and every
+      # slip PDF comes out with no text layer — the PDF tests then fail
+      # with empty pdftotext output.
+      QT_QPA_FONTDIR: 'C:\Windows\Fonts'
       SIMPLD_ALLOW_MOCK: "1"
       # Unbuffered output: a crashed pytest otherwise loses its buffered
       # progress/failure text (learned from the first CI runs).
@@ -37,6 +43,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pytest
+
+      # Fails with one clear message instead of six confusing PDF text
+      # failures if the headless font database above ever goes missing.
+      - name: Check headless Qt fonts
+        run: |
+          python -c "from PySide6.QtGui import QGuiApplication, QFontDatabase; app = QGuiApplication([]); fams = QFontDatabase.families(); assert 'Arial' in fams, 'no Arial among %d families' % len(fams); print('fonts OK:', len(fams), 'families')"
 
       # Windows-only hazard: this file runs in its own process. In the same
       # interpreter as the Qt tests, its concurrent test dies with an access
@@ -57,6 +69,18 @@ jobs:
         run: >-
           python -m pytest tests -q -p no:cacheprovider
           --ignore=tests/test_lan_transport.py
+
+      # The suite runs headless under offscreen (FreeType fonts). The
+      # shipped app uses the native Windows platform (DirectWrite fonts),
+      # so render the PDF evidence tests there too: their pdftotext checks
+      # then cover the exact engine production uses.
+      - name: Run PDF tests on the native Windows platform
+        env:
+          QT_QPA_PLATFORM: windows
+          SIMPLD_DB: ${{ runner.temp }}\test-factory.db
+        run: >-
+          python -m pytest tests/test_slip_pdf.py tests/test_slip_evidence.py
+          -q -p no:cacheprovider
 
       # TEMPORARY CI diagnostics — remove once the suite is green.
       # A pytest that dies mid-run never prints its failure summary, so on

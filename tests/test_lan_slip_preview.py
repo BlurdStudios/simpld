@@ -119,12 +119,10 @@ def _dialog_preview_pixmaps(dlg):
 def _pdf_text(path):
     """Text of a generated PDF for the evidence assertions.
 
-    pdftotext is preferred when installed (independent tool), but some
-    Windows builds extract nothing at all from Qt-written PDFs — CI's
-    pdftotext returned a bare form feed while the same file rendered and
-    opened fine — so fall back to QPdfDocument, the Qt engine that wrote
-    the file. Returns "" when no extractor could read it; the caller then
-    fails loudly instead of skipping the evidence check.
+    Prefers pdftotext (an independent tool), with Qt's own PDF engine as
+    a second reader when it extracts nothing. Returns "" when neither can
+    read the file; the caller then fails loudly instead of skipping the
+    check.
     """
     if shutil.which("pdftotext") is not None:
         out = subprocess.run(["pdftotext", "-layout", path, "-"],
