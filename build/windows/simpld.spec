@@ -129,7 +129,57 @@ a = Analysis(
 pyz = PYZ(a.pure)
 
 _icon = _os.path.join(ROOT, "factory", "ui", "assets", "simpld.ico")
-_ver = _os.path.join(ROOT, "build", "windows", "version_info.txt")
+
+# ---- exe version resource (Windows Properties > Details) ----
+# Generated from factory/version.py at build time: the exe metadata, the
+# installer, the About dialog and the release tag must never disagree.
+# (A static version_info.txt drifted once: it still said 1.0.0 while the
+# app said 1.0.1, so Properties > Details showed the wrong version.)
+import importlib.util as _ilu
+_vspec = _ilu.spec_from_file_location(
+    "_simpld_version", _os.path.join(ROOT, "factory", "version.py"))
+_vmod = _ilu.module_from_spec(_vspec)
+_vspec.loader.exec_module(_vmod)
+_ver_str = str(_vmod.VERSION)
+_ver_parts = tuple(([int(x) for x in _ver_str.split(".")] + [0, 0, 0, 0])[:4])
+_ver = _os.path.join(
+    globals().get("workpath") or _os.path.join(ROOT, "build", "simpld"),
+    "version_info.generated.txt")
+_os.makedirs(_os.path.dirname(_ver), exist_ok=True)
+with open(_ver, "w", encoding="utf-8") as _fh:
+    _fh.write(
+        "VSVersionInfo(\n"
+        "  ffi=FixedFileInfo(\n"
+        f"    filevers={_ver_parts!r},\n"
+        f"    prodvers={_ver_parts!r},\n"
+        "    mask=0x3f,\n"
+        "    flags=0x0,\n"
+        "    OS=0x40004,\n"
+        "    fileType=0x1,\n"
+        "    subtype=0x0,\n"
+        "    date=(0, 0),\n"
+        "  ),\n"
+        "  kids=[\n"
+        "    StringFileInfo(\n"
+        "      [\n"
+        "        StringTable(\n"
+        "          '040904B0',\n"
+        "          [\n"
+        "            StringStruct('CompanyName', \"Blur'd\"),\n"
+        "            StringStruct('FileDescription', \"Simpl'd \u2014 inventory and dispatch\"),\n"
+        f"            StringStruct('FileVersion', '{_ver_str}'),\n"
+        "            StringStruct('InternalName', 'Simpld'),\n"
+        "            StringStruct('LegalCopyright', \"Blur'd\"),\n"
+        "            StringStruct('OriginalFilename', 'Simpld.exe'),\n"
+        "            StringStruct('ProductName', \"Simpl'd\"),\n"
+        f"            StringStruct('ProductVersion', '{_ver_str}'),\n"
+        "          ],\n"
+        "        ),\n"
+        "      ],\n"
+        "    ),\n"
+        "    VarFileInfo([VarStruct('Translation', [1033, 1200])]),\n"
+        "  ],\n"
+        ")\n")
 
 exe = EXE(
     pyz,
@@ -143,7 +193,7 @@ exe = EXE(
     upx=False,
     console=False,  # GUI demo: no console window behind the app
     icon=_icon if _os.path.isfile(_icon) else None,
-    version=_ver if _os.path.isfile(_ver) else None,
+    version=_ver,
 )
 
 coll = COLLECT(

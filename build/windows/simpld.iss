@@ -9,18 +9,22 @@
 ;   python -m pip install -r requirements.txt
 ;   python -m pip install -r build\windows\build_requirements.txt
 ;   python -m PyInstaller --noconfirm build\windows\simpld.spec
-;   iscc build\windows\simpld.iss
+;   iscc /DMyAppVersion=<version> build\windows\simpld.iss
+;   (build_windows.bat does both steps, reading the version from
+;    factory\version.py)
 ;
-; Output: dist\Simpld-Setup-1.0.0.exe
+; Output: dist\Simpld-Setup-<version>.exe
 ; Note: build on Windows only — a Linux host cannot produce a real PE
 ; (see DEMO_WINDOWS.md; the Wine route is documented as blocked).
 
 #define MyAppName "Simpl'd"
-; Version: local builds use this default; the release workflow passes
+; Version is never guessed: the release workflow passes
 ; /DMyAppVersion=<tag version> after verifying it against factory/version.py,
-; so the installer, the About dialog and the release tag can never disagree.
+; and build_windows.bat passes the value it reads from that file, so the
+; installer, the About dialog, the exe metadata and the release tag can
+; never disagree.
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.0"
+  #error MyAppVersion is not defined - pass /DMyAppVersion=<version> (see build_windows.bat).
 #endif
 #define MyAppPublisher "Blur'd"
 #define MyAppExeName "Simpld.exe"
