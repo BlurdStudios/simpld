@@ -1,0 +1,4 @@
+# Isolated WINDOWS-BUILD requirements only (PyInstaller for the frozen .exe).
+# App runtime deps stay in the top-level requirements.txt (owned by another
+# task — do not merge this file into it during concurrent work).
+pyinstaller==6.22.3

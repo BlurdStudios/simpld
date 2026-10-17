@@ -1,0 +1,290 @@
+#!/usr/bin/python3
+"""CUPS backend 'citizenusb' — isolated USB transport for Citizen CL-S621.
+
+Why this exists: the distro CUPS 2.4.19 'usb' backend only binds
+printers whose USB interface protocol is 1 or 2 (unidirectional /
+bidirectional IEEE-1284). The Citizen CL-S621 presents interface 0 as
+class/subclass/protocol ff/ff/ff (vendor-specific) with bulk OUT 0x02 /
+IN 0x81 (VID 2730, PID 0fff), so the stock usb backend never lists it
+even with a vendor-class quirk file. This backend does NOT replace the
+system usb backend; it only serves citizenusb:// URIs.
+
+Transport contract (verified against backend(7) / cups.org api-filter):
+  - argv == [backend]: discovery. Print one line per attached unit:
+      direct <uri> "<make/model>" "<info>" "<device-id>" ""
+    Discovery is descriptor/sysfs based and read-only: it NEVER prints.
+  - argv == [backend job user title copies options [file]]: printing.
+    Device URI comes from $DEVICE_URI (preferred) or argv[0].
+    Input comes from argv[6] file or stdin. The bytes are ALREADY
+    rendered by the Citizen 'rastertocls' CUPS filter from ctzcls.ppd;
+    this backend sends them UNCHANGED over bulk OUT 0x02. No printer
+    command language is invented here (no ESC/POS/ZPL fabrication).
+  - Exit codes: 0 OK, 1 FAILED (never auto-retry, so a failed label is
+    never duplicated by the scheduler retrying the job).
+
+PyUSB (python3-pyusb) is the official libusb API used here; no
+hand-rolled ctypes bindings.
+"""
+from __future__ import annotations
+
+import os
+import sys
+import urllib.parse
+
+VID = 0x2730
+PID = 0x0FFF
+IFACE = 0
+EP_OUT = 0x02
+WRITE_TIMEOUT_MS = 10000
+CHUNK = 16384
+
+CUPS_OK = 0
+CUPS_FAILED = 1
+
+MAKE_MODEL = "CITIZEN Barcode Printer"
+SYSFS_ROOT = "/sys/bus/usb/devices"
+
+
+def eprint(msg: str) -> None:
+    sys.stderr.write(msg + "\n")
+    sys.stderr.flush()
+
+
+def device_uri_for(serial: str) -> str:
+    serial = (serial or "").strip() or "unknown"
+    return (
+        "citizenusb://%04x/%04x?serial=%s"
+        % (VID, PID, urllib.parse.quote(serial, safe=""))
+    )
+
+
+def parse_serial_from_uri(uri: str) -> str:
+    try:
+        q = urllib.parse.urlsplit(uri or "")
+        params = urllib.parse.parse_qs(q.query or "")
+        vals = params.get("serial") or []
+        return (vals[0] if vals else "").strip()
+    except Exception:
+        return ""
+
+
+def validate_uri(uri: str) -> tuple[bool, str]:
+    """Accept only citizenusb://2730/0fff URIs. Returns (ok, serial)."""
+    try:
+        parts = urllib.parse.urlsplit(uri or "")
+    except Exception:
+        return False, ""
+    if parts.scheme != "citizenusb":
+        return False, ""
+    host = (parts.hostname or "").lower()
+    path = (parts.path or "").strip("/").lower()
+    combined = (host + "/" + path).strip("/")
+    ok = combined in ("2730/0fff", "2730:0fff", "2730-0fff")
+    if not ok:
+        # tolerate citizenusb://CITIZEN/... legacy? No — strict is safer.
+        return False, ""
+    return True, parse_serial_from_uri(uri)
+
+
+def _read_sysfs_file(path: str) -> str:
+    try:
+        with open(path, "r", errors="replace") as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+
+def enumerate_sysfs(sysfs_root: str = SYSFS_ROOT) -> list[dict]:
+    """Read-only sysfs scan for VID:PID units. No USB open/claim."""
+    found: list[dict] = []
+    try:
+        entries = sorted(os.listdir(sysfs_root))
+    except Exception:
+        return found
+    for name in entries:
+        base = os.path.join(sysfs_root, name)
+        if not os.path.isdir(base):
+            continue
+        if ":" in name:  # interface nodes like 3-2:1.0 — skip
+            continue
+        vid = _read_sysfs_file(os.path.join(base, "idVendor")).lower()
+        pid = _read_sysfs_file(os.path.join(base, "idProduct")).lower()
+        if vid != "%04x" % VID or pid != "%04x" % PID:
+            continue
+        found.append(
+            {
+                "sysfs": base,
+                "manufacturer": _read_sysfs_file(os.path.join(base, "manufacturer")) or "CITIZEN",
+                "product": _read_sysfs_file(os.path.join(base, "product")) or "Barcode Printer",
+                "serial": _read_sysfs_file(os.path.join(base, "serial")) or "unknown",
+                "busnum": _read_sysfs_file(os.path.join(base, "busnum")),
+                "devnum": _read_sysfs_file(os.path.join(base, "devnum")),
+            }
+        )
+    return found
+
+
+def discovery_lines(devices: list[dict]) -> list[str]:
+    lines = []
+    for d in devices:
+        uri = device_uri_for(d.get("serial", "unknown"))
+        mfg = d.get("manufacturer") or "CITIZEN"
+        mdl = d.get("product") or "Barcode Printer"
+        serial = d.get("serial") or "unknown"
+        info = "CITIZEN Barcode Printer USB %04x:%04x serial %s" % (VID, PID, serial)
+        device_id = "MFG:%s;MDL:%s;CLS:PRINTER;" % (mfg, mdl)
+        lines.append('direct %s "%s" "%s" "%s" ""' % (uri, MAKE_MODEL, info, device_id))
+    return lines
+
+
+def run_discovery() -> int:
+    for line in discovery_lines(enumerate_sysfs()):
+        sys.stdout.write(line + "\n")
+    sys.stdout.flush()
+    return CUPS_OK
+
+
+def read_job_data(argv: list[str]) -> bytes | None:
+    try:
+        if len(argv) >= 7 and argv[6]:
+            with open(argv[6], "rb") as f:
+                return f.read()
+        data = sys.stdin.buffer.read()
+        return data
+    except Exception as ex:
+        eprint("ERROR: citizenusb: cannot read print data: %s" % ex)
+        return None
+
+
+def find_usb_device(serial: str):
+    import usb.core  # type: ignore
+
+    devs = list(usb.core.find(find_all=True, idVendor=VID, idProduct=PID))
+    if serial:
+        matched = [d for d in devs if str(getattr(d, "serial_number", "") or "") == serial]
+        # 'unknown'/empty serial in URI means first unit.
+        if serial in ("unknown", ""):
+            matched = devs[:1]
+        if not matched:
+            return None
+        return matched[0]
+    return devs[0] if devs else None
+
+
+def send_to_printer(payload: bytes, serial: str) -> bool:
+    try:
+        import usb.core  # type: ignore
+        import usb.util  # type: ignore
+    except Exception:
+        eprint("ERROR: citizenusb: python3-pyusb is missing. Install it: sudo dnf install -y python3-pyusb")
+        return False
+    dev = find_usb_device(serial)
+    if dev is None:
+        eprint(
+            "ERROR: citizenusb: printer USB %04x:%04x%s not found. "
+            "Check cable/power and backend discovery output." % (VID, PID, (" serial " + serial) if serial else "")
+        )
+        return False
+    detached = False
+    try:
+        try:
+            if dev.is_kernel_driver_active(IFACE):
+                dev.detach_kernel_driver(IFACE)
+                detached = True
+        except Exception:
+            pass
+        try:
+            dev.set_configuration()
+        except Exception:
+            pass
+        try:
+            usb.util.claim_interface(dev, IFACE)
+        except Exception as ex:
+            eprint("ERROR: citizenusb: cannot claim interface 0: %s" % ex)
+            return False
+        try:
+            offset = 0
+            total = len(payload)
+            view = memoryview(payload)
+            while offset < total:
+                end = min(offset + CHUNK, total)
+                # dev.write returns bytes accepted; loop handles partial writes.
+                written = dev.write(EP_OUT, view[offset:end].tobytes(), WRITE_TIMEOUT_MS)
+                if written is None:
+                    written = end - offset
+                if written <= 0:
+                    eprint("ERROR: citizenusb: zero-length bulk write at offset %d/%d" % (offset, total))
+                    return False
+                offset += int(written)
+        finally:
+            try:
+                usb.util.release_interface(dev, IFACE)
+            except Exception:
+                pass
+        try:
+            dev.dispose()
+        except Exception:
+            pass
+        if detached:
+            try:
+                dev.attach_kernel_driver(IFACE)
+            except Exception:
+                pass
+        return True
+    except Exception as ex:
+        try:
+            eprint("ERROR: citizenusb: bulk write to endpoint 0x%02x failed: %s" % (EP_OUT, ex))
+        except Exception:
+            pass
+        try:
+            import usb.util  # type: ignore
+
+            try:
+                usb.util.release_interface(dev, IFACE)
+            except Exception:
+                pass
+        except Exception:
+            pass
+        return False
+
+
+def run_job(argv: list[str], env: dict) -> int:
+    if len(argv) < 6 or len(argv) > 7:
+        eprint("ERROR: citizenusb: Usage: citizenusb job-id user title copies options [file]")
+        return CUPS_FAILED
+    uri = env.get("DEVICE_URI") or (argv[0] if argv else "")
+    ok, serial = validate_uri(uri)
+    if not ok:
+        eprint("ERROR: citizenusb: refusing URI '%s' (expect citizenusb://2730/0fff?serial=...)" % (uri,))
+        return CUPS_FAILED
+    try:
+        copies = int(argv[4])
+    except Exception:
+        eprint("ERROR: citizenusb: bad copies value '%s'" % (argv[3] if len(argv) > 3 else ""))
+        return CUPS_FAILED
+    if copies < 1:
+        eprint("ERROR: citizenusb: bad copies value '%s'" % argv[4])
+        return CUPS_FAILED
+    data = read_job_data(argv)
+    if data is None:
+        return CUPS_FAILED
+    if not data:
+        eprint("ERROR: citizenusb: empty print data; nothing sent (no page printed)")
+        return CUPS_FAILED
+    for copy in range(copies):
+        if not send_to_printer(data, serial):
+            return CUPS_FAILED  # no retry codes: never duplicate labels
+        eprint("INFO: citizenusb: copy %d/%d sent (%d bytes to %04x:%04x if0 ep 0x%02x)" % (copy + 1, copies, len(data), VID, PID, EP_OUT))
+    return CUPS_OK
+
+
+def main(argv: list[str] | None = None, env: dict | None = None) -> int:
+    argv = list(sys.argv) if argv is None else list(argv)
+    env = dict(os.environ) if env is None else dict(env)
+    if len(argv) == 1:
+        return run_discovery()
+    return run_job(argv, env)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

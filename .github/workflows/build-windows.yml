@@ -1,0 +1,75 @@
+name: Build Windows
+
+# Real Windows .exe + installer, built on a cloud Windows runner.
+# (PyInstaller cannot cross-compile from Linux; the local Wine route is
+# documented as blocked in DEMO_WINDOWS.md.)
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Run test suite
+        env:
+          QT_QPA_PLATFORM: offscreen
+          SIMPLD_ALLOW_MOCK: "1"
+          SIMPLD_DB: ${{ runner.temp }}\test-factory.db
+        run: python -m pytest tests -q -p no:cacheprovider
+
+  build:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r build/windows/build_requirements.txt
+
+      - name: Build exe (PyInstaller onedir)
+        run: python -m PyInstaller --noconfirm build/windows/simpld.spec
+
+      - name: Verify exe exists
+        run: |
+          if (!(Test-Path "dist/Simpld/Simpld.exe")) { throw "Simpld.exe missing" }
+          Get-ChildItem dist/Simpld | Select-Object -First 5 Name
+
+      - name: Compile installer (Inno Setup)
+        run: |
+          choco install innosetup -y
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" build\windows\simpld.iss
+
+      - name: Upload app folder
+        uses: actions/upload-artifact@v4
+        with:
+          name: Simpld-windows
+          path: dist/Simpld/
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Simpld-Setup
+          path: dist/Simpld-Setup-*.exe

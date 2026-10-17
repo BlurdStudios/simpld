@@ -1,0 +1,17 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtual environments
+.venv/
+
+# Build outputs
+dist/
+build/Simpld/
+
+# Runtime data: dev DB, hardware.json, logs, printed slips
+data/
+
+# OS cruft
+.DS_Store
