@@ -18,6 +18,13 @@ on:
 jobs:
   test:
     runs-on: windows-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+      SIMPLD_ALLOW_MOCK: "1"
+      SIMPLD_DB: ${{ runner.temp }}\test-factory.db
+      # Unbuffered output: a crashed pytest otherwise loses its buffered
+      # progress/failure text (learned from the first CI runs).
+      PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -25,6 +32,10 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          # Do not settle for the runner image's stale cached 3.12 build
+          # (it had 3.12.10 while 3.12.11+ fixes landed); 3.12 is a
+          # security-only series, so patch bumps are crash/security fixes.
+          check-latest: true
 
       - name: Install dependencies
         run: |
@@ -33,11 +44,26 @@ jobs:
           pip install pytest
 
       - name: Run test suite
-        env:
-          QT_QPA_PLATFORM: offscreen
-          SIMPLD_ALLOW_MOCK: "1"
-          SIMPLD_DB: ${{ runner.temp }}\test-factory.db
         run: python -m pytest tests -q -p no:cacheprovider
+
+      # TEMPORARY CI diagnostics — remove once the suite is green.
+      # A pytest that dies mid-run (access violation on Windows) never
+      # prints its failure summary, so on failure: (1) re-run the suite
+      # without the crash-prone concurrent test and stop at the first
+      # failure to capture a real traceback, (2) run that test alone in a
+      # fresh process to tell "unstable under the full suite" apart from
+      # "broken on its own".
+      - name: Diagnose (suite without concurrent LAN test, fail fast)
+        if: failure()
+        continue-on-error: true
+        run: >-
+          python -m pytest tests -q -p no:cacheprovider -x
+          --deselect=tests/test_lan_transport.py::test_concurrent_roles_stay_isolated
+
+      - name: Diagnose (concurrent LAN test alone)
+        if: failure()
+        continue-on-error: true
+        run: python -m pytest tests/test_lan_transport.py -q -p no:cacheprovider
 
   build:
     needs: test
@@ -51,6 +77,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          check-latest: true
 
       - name: Install dependencies
         run: |

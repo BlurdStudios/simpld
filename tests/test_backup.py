@@ -110,10 +110,13 @@ def test_backup_restores_and_opens():
         c.close()
 
 
-def test_frozen_default_db_is_localappdata_style(monkeypatch=None):
-    """app_data_dir() honors SIMPLD_DATA_DIR env (portable/test hook)."""
-    os.environ["SIMPLD_DATA_DIR"] = "/tmp/simpld-test-data"
-    try:
-        assert DB.app_data_dir() == "/tmp/simpld-test-data"
-    finally:
-        del os.environ["SIMPLD_DATA_DIR"]
+def test_frozen_default_db_is_localappdata_style(monkeypatch, tmp_path):
+    """app_data_dir() honors SIMPLD_DATA_DIR env (portable/test hook).
+
+    The override is compared through the same abspath/expanduser
+    normalization app_data_dir() applies, so the test holds on POSIX and
+    Windows (a literal "/tmp/..." flips to "C:\\tmp\\..." on Windows).
+    """
+    target = str(tmp_path / "simpld-test-data")
+    monkeypatch.setenv("SIMPLD_DATA_DIR", target)
+    assert DB.app_data_dir() == os.path.abspath(os.path.expanduser(target))

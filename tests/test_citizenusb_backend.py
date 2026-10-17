@@ -108,7 +108,13 @@ def test_enumerate_fake_sysfs(tmp_path):
     (dev / "manufacturer").write_text("CITIZEN\n")
     (dev / "product").write_text("Barcode Printer\n")
     (dev / "serial").write_text("00000000\n")
-    (tmp_path / "3-2:1.0").mkdir()  # interface node must be skipped
+    try:
+        # Interface nodes like "3-2:1.0" must be skipped. ':' is not a legal
+        # file name on Windows, so this half of the case only exists on POSIX
+        # (Windows can never present such an entry to enumerate_sysfs anyway).
+        (tmp_path / "3-2:1.0").mkdir()
+    except OSError:
+        pass
     found = mod.enumerate_sysfs(str(tmp_path))
     assert len(found) == 1 and found[0]["serial"] == "00000000"
 

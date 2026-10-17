@@ -13,4 +13,4 @@ Release procedure: bump this value in the commit you tag.
 See UPDATES.md.
 """
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
