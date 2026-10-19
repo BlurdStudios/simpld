@@ -71,12 +71,12 @@ class QtCitizenCLS621(PrinterInterface):
         detail = data.get("detail", data) if isinstance(data, dict) else None
         if not isinstance(detail, dict):
             raise ValueError(
-                "Incomplete carton label data: need {'detail': carton_detail}")
+                "Incomplete box label data: need {'detail': carton_detail}")
         for key in ("job_no", "job_name", "carton_no", "bundle_no",
                     "packed_at", "total_gross", "qr"):
             if key not in detail:
                 raise ValueError(
-                    f"Incomplete carton label data: detail lacks {key!r}")
+                    f"Incomplete box label data: detail lacks {key!r}")
         return LabelArt.render_carton(detail)
 
     # ----- Qt submission -----
@@ -210,4 +210,4 @@ class QtCitizenCLS621(PrinterInterface):
         return self._submit(self._reel_image(data), "Simpld reel sticker")
 
     def print_carton_label(self, data: dict) -> bool:
-        return self._submit(self._carton_image(data), "Simpld carton sticker")
+        return self._submit(self._carton_image(data), "Simpld box sticker")

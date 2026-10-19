@@ -50,7 +50,7 @@ The demo ships with three seeded logins so every role can be shown:
 | dispatcher | dispatch123 | dispatcher |
 
 Seeded demo content: jobs 4167/4168-style sample jobs with reels, packed
-cartons (Ready Stock) and one loading dispatch order, so Packaging / Ready
+boxes (Ready Stock) and one loading dispatch order, so Packaging / Ready
 Stock / Dispatch / History / Summary all have something to show.
 
 **Authentication policy was NOT changed** for this build: same PBKDF2-SHA256

@@ -114,12 +114,25 @@ QLabel#sideTitle { font-size: 22px; font-weight: 700; color: #18181B; }
 QLabel#sideSub, QLabel#offlineDot, QLabel#dbPath { color: #52525B; font-size: 12px; }
 QLabel#brandParent { color: #71717A; font-size: 10px; }
 QLabel#brandTag { color: #71717A; font-size: 11px; }
-/* Nav glyphs: 18px, offset so the icon is not flush against the row edge. */
-QPushButton[kind="nav"] { background: transparent; border: 1px solid transparent; text-align: left; padding: 9px 12px; font-size: 13px; border-radius: 8px; icon-size: 18px; }
+/* Nav rows: quiet by default; the active row is a white card with ink text
+   and an accent glyph (the icon variant swap happens in _set_nav_icon). */
+QPushButton[kind="nav"] { background: transparent; border: 1px solid transparent; text-align: left; padding: 9px 12px; font-size: 13px; color: #3F3F46; border-radius: 8px; icon-size: 18px; }
 QPushButton[kind="nav"]:hover { background: #E9E9EB; border-color: transparent; }
-QPushButton[kind="nav"]:checked { background: __ACCENT__; color: white; font-weight: 700; border-color: __ACCENT__; }
-QPushButton[kind="nav"]:checked:hover { background: __ACCENT_HOVER__; }
-QPushButton[kind="nav"]:focus { border: 2px solid __ACCENT__; }
+QPushButton[kind="nav"]:checked { background: white; color: #18181B; font-weight: 600; border-color: #E4E4E7; }
+QPushButton[kind="nav"]:checked:hover { background: #FAFAFA; }
+QPushButton[kind="nav"][kbFocus="true"] { border: 2px solid __ACCENT__; }
+/* Collapsible group header (Packaging): ink label + glyph, chevron painted by
+   NavGroupButton at the right edge (the padding reserves the room). */
+QPushButton[kind="navGroup"] { background: transparent; border: 1px solid transparent; text-align: left; padding: 9px 34px 9px 12px; font-size: 13px; font-weight: 600; color: #18181B; border-radius: 8px; icon-size: 18px; }
+QPushButton[kind="navGroup"]:hover { background: #E9E9EB; border-color: transparent; }
+QPushButton[kind="navGroup"][kbFocus="true"] { border: 2px solid __ACCENT__; }
+/* Nested nav rows (Packaging → Reel packing / Box packing): indented under
+   the group, tied to it by the accent rail NavTree paints. */
+QPushButton[kind="navChild"] { background: transparent; border: 1px solid transparent; text-align: left; padding: 7px 10px; font-size: 13px; color: #52525B; border-radius: 8px; icon-size: 16px; }
+QPushButton[kind="navChild"]:hover { background: #E9E9EB; border-color: transparent; }
+QPushButton[kind="navChild"]:checked { background: white; color: #18181B; font-weight: 600; border-color: #E4E4E7; }
+QPushButton[kind="navChild"]:checked:hover { background: #FAFAFA; }
+QPushButton[kind="navChild"][kbFocus="true"] { border: 2px solid __ACCENT__; }
 /* ---- frame cards (frame.root/panel: bordered white panels, 10px radius) ---- */
 QFrame[card="true"] { background: white; border: 1px solid #E4E4E7; border-radius: 10px; }
 QLabel[step="true"] { font-size: 15px; font-weight: 700; color: #18181B; }

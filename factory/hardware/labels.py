@@ -15,7 +15,7 @@ from __future__ import annotations
 import io
 import os
 
-from factory.db import COMPANY, fmt_date_ddmmyy
+from factory.db import COMPANY, fmt_date_ddmmyy, bare_carton_no
 
 # Fixed Citizen media: 4in x 3in. Width fixed by hardware; height fixed to the
 # sticker stock (matches the old label proportions, wider than tall).
@@ -183,17 +183,12 @@ def render_reel(job: dict, reel: dict, width_mm=LABEL_WIDTH_MM,
     _cell_text(d, (A, r6a, B, r6b), "Net Wt:", 30)
     _cell_text(d, (B, r6a, C, r6b), f"{reel['net']:.3f} Kg", 40)
     # right box: small caption on top, huge roll identity below.
-    # Month-qualified identity (RYYYYMM-NNNN) when present; legacy rows keep
-    # their plain roll_no exactly as issued.
+    # The floor reads the bare reel number; the month-qualified roll_code
+    # stays in the DB and only surfaces on evidence documents (the slip),
+    # never on this sticker.
     mid = r4a + (r6b - r4a) * 0.28
     _cell_text(d, (C, r4a, E, mid), "Roll No#", 26)
-    ident = str(reel.get("roll_code") or reel["roll_no"])
-    _cell_text(d, (C, mid, E, r6b), ident, 120)
-    per = str(reel.get("roll_period") or "")
-    if per:
-        # compact month tag under the date cell is handled by callers;
-        # keep art stable: period already inside roll_code for new rows.
-        pass
+    _cell_text(d, (C, mid, E, r6b), str(reel["roll_no"]), 120)
     return img
 
 
@@ -232,7 +227,7 @@ def render_weight_carton(detail: dict, width_mm=LABEL_WIDTH_MM,
     _cell_text(d, (C, r0a, E, r0b), f"J:{detail['job_no']}", 34, right=True)
     _cell_text(d, (A, r1a, E, r1b), f"Job Name:{detail['job_name']}", 30)
     _cell_text(d, (A, r2a, E, r2b),
-               f"Carton:{detail['carton_no']}  Bundle:{detail['bundle_no']}", 28)
+               f"Bundle:{detail['bundle_no']}", 28)
     _cell_text(d, (A, r3a, C, r3b),
                f"Date:{fmt_date_ddmmyy(detail['packed_at'])}", 28)
     _cell_text(d, (C, r3a, E, r3b), "BOX", 26)
@@ -244,11 +239,12 @@ def render_weight_carton(detail: dict, width_mm=LABEL_WIDTH_MM,
     if qr is not None:
         qx = int(C + (E - C - qr.size[0]) / 2)
         img.paste(qr, (qx, int(r4a + 6)))
-        _cell_text(d, (C, r4a + 6 + qr.size[1], E, r4b), detail["carton_no"], 34, center=True)
+        _cell_text(d, (C, r4a + 6 + qr.size[1], E, r4b),
+                   bare_carton_no(detail["carton_no"]), 34, center=True)
     else:
         mid = r4a + (r4b - r4a) * 0.28
-        _cell_text(d, (C, r4a, E, mid), "Carton No#", 26)
-        _cell_text(d, (C, mid, E, r4b), detail["carton_no"], 80)
+        _cell_text(d, (C, r4a, E, mid), "Box No#", 26)
+        _cell_text(d, (C, mid, E, r4b), bare_carton_no(detail["carton_no"]), 80)
     return img
 
 
@@ -277,7 +273,7 @@ def render_carton(detail: dict, width_mm=LABEL_WIDTH_MM,
     _cell_text(d, (C, r0a, E, r0b), f"J:{detail['job_no']}", 34, right=True)
     _cell_text(d, (A, r1a, E, r1b), f"Job Name:{detail['job_name']}", 30)
     _cell_text(d, (A, r2a, E, r2b),
-               f"Carton:{detail['carton_no']}  Bundle:{detail['bundle_no']}  Rolls:{rolls}", 28)
+               f"Bundle:{detail['bundle_no']}  Rolls:{rolls}", 28)
     _cell_text(d, (A, r3a, C, r3b),
                f"Date:{fmt_date_ddmmyy(detail['packed_at'])}", 28)
     _cell_text(d, (C, r3a, E, r3b), f"No of Reels:{detail['num_reels']}", 26)
@@ -293,11 +289,12 @@ def render_carton(detail: dict, width_mm=LABEL_WIDTH_MM,
     if qr is not None:
         qx = int(C + (E - C - qr.size[0]) / 2)
         img.paste(qr, (qx, int(r4a + 6)))
-        _cell_text(d, (C, r4a + 6 + qr.size[1], E, r6b), detail["carton_no"], 34, center=True)
+        _cell_text(d, (C, r4a + 6 + qr.size[1], E, r6b),
+                   bare_carton_no(detail["carton_no"]), 34, center=True)
     else:
         mid = r4a + (r6b - r4a) * 0.28
-        _cell_text(d, (C, r4a, E, mid), "Carton No#", 26)
-        _cell_text(d, (C, mid, E, r6b), detail["carton_no"], 80)
+        _cell_text(d, (C, r4a, E, mid), "Box No#", 26)
+        _cell_text(d, (C, mid, E, r6b), bare_carton_no(detail["carton_no"]), 80)
     return img
 
 

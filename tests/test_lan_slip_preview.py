@@ -196,10 +196,10 @@ def test_lan_slip_preview_uses_server_snapshot_no_local_db(lan):
             for r in dlg._slip["reel_rows"]:
                 assert r["roll_label"] in txt, r["roll_label"]
             for b in boxes:
-                assert b["carton_no"] in txt, b["carton_no"]
+                assert DB.bare_carton_no(b["carton_no"]) in txt, b["carton_no"]
             assert "Reel totals" in txt and "Box totals" in txt
             assert "Legacy box totals" in txt
-            assert "Total bundles/cartons" in txt
+            assert "Total boxes" in txt
             assert txt.count("Page Nos.:") == len(pages)
             assert not os.path.exists(sentinel), \
                 "LAN mode must not create a local DB file"

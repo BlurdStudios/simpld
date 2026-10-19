@@ -58,7 +58,7 @@ GitHub release. Move it to the packager computer, then:
 
 ```
 python3 tools/publish_update.py Simpld-Setup-1.0.1.exe \
-    --dir data/updates --notes "Carton sticker fix"
+    --dir data/updates --notes "Box sticker fix"
 ```
 
 This writes the installer, its `.sha256` and a `latest.json` manifest into the

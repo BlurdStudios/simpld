@@ -28,7 +28,7 @@ class PrinterInterface(ABC):
 
     @abstractmethod
     def print_carton_label(self, data: dict) -> bool:
-        """Type-2 sticker: carton/bundle WITH QR.
+        """Type-2 sticker: box/bundle WITH QR.
 
         Pass COMPLETE rendering inputs: {"detail": carton_detail}."""
 

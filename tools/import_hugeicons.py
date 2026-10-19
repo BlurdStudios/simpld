@@ -46,6 +46,8 @@ PKG_VERSION = "4.3.5"
 # role -> candidates to eyeball. First entry is the current preference.
 CANDIDATES: dict[str, list[str]] = {
     "packaging": ["PackageIcon", "BoxIcon", "DeliveryBox01Icon", "BoxesIcon"],
+    "reel": ["FilmRoll02Icon", "FilmRoll01Icon", "Film01Icon", "Cylinder01Icon"],
+    "box": ["Package03Icon", "Package01Icon", "BoxIcon", "DeliveryBox01Icon"],
     "stock": ["BoxesIcon", "WarehouseIcon", "BoxIcon", "PackageIcon"],
     "dispatch": ["DeliveryTruck01Icon", "TruckIcon", "TruckDeliveryIcon",
                  "ShipmentTrackingIcon"],
@@ -67,6 +69,8 @@ CANDIDATES: dict[str, list[str]] = {
 # The winners. Kept explicit so the build is reproducible and reviewable.
 CHOSEN: dict[str, str] = {
     "packaging": "PackageIcon",
+    "reel": "FilmRoll02Icon",
+    "box": "Package03Icon",
     "stock": "BoxesIcon",
     "dispatch": "DeliveryTruck01Icon",
     "jobs": "ClipboardListIcon",

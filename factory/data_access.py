@@ -256,21 +256,21 @@ def _wrappers_int(value: Any) -> int:
     """Strict positive int for wrappers/reel, mirroring services' message."""
     if isinstance(value, bool) or value is None:
         raise ValueError(
-            "Wrappers/reel must be a positive whole number (e.g. 16500)")
+            "Pieces/reel must be a positive whole number (e.g. 16500)")
     if isinstance(value, float):
         if not value.is_integer():
             raise ValueError(
-                "Wrappers/reel must be a positive whole number (e.g. 16500)")
+                "Pieces/reel must be a positive whole number (e.g. 16500)")
         value = int(value)
     if isinstance(value, str):
         t = value.strip()
         if not t.isdigit():
             raise ValueError(
-                "Wrappers/reel must be a positive whole number (e.g. 16500)")
+                "Pieces/reel must be a positive whole number (e.g. 16500)")
         value = int(t)
     if not isinstance(value, int) or value <= 0:
         raise ValueError(
-            "Wrappers/reel must be a positive whole number (e.g. 16500)")
+            "Pieces/reel must be a positive whole number (e.g. 16500)")
     return value
 
 
@@ -434,6 +434,36 @@ def pack_weight_carton(job_id: int, gross_weight: float, shift: str = "DAY",
                                    customer=customer)
 
 
+def pack_next_box(job_id: int, gross_weight: float, box_weight: float,
+                  reels_per_box: int = 2, shift: str = "DAY",
+                  customer: str = "") -> dict:
+    """Pack the next loose reels (production order) into one measured box."""
+    if backend() == "lan":
+        return _lan_client().pack_next_box(
+            job_id, gross_weight, box_weight, reels_per_box=reels_per_box,
+            shift=shift, customer=customer)
+    from . import services as _svc
+    return _svc.pack_next_box(job_id, gross_weight, box_weight,
+                              reels_per_box=reels_per_box, shift=shift,
+                              customer=customer)
+
+
+def job_boxes(job_id: int) -> list:
+    """Every box of a job in packing order, with linked roll numbers."""
+    if backend() == "lan":
+        return _lan_client().job_boxes(job_id)
+    from . import services as _svc
+    return _svc.job_boxes(job_id)
+
+
+def pending_box_stickers(job_id: int | None = None) -> list:
+    """Boxes whose sticker is still waiting to be printed, in packing order."""
+    if backend() == "lan":
+        return _lan_client().pending_box_stickers(job_id)
+    from . import services as _svc
+    return _svc.pending_box_stickers(job_id)
+
+
 def pack_carton(job_id: int, reel_ids: list, shift: str = "DAY",
                 customer: str | None = None) -> dict:
     """Legacy reel-linked pack (kept for tests/history; floor uses boxes)."""
@@ -522,14 +552,19 @@ def order_progress(order_id: int) -> dict:
     return _svc.order_progress(order_id)
 
 
-def create_dispatch_order(customer: str, job_id: int, required_bundles: int,
-                          order_date: str | None = None) -> dict:
+def create_dispatch_order(customer: str, job_id: int,
+                          required_bundles: int | None = None,
+                          order_date: str | None = None,
+                          required_pieces: int | None = None) -> dict:
+    """New orders count pieces; legacy callers keep required_bundles exact."""
     if backend() == "lan":
         return _lan_client().create_dispatch_order(
-            customer, job_id, required_bundles, order_date=order_date)
+            customer, job_id, required_bundles, order_date=order_date,
+            required_pieces=required_pieces)
     from . import services as _svc
     return _svc.create_dispatch_order(customer, job_id, required_bundles,
-                                      order_date=order_date)
+                                      order_date=order_date,
+                                      required_pieces=required_pieces)
 
 
 def scan_into_order(order_id: int, scan_text: str) -> dict:

@@ -269,9 +269,9 @@ def test_multipage_pdf_and_preview():
     for r in slip["reel_rows"]:
         assert r["roll_label"] in txt, r["roll_label"]
     for b in slip["box_rows"]:
-        assert b["carton_no"] in txt, b["carton_no"]
+        assert DB.bare_carton_no(b["carton_no"]) in txt, b["carton_no"]
     assert "Reel totals" in txt and "Box totals" in txt
-    assert "Legacy box totals" in txt and "Total bundles/cartons" in txt
+    assert "Legacy box totals" in txt and "Total boxes" in txt
     assert txt.count("Page Nos.:") == 2
     for banned in ("qualified identity", "NOT added",
                    "independent boxes + legacy linked"):
@@ -308,7 +308,7 @@ def test_dialog_identifies_reel_box_rows():
     assert d.table.item(0, 0).text() == "Reel"
     assert slip["rows"][0]["roll_label"] == d.table.item(0, 1).text()
     assert d.table.item(1, 0).text() == "Box"
-    assert b["carton_no"] in d.table.item(1, 1).text()
+    assert DB.bare_carton_no(b["carton_no"]) == d.table.item(1, 1).text()
     assert f"J:{job['job_no']}" in d.windowTitle()
 
 
@@ -419,10 +419,10 @@ def test_legacy_long_ids_last_page_totals_in_pdf():
         assert r["roll_label"] in txt, r["roll_label"]
     # Every carton record in full.
     for b in slip["box_rows"]:
-        assert b["carton_no"] in txt, b["carton_no"]
+        assert DB.bare_carton_no(b["carton_no"]) in txt, b["carton_no"]
     # Full separate totals on the last page.
     assert "Reel totals" in txt and "Box totals" in txt
-    assert "Legacy box totals" in txt and "Total bundles/cartons" in txt
+    assert "Legacy box totals" in txt and "Total boxes" in txt
     assert txt.count("Page Nos.:") == len(pages)
     # Overflowing text is clipped with an ellipsis inside its cell (long
     # job name, 5-member roll list) — never past the border.
@@ -454,9 +454,9 @@ def test_prefetched_slip_dict_renders_without_local_db():
     assert open(out, "rb").read(5) == b"%PDF-"
     txt = _pdf_text(out)
     assert slip["reel_rows"][0]["roll_label"] in txt
-    assert b1["carton_no"] in txt
+    assert DB.bare_carton_no(b1["carton_no"]) in txt
     assert "Reel totals" in txt and "Box totals" in txt
-    assert "Legacy box totals" in txt and "Total bundles/cartons" in txt
+    assert "Legacy box totals" in txt and "Total boxes" in txt
     assert txt.count("Page Nos.:") == len(pages)
     slip2, imgs = SP.preview_images(job["id"], bogus, slip=slip)
     assert len(imgs) == len(pages) and all(not im.isNull() for im in imgs)

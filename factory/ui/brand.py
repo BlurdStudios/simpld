@@ -55,39 +55,46 @@ _ICON_SIZES = (24, 32, 48, 64)
 _MARK_SIZES = (16, 20, 24, 32, 40, 48, 56, 60, 64, 72, 80, 96, 128, 160,
                192, 256, 512)
 
-_icon_cache: dict[tuple[str, bool], QIcon] = {}
-_pixmap_cache: dict[tuple[str, bool, int], QPixmap] = {}
+_icon_cache: dict[tuple[str, str], QIcon] = {}
+_pixmap_cache: dict[tuple[str, str, int], QPixmap] = {}
 _app_icon: QIcon | None = None
 
+# icon(name, variant=...) -> filename suffix rendered by the asset build.
+# "default" sits on the light sidebar, "accent" marks the active nav row,
+# "on" is white for dark surfaces.
+_ICON_VARIANTS = {"default": "", "accent": "-accent", "on": "-on"}
 
-def _pixmap(name: str, on: bool, px: int) -> QPixmap:
-    key = (name, on, px)
+
+def _pixmap(name: str, variant: str, px: int) -> QPixmap:
+    key = (name, variant, px)
     hit = _pixmap_cache.get(key)
     if hit is not None:
         return hit
-    path = os.path.join(_BRAND, f"{name}{'-on' if on else ''}-{px}.png")
-    pm = QPixmap(path)
-    if pm.isNull() and on:  # missing `-on` variant -> fall back to default
+    suffix = _ICON_VARIANTS.get(variant, "")
+    pm = QPixmap(os.path.join(_BRAND, f"{name}{suffix}-{px}.png"))
+    if pm.isNull() and suffix:  # missing variant -> fall back to default
         pm = QPixmap(os.path.join(_BRAND, f"{name}-{px}.png"))
     _pixmap_cache[key] = pm
     return pm
 
 
-def icon(name: str, on: bool = False) -> QIcon:
+def icon(name: str, variant: str = "default") -> QIcon:
     """A nav/page icon.
 
-    `on=True` returns the white variant used on the dark checked-nav pill.
+    `variant` picks the stroke colour rendered by the asset build: "default"
+    (zinc, light surfaces), "accent" (the active nav row) or "on" (white, for
+    dark surfaces). A variant missing on disk falls back to default.
 
     Every rendered size is added to the QIcon so Qt can pick a 48px frame on a
     200%-scaled display instead of upscaling the 24px one.
     """
-    key = (name, on)
+    key = (name, variant)
     hit = _icon_cache.get(key)
     if hit is not None:
         return hit
     ic = QIcon()
     for px in _ICON_SIZES:
-        pm = _pixmap(name, on, px)
+        pm = _pixmap(name, variant, px)
         if not pm.isNull():
             ic.addPixmap(pm)
     _icon_cache[key] = ic

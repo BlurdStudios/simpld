@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QLabel, QPushButton,
                                QHBoxLayout, QTextEdit, QMessageBox, QSizePolicy)
 from PySide6.QtGui import QPixmap, QImage
 from PySide6.QtCore import Qt, QObject, QEvent
-from factory.db import COMPANY, fmt_date_ddmmyy
+from factory.db import COMPANY, fmt_date_ddmmyy, bare_carton_no
 from factory import data_access as DA
 from factory.ui.styles import style_button
 
@@ -210,13 +210,14 @@ def _pieces_txt(job: dict) -> str:
 
 
 def reel_label_text(job: dict, reel: dict) -> str:
-    ident = str(reel.get("roll_code") or reel["roll_no"])
-    per = str(reel.get("roll_period") or "")
-    per_txt = f"  Period:{per}" if per else ""
+    # Visual identity is the bare reel number (the floor's "24"); the
+    # month-qualified roll_code stays in the DB and only appears on evidence
+    # surfaces (slip / History "Full ID"), never on this sticker.
+    ident = str(reel["roll_no"])
     return (
         f"{COMPANY}   J:{job['job_no']}\n"
         f"Job Name:{job['job_name']}\n"
-        f"Date:{fmt_date_ddmmyy(reel['created_at'])}{per_txt}  |  No of Reels:1\n"
+        f"Date:{fmt_date_ddmmyy(reel['created_at'])}  |  No of Reels:1\n"
         f"{_pieces_txt(job)}\n"
         f"Gross Wt:  {reel['gross']:.3f} Kg   |  Roll No# {ident}\n"
         f"Core Wt:   {reel['core']:.3f} Kg   |\n"
@@ -230,28 +231,30 @@ def carton_label_text(detail: dict) -> str:
         return (
             f"{COMPANY}   J:{detail['job_no']}\n"
             f"Job Name:{detail['job_name']}\n"
-            f"Carton:{detail['carton_no']}  Bundle:{detail['bundle_no']}\n"
+            f"Bundle:{detail['bundle_no']}\n"
             f"Date:{fmt_date_ddmmyy(detail['packed_at'])}\n"
             f"Box Wt:  {detail['total_gross']:.3f} Kg\n"
-            f"QR:{detail['qr']}"
+            f"QR:{detail['qr']}\n"
+            f"Box No:{bare_carton_no(detail['carton_no'])}"
         )
     rolls = ",".join(str(r["roll_no"]) for r in detail["reels"])
     return (
         f"{COMPANY}   J:{detail['job_no']}\n"
         f"Job Name:{detail['job_name']}\n"
-        f"Carton:{detail['carton_no']}  Bundle:{detail['bundle_no']}  Rolls:{rolls}\n"
+        f"Bundle:{detail['bundle_no']}  Rolls:{rolls}\n"
         f"Date:{fmt_date_ddmmyy(detail['packed_at'])}  |  No of Reels:{detail['num_reels']}\n"
         f"Total Gross: {detail['total_gross']:.3f} Kg\n"
         f"Total Core:  {detail['total_core']:.3f} Kg\n"
         f"Total Net:   {detail['total_net']:.3f} Kg\n"
-        f"QR:{detail['qr']}"
+        f"QR:{detail['qr']}\n"
+        f"Box No:{bare_carton_no(detail['carton_no'])}"
     )
 
 
 class ReelLabelDialog(QDialog):
     def __init__(self, parent, job: dict, reel: dict, printer):
         super().__init__(parent)
-        ident = str((reel or {}).get("roll_code") or (reel or {}).get("roll_no"))
+        ident = str((reel or {}).get("roll_no"))
         self.setWindowTitle(f"Reel sticker — Roll {ident} (NO QR)")
         self.setMinimumWidth(460)
         lay = QVBoxLayout(self)
@@ -316,15 +319,15 @@ class ReelLabelDialog(QDialog):
 class CartonLabelDialog(QDialog):
     def __init__(self, parent, detail: dict, printer):
         super().__init__(parent)
-        self.setWindowTitle(f"Carton sticker — {detail['carton_no']} (WITH QR)")
+        self.setWindowTitle(f"Box sticker — {bare_carton_no(detail['carton_no'])} (WITH QR)")
         self.setMinimumWidth(500)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 16, 16, 16)
         lay.setSpacing(10)
-        ht = QLabel("Type-2: carton / bundle sticker (with QR)")
+        ht = QLabel("Type-2: box / bundle sticker (with QR)")
         ht.setProperty("dialog", "title")
         lay.addWidget(ht)
-        hd = QLabel("Matches the printed carton sticker layout exactly.")
+        hd = QLabel("Matches the printed box sticker layout exactly.")
         hd.setProperty("dialog", "desc")
         hd.setWordWrap(True)
         lay.addWidget(hd)
@@ -345,7 +348,7 @@ class CartonLabelDialog(QDialog):
         lay.addWidget(scan_info)
         row = QHBoxLayout()
         row.setSpacing(8)
-        self.btn_print = QPushButton("PRINT CARTON STICKER")
+        self.btn_print = QPushButton("PRINT BOX STICKER")
         self.btn_print.setMinimumHeight(56)
         style_button(self.btn_print, "primary")
         self.btn_close = QPushButton("Close")
@@ -378,7 +381,8 @@ class CartonLabelDialog(QDialog):
         except Exception:
             pass
         from factory.ui.toast import toast
-        toast(self, f"{self._detail['carton_no']} sticker sent to the printer.")
+        toast(self, f"Box {bare_carton_no(self._detail['carton_no'])}"
+                    " sticker sent to the printer.")
         self.accept()
 
 
@@ -393,12 +397,12 @@ class VerifyDialog(QDialog):
         super().__init__(parent)
         d = found["detail"]
         o = found.get("order")
-        self.setWindowTitle(f"Verify — {d['carton_no']} ({d['status']})")
+        self.setWindowTitle(f"Verify — {bare_carton_no(d['carton_no'])} ({d['status']})")
         self.setMinimumWidth(460)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 16, 16, 16)
         lay.setSpacing(10)
-        ht = QLabel(f"{d['carton_no']} · J:{d['job_no']} {d['job_name']}")
+        ht = QLabel(f"Box {bare_carton_no(d['carton_no'])} · J:{d['job_no']} {d['job_name']}")
         ht.setProperty("dialog", "title")
         ht.setWordWrap(True)
         lay.addWidget(ht)
@@ -414,7 +418,7 @@ class VerifyDialog(QDialog):
         rolls = ",".join(str(r["roll_no"]) for r in d["reels"])
         lines = [
             f"Batch: J:{d['job_no']} {d['job_name']} ({d.get('size_mm', '')}mm)",
-            f"Box: {d['carton_no']}  Bundle:{d['bundle_no']}"
+            f"Box: {bare_carton_no(d['carton_no'])}  Bundle:{d['bundle_no']}"
             + (f"  Rolls:{rolls}" if d["reels"] else "  (box weight only)"),
             f"Status: {d['status']}",
         ]
@@ -503,7 +507,7 @@ class PackingSlipDialog(QDialog):
         ll.addWidget(cap)
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(
-            ["Type", "Roll / Carton No.", "Gross / Box Wt", "Core Wt", "Net Wt", "Packed In / Note"])
+            ["Type", "Roll / Box No.", "Gross / Box Wt", "Core Wt", "Net Wt", "Packed In / Note"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(36)
@@ -525,10 +529,10 @@ class PackingSlipDialog(QDialog):
                 self.table.setItem(i, 3, QTableWidgetItem(f"{r['core']:.2f}"))
                 self.table.setItem(i, 4, QTableWidgetItem(f"{r['net']:.3f}"))
                 self.table.setItem(i, 5, QTableWidgetItem(
-                    r.get("carton_no") or "loose"))
+                    bare_carton_no(r.get("carton_no")) or "loose"))
             else:
                 self.table.setItem(i, 0, QTableWidgetItem("Box"))
-                self.table.setItem(i, 1, QTableWidgetItem(str(r.get("carton_no", ""))))
+                self.table.setItem(i, 1, QTableWidgetItem(bare_carton_no(r.get("carton_no", ""))))
                 self.table.setItem(i, 2, QTableWidgetItem(f"{r['gross']:.3f}"))
                 self.table.setItem(i, 3, QTableWidgetItem("—"))
                 self.table.setItem(i, 4, QTableWidgetItem("—"))
@@ -540,13 +544,13 @@ class PackingSlipDialog(QDialog):
                     f"  ·  Core {t['core']:.3f}  ·  Net {t['net']:.3f} Kg"
                     f"  |  Boxes (independent): {t.get('boxes', 0)}"
                     f"  ·  Box {t.get('box_wt', 0.0):.3f} Kg"
-                    f"  |  Bundles/Cartons: {t['bundles']}")
+                    f"  |  Total boxes: {t['bundles']}")
         if t.get("legacy_cartons"):
-            tot_text += (f"  ·  {t['legacy_cartons']} legacy reel-linked carton(s)"
+            tot_text += (f"  ·  {t['legacy_cartons']} legacy reel-linked box(es)"
                          " (rolls in table, weights in reel totals only)")
         wpr = self._slip.get("wrappers_per_reel")
-        tot_text += f"  |  Wrappers/Reel: {int(wpr)}" if wpr is not None \
-            else "  |  Wrappers/Reel: unknown"
+        tot_text += f"  |  No of Pieces: {int(wpr)}" if wpr is not None \
+            else "  |  No of Pieces: unknown"
         tot = QLabel(tot_text)
         tot.setProperty("count", True)
         tot.setWordWrap(True)

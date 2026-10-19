@@ -1,10 +1,11 @@
-"""Ready Stock: all packed cartons available for dispatch. No customer shown (decoupled)."""
+"""Ready Stock: all packed boxes available for dispatch. No customer shown (decoupled)."""
 from __future__ import annotations
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
                                QTableWidget, QTableWidgetItem, QHeaderView, QLineEdit,
                                QMessageBox, QAbstractItemView)
 from factory import data_access as DA
+from factory.db import bare_carton_no
 from factory.hardware import mock as HW
 from factory.ui.label_preview import CartonLabelDialog, PackingSlipDialog, VerifyDialog
 from factory.ui.styles import style_button
@@ -39,7 +40,7 @@ class StockPage(QWidget):
         bar = QHBoxLayout()
         bar.setSpacing(8)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Search carton / job…  (Enter)")
+        self.search.setPlaceholderText("Search box / job…  (Enter)")
         self.search.setMinimumHeight(40)
         self.search.returnPressed.connect(self.refresh)
         bar.addWidget(self.search, 1)
@@ -62,7 +63,7 @@ class StockPage(QWidget):
         scan_cap.setProperty("field", "caption")
         scan.addWidget(scan_cap)
         self.verify_scan = QLineEdit()
-        self.verify_scan.setPlaceholderText("Click here, scan carton… (Enter)")
+        self.verify_scan.setPlaceholderText("Click here, scan box… (Enter)")
         self.verify_scan.setMinimumHeight(40)
         self.verify_scan.setProperty("scan", True)
         self.verify_scan.returnPressed.connect(self.verify)
@@ -74,7 +75,7 @@ class StockPage(QWidget):
         lay.addWidget(self.count)
         self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
-            ["Carton (QR)", "Job", "Bundle", "Reels", "Rolls", "Wt Kg", "Packed"])
+            ["Box No", "Job", "Bundle", "Reels", "Rolls", "Wt Kg", "Packed"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(44)
@@ -125,13 +126,14 @@ class StockPage(QWidget):
         self._set_offline(False)
         if q:
             rows = [r for r in rows if q in r["carton_no"].upper()
+                    or q == bare_carton_no(r["carton_no"])
                     or q in str(r["job_no"]) or q in r["job_name"].upper()]
         self._rows = rows
         self.table.setRowCount(0)
         for r in rows:
             i = self.table.rowCount()
             self.table.insertRow(i)
-            self.table.setItem(i, 0, QTableWidgetItem(r["carton_no"]))
+            self.table.setItem(i, 0, QTableWidgetItem(bare_carton_no(r["carton_no"])))
             self.table.setItem(i, 1, QTableWidgetItem(f"J:{r['job_no']} {r['job_name']}"))
             self.table.setItem(i, 2, QTableWidgetItem(str(r["bundle_no"])))
             self.table.setItem(i, 3, QTableWidgetItem(
@@ -142,10 +144,10 @@ class StockPage(QWidget):
             self.table.setItem(i, 6, QTableWidgetItem(r["packed_at"][:16]))
         tot = sum(r["total_net"] for r in rows)
         if rows:
-            self.count.setText(f"In stock: {len(rows)} cartons  |  {tot:.3f} Kg")
+            self.count.setText(f"In stock: {len(rows)} boxes  |  {tot:.3f} Kg")
             self.count.setProperty("empty", False)
         else:
-            self.count.setText("No cartons in stock — pack cartons in Packaging.")
+            self.count.setText("No boxes in stock — pack boxes in Packaging.")
             self.count.setProperty("empty", True)
         try:
             s = self.count.style()
@@ -164,7 +166,7 @@ class StockPage(QWidget):
     def reprint(self):
         r = self.selected()
         if not r:
-            return QMessageBox.warning(self, "Stock", "Select a carton row first.")
+            return QMessageBox.warning(self, "Stock", "Select a box row first.")
         if self._offline:
             return QMessageBox.warning(
                 self, "Connection issue",
@@ -180,8 +182,8 @@ class StockPage(QWidget):
         if not r:
             return QMessageBox.warning(
                 self, "Slip",
-                "Select any carton of the job, then print its packing slip.\n"
-                "Reel-only jobs have no cartons — open their packing slip "
+                "Select any box of the job, then print its packing slip.\n"
+                "Reel-only jobs have no boxes — open their packing slip "
                 "from the Jobs page.")
         if self._offline:
             return QMessageBox.warning(
@@ -190,7 +192,7 @@ class StockPage(QWidget):
         PackingSlipDialog(self, r["job_id"]).exec()
 
     def verify(self):
-        """Scanner re-verification: scan any carton QR (Ready or dispatched),
+        """Scanner re-verification: scan any box QR (Ready or dispatched),
         see its batch + box details and dispatch status."""
         code = self.verify_scan.text()
         self.verify_scan.clear()
@@ -204,7 +206,7 @@ class StockPage(QWidget):
         if not found:
             self.verify_scan.setFocus()
             return QMessageBox.warning(
-                self, "Verify", f"Unknown carton QR: {code.strip().upper()}")
+                self, "Verify", f"Unknown box QR: {code.strip().upper()}")
         d = found["detail"]
         for i, r in enumerate(self._rows):
             if r["carton_no"] == d["carton_no"]:

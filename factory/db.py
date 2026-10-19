@@ -105,6 +105,7 @@ CREATE TABLE IF NOT EXISTS cartons (
   bundle_no INTEGER NOT NULL,
   box_period TEXT,
   num_reels INTEGER NOT NULL,
+  box_wt REAL NOT NULL DEFAULT 0,
   total_gross REAL NOT NULL,
   total_core REAL NOT NULL,
   total_net REAL NOT NULL,
@@ -149,6 +150,7 @@ CREATE TABLE IF NOT EXISTS dispatch_orders (
   customer TEXT NOT NULL,
   job_id INTEGER NOT NULL REFERENCES jobs(id),
   required_bundles INTEGER NOT NULL,
+  required_pieces INTEGER,
   status TEXT NOT NULL DEFAULT 'loading',
   order_date TEXT NOT NULL,
   created_at TEXT NOT NULL,
@@ -191,6 +193,20 @@ def _ensure_customer_columns(c) -> None:
         cols = {r["name"] for r in c.execute(f"PRAGMA table_info({table})").fetchall()}
         if cols and "customer" not in cols:
             c.execute(f"ALTER TABLE {table} ADD COLUMN customer TEXT DEFAULT ''")
+
+
+def _ensure_box_piece_columns(c) -> None:
+    """Additive columns for the reel-linked box + piece-based dispatch flow.
+
+    Existing rows keep their old semantics: box_wt=0 and required_pieces NULL
+    mean "legacy weight-only box / bundle-count order". No row is rewritten.
+    """
+    cols = {r["name"] for r in c.execute("PRAGMA table_info(cartons)").fetchall()}
+    if cols and "box_wt" not in cols:
+        c.execute("ALTER TABLE cartons ADD COLUMN box_wt REAL NOT NULL DEFAULT 0")
+    cols = {r["name"] for r in c.execute("PRAGMA table_info(dispatch_orders)").fetchall()}
+    if cols and "required_pieces" not in cols:
+        c.execute("ALTER TABLE dispatch_orders ADD COLUMN required_pieces INTEGER")
 
 
 def _ensure_id_counters(c) -> None:
@@ -489,6 +505,7 @@ def init_db(path: str | None = None) -> str:
             _ensure_customer_columns(c)
             _ensure_products_migration(c)
             _ensure_monthly_migration(c)
+            _ensure_box_piece_columns(c)
             _ensure_id_counters(c)
             bad = c.execute("PRAGMA foreign_key_check").fetchall()
             if bad:
@@ -528,6 +545,20 @@ def roll_code_for(period: str, seq: int) -> str:
 
 def carton_no_for(period: str, seq: int) -> str:
     return f"C{period_compact(period)}-{int(seq):04d}"
+
+
+def bare_carton_no(carton_no) -> str:
+    """Visual box number (the floor's "1"): numeric part of CYYYYMM-NNNN.
+
+    The stored code stays the DB identity (QR + audit); display strips the
+    month prefix so boxes read the same bare-number style as roll numbers.
+    Legacy or unparseable codes are returned unchanged.
+    """
+    s = str(carton_no or "").strip()
+    head, _, tail = s.rpartition("-")
+    if head[:1].upper() == "C" and tail.isdigit():
+        return str(int(tail))
+    return s
 
 
 def full_roll_label(reel: dict) -> str:

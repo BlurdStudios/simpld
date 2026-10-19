@@ -9,8 +9,9 @@ Physical Essae scale + Citizen printer NOT verified here (no hardware on
 this machine) — print paths use test fakes and are labelled as such.
 
 Covers: products reuse via dropdown (no Size/Core on New Job), product
-validation retains input, 288px preview card, distinct Stage 1 reel /
-Stage 2 independent box, ALL-reels history with exact-row select + real
+validation retains input, nested nav Reel/Box packing, 60/40 left split,
+box packing consumes loose reels and queues stickers, ALL-reels history
+with exact-row select + real
 Label printed state (printer-accepted success only), fresh-reweigh keeps
 number/time and clears printed, admin-only safe delete, real RBAC on
 direct invoke + UI, stale-read reset, no sample startup.
@@ -125,7 +126,7 @@ def test_new_job_dropdown_reuses_products_no_size_core():
     assert len(combos) >= 1, "product dropdown missing"
     btns = [b.text() for b in dlg.findChildren(QPushButton)]
     assert any("New product" in b for b in btns), btns
-    assert any("wrappers" in b.casefold() for b in btns), btns
+    assert any("pieces" in b.casefold() for b in btns), btns
     # dropdown lists both products with wrappers counts (user-visible reuse)
     items = [combos[0].itemText(i) for i in range(combos[0].count())]
     assert any("REQ UI WIDGET-160 BODY" in t and "16500" in t for t in items), items
@@ -153,7 +154,7 @@ def test_new_product_validation_retains_typed_input():
     def fake_create(name, wrappers, *a, **k):
         calls["n"] += 1
         if calls["n"] == 1:
-            raise ValueError("Wrappers/reel must be a positive whole number (e.g. 16500)")
+            raise ValueError("Pieces/reel must be a positive whole number (e.g. 16500)")
         return real_create(name, wrappers, *a, **k)
 
     def fake_exec(self):
@@ -181,22 +182,26 @@ def test_new_product_validation_retains_typed_input():
     pg.close()
 
 
-# ---- 2. preview card 288 + live type captions ----
+# ---- 2. preview split + live type captions ----
 
-def test_preview_card_288_and_live_type_captions():
+def test_preview_split_and_live_type_captions():
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QSplitter
     from factory import services as S
     p = _fresh_db()
     _login("admin")
     app, pg = _app(), _page()
     job = S.create_job_for_product(
-        S.create_product("PREV288 PROD", 16500, path=p)["id"], path=p)
+        S.create_product("PREVIEW PROD", 16500, path=p)["id"], path=p)
     _select_job(pg, job["id"])
-    # compact card: exactly 288 (+20% over the old 240 room)
-    assert pg._preview_card.maximumHeight() == 288, pg._preview_card.maximumHeight()
+    assert isinstance(pg._left_split, QSplitter)
+    assert pg._left_split.orientation() == Qt.Vertical
+    assert tuple(pg._left_split.widget(i).sizePolicy().verticalStretch()
+                 for i in range(2)) == (3, 2)
+    assert pg._left_split.indexOf(pg._preview_card) == 1
     assert pg.sticker_preview.minimumHeight() <= 80
-    assert pg._left_lay.stretch(pg._left_lay.indexOf(pg._preview_card)) == 0
     # idle: hint, no art
-    pg.mode_tab.setCurrentIndex(0)
+    pg.set_mode("reel")
     pg.gross.setValue(0)
     app.processEvents()
     assert not _has_px(pg.sticker_preview)
@@ -207,18 +212,22 @@ def test_preview_card_288_and_live_type_captions():
     assert pg.pack_mode == "reel"
     assert _has_px(pg.sticker_preview)
     assert "Type-1" in pg.sticker_cap.text() and "NO QR" in pg.sticker_cap.text()
-    # carton mode same weight: Type-2 art only
-    pg.mode_tab.setCurrentIndex(1)
+    # Box preview uses the next loose reel and queues its QR sticker.
+    S.create_reel(job["id"], gross=11.380, core=0.280, path=p)
+    pg.refresh_history()
+    pg.set_mode("carton")
     app.processEvents()
     assert pg.pack_mode == "carton"
     assert _has_px(pg.sticker_preview)
-    assert "Type-2" in pg.sticker_cap.text() and "QR" in pg.sticker_cap.text()
+    caption = pg.sticker_cap.text()
+    assert "QR" in caption and "box sticker" in caption.casefold()
+    assert "box-only" not in caption.casefold() and "independent" not in caption.casefold()
     pg.close()
 
 
-# ---- 3. stage gating: hide other controls, disarm on stale ----
+# ---- 3. nested nav modes: hide other controls, gate actions ----
 
-def test_stage_tabs_gate_controls_and_action():
+def test_nested_nav_modes_gate_controls_and_action():
     from factory import services as S
     p = _fresh_db()
     _login("packager")
@@ -229,37 +238,44 @@ def test_stage_tabs_gate_controls_and_action():
     _select_job(pg, job["id"])
     pg.show()
     app.processEvents()
-    # Stage 1: core entry visible, reel action armed only with weight
-    pg.mode_tab.setCurrentIndex(0)
+    # Reel packing shows session core and requires a fresh weight.
+    pg.set_mode("reel")
     pg.gross.setValue(0)
     app.processEvents()
-    assert pg.core_wrap.isVisible(), "Stage 1 must show core entry"
-    assert "Stage 1" in pg.stage_caption.text()
+    assert pg.core_wrap.isVisible()
+    assert pg.box_wrap.isHidden()
+    assert "Reel packing" in pg.stage_caption.text()
     assert not pg.btn_action.isEnabled() and "Weigh first" in pg.btn_action.text()
     pg.gross.setValue(11.380)
     app.processEvents()
     assert pg.btn_action.isEnabled() and "reel" in pg.btn_action.text().casefold()
-    # Stage 2: core hidden (independent box), pack armed with any box weight
-    pg.mode_tab.setCurrentIndex(1)
+    # Box packing requires loose reels as well as a measured box weight.
+    pg.set_mode("carton")
     app.processEvents()
-    assert pg.core_wrap.isHidden(), "Stage 2 boxes are independent of core"
-    assert "Stage 2" in pg.stage_caption.text() and "ndependent" in pg.stage_caption.text()
+    assert pg.core_wrap.isHidden()
+    assert pg.box_wrap.isVisible()
+    assert "Box packing" in pg.stage_caption.text()
     pg.gross.setValue(0)
     app.processEvents()
     assert not pg.btn_action.isEnabled()
-    pg.gross.setValue(10.5)
+    assert "loose" in pg.btn_action.text().casefold()
+    S.create_reel(job["id"], gross=11.380, core=0.280, path=p)
+    S.create_reel(job["id"], gross=11.120, core=0.280, path=p)
+    pg.refresh_history()
+    pg.set_mode("carton")
+    pg.gross.setValue(22.0)
     app.processEvents()
     assert pg.btn_action.isEnabled() and "Pack" in pg.btn_action.text()
-    # dispatcher is read-only on both stages (UI + direct invoke)
+    # Dispatcher is read-only (UI + direct invoke).
     _login("dispatcher")
     pg._refresh_state()
     app.processEvents()
     assert "Read-only" in pg.lcd.text()
     assert not pg.btn_action.isEnabled()
-    pg.gross.setValue(11.0)
+    pg.gross.setValue(22.0)
     pg.do_action()
     assert "Read-only" in pg.msg
-    assert S.job_reels(job["id"], path=p) == []
+    assert S.ready_stock(job["id"], path=p) == []
     pg.close()
 
 
@@ -274,7 +290,7 @@ def test_stale_scale_read_resets_card():
     job = S.create_job_for_product(prod["id"])
     _select_job(pg, job["id"])
     pg.show()
-    pg.mode_tab.setCurrentIndex(0)
+    pg.set_mode("reel")
     pg.gross.setValue(11.380)
     app.processEvents()
     assert pg.btn_action.isEnabled()
@@ -601,6 +617,9 @@ def test_fresh_startup_empty_no_sample_and_hardware_labelled():
     w = MainWindow()
     assert w.pages["jobs"].empty.isVisible() or "No jobs" in w.pages["jobs"].empty.text()
     assert "No reels yet" in w.pages["packaging"].sel_info.text()
+    assert set(w.pack_nav) == {"reel", "carton"}
+    w.pack_nav["carton"].click()
+    assert w.pages["packaging"].pack_mode == "carton"
     from factory.hardware import status as HWStatus
     states = {d["key"]: d["state"]
               for d in HWStatus.station_status("packaging")}

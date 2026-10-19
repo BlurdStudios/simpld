@@ -3,7 +3,7 @@
 Layout (portrait A4):
   PACKING SLIP (centered)
   Jobno: X   C.Name.: Y   DATE:        (DATE stays blank — handwritten on paper)
-  Job Name: ...   Wrappers/Reel: N | unknown (job snapshot only, never invented)
+  Job Name: ...   No of Pieces: N | unknown (job snapshot only, never invented)
   Reels section: one row per recorded reel.
   Boxes section: one row per EVERY carton.
   Separate reel totals, box totals and legacy box totals on the last page.
@@ -17,7 +17,7 @@ local testing without a printer), and renders the on-screen preview images.
 from __future__ import annotations
 import os
 
-from factory.db import get_conn, fmt_date_ddmmyy  # noqa: F401  (date fmt kept for parity)
+from factory.db import get_conn, fmt_date_ddmmyy, bare_carton_no  # noqa: F401  (date fmt kept for parity)
 
 ROWS_PER_PAGE = 40  # historic approx. capacity; paginate() now fits by height.
 
@@ -105,7 +105,7 @@ def get_slip(job_id: int, path: str | None = None) -> dict:
     legacy aggregate (stored carton weights) are reported separately and
     clearly distinct.
     Snapshot records only: identities/weights/roll/carton numbers come
-    straight from the DB; nothing is invented. Wrappers show only the
+    straight from the DB; nothing is invented. Pieces show only the
     job's snapshot value, else "unknown".
     """
     c = get_conn(path)
@@ -187,7 +187,7 @@ def get_slip(job_id: int, path: str | None = None) -> dict:
             "core": 0.0,
             "net": 0.0,
             "status": ct.get("status", ""),
-            "note": ("legacy reel-linked carton" if linked
+            "note": ("legacy reel-linked box" if linked
                      else "independent weighed box"),
         }
         box_rows.append(row)
@@ -339,7 +339,7 @@ def paint_page(p, area, dpi: int, slip: dict, page_rows: list[dict],
     text(QRectF(x, y, W, 6 * mm), f"Job Name: {slip['job_name']}", f_head)
     y += 6 * mm
     wpr = slip.get("wrappers_per_reel")
-    wline = f"Wrappers/Reel: {int(wpr)}" if wpr is not None else "Wrappers/Reel: unknown"
+    wline = f"No of Pieces: {int(wpr)}" if wpr is not None else "No of Pieces: unknown"
     text(QRectF(x, y, W, 6 * mm), wline, f_head)
     y += 8 * mm
 
@@ -379,7 +379,7 @@ def paint_page(p, area, dpi: int, slip: dict, page_rows: list[dict],
         return top
 
     REEL_HEAD = ("Roll identity", "GROSS WT", "CORE WT", "NET WT", "In Box")
-    BOX_HEAD = ("Carton No.", "Bundle", "BOX WT", "Type", "Rolls / Note")
+    BOX_HEAD = ("Box No.", "Bundle", "BOX WT", "Type", "Rolls / Note")
     top = y
     cur_sec: str | None = None
     # Grid segments: vertical rules run through each section's column
@@ -425,13 +425,13 @@ def paint_page(p, area, dpi: int, slip: dict, page_rows: list[dict],
         kind = _row_kind(r)
         open_section(kind)
         if kind == "Reel":
-            in_box = r.get("carton_no") or "loose"
+            in_box = bare_carton_no(r.get("carton_no")) or "loose"
             cells = [str(r.get("roll_label") or r.get("roll_no")),
                      f"{r['gross']:.3f}",
                      f"{r['core']:.2f}", f"{r['net']:.3f}", str(in_box)]
         else:
             refs = r.get("roll_refs") or r.get("rolls") or ""
-            cells = [str(r.get("carton_no", "")), str(r.get("bundle_no", "")),
+            cells = [bare_carton_no(r.get("carton_no", "")), str(r.get("bundle_no", "")),
                      f"{r['gross']:.3f}",
                      "legacy" if r.get("linked") else "indep.",
                      refs if r.get("linked") else "weighed box"]
@@ -460,10 +460,10 @@ def paint_page(p, area, dpi: int, slip: dict, page_rows: list[dict],
             f"  ·  Core {t['core']:.3f}Kgs  ·  Net {t['net']:.3f}Kgs",
             f"Box totals: {t.get('boxes', 0)} boxes"
             f"  ·  Box Wt {t.get('box_wt', 0.0):.3f}Kgs",
-            f"Legacy box totals: {t.get('legacy_cartons', 0)} cartons"
+            f"Legacy box totals: {t.get('legacy_cartons', 0)} boxes"
             f"  ·  Stored Wt {t.get('legacy_box_wt', 0.0):.3f}Kgs"
             "  (listed separately, not added)",
-            f"Total bundles/cartons:  {t['bundles']}",
+            f"Total boxes:  {t['bundles']}",
         ]
         if t.get("legacy_cartons"):
             lines.append(

@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushB
                                QFrame, QGridLayout, QAbstractItemView, QFileDialog, QLineEdit, QTabBar)
 from PySide6.QtCore import Qt
 from factory import data_access as DA
+from factory.db import bare_carton_no
 from factory.ui.styles import style_button, status_color
 from factory.ui.label_preview import PackingSlipDialog
 
@@ -54,7 +55,7 @@ class JobsPage(QWidget):
         lay.addLayout(bar)
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(
-            ["Job No", "Job Name", "Wrappers/reel", "Status", "Reels", "Ready"])
+            ["Job No", "Job Name", "Pieces/reel", "Status", "Reels", "Ready"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(44)
@@ -164,7 +165,7 @@ class JobsPage(QWidget):
         ans = QMessageBox.question(
             self, "Delete job",
             f"Delete J:{j['job_no']} {j['job_name']}?\n"
-            "Allowed only with zero reels, cartons and orders — otherwise"
+            "Allowed only with zero reels, boxes and orders — otherwise"
             " close/archive it. Production is never cascade-deleted.")
         if ans != QMessageBox.StandardButton.Yes:
             return
@@ -232,10 +233,19 @@ class HistoryPage(QWidget):
         query = self.search.text().strip().casefold()
         try:
             if tab == 3:
-                headers = ["Order", "Customer", "Job", "Required", "Loaded", "Status", "Date"]
-                rows = [[o["order_no"], o["customer"], f"J:{o['job_no']} {o['job_name']}",
-                         o["required_bundles"], o["loaded"], o["status"], o["order_date"]]
-                        for o in DA.list_orders()]
+                headers = ["Order", "Customer", "Job", "Target", "Loaded", "Status", "Date"]
+                rows = []
+                for o in DA.list_orders():
+                    if o.get("required_pieces") is not None:
+                        target = f"{int(o['required_pieces'])} pcs"
+                        loaded = (f"{int(o.get('loaded_pieces') or 0)} pcs"
+                                  f" ({int(o.get('loaded') or 0)} boxes)")
+                    else:
+                        target = f"{int(o['required_bundles'])} boxes"
+                        loaded = f"{int(o.get('loaded') or 0)}"
+                    rows.append([o["order_no"], o["customer"],
+                                 f"J:{o['job_no']} {o['job_name']}",
+                                 target, loaded, o["status"], o["order_date"]])
             else:
                 headers = ["Type", "Reference", "Full ID", "Job", "Wt · kg", "Shift",
                            "Status", "Label", "Box", "Recorded"]
@@ -244,14 +254,14 @@ class HistoryPage(QWidget):
                     records = [r for r in records if r["kind"] == ("Reel" if tab == 1 else "Box")]
                 rows = []
                 for r in records:
-                    ref = f"Roll {r['reference']}" if r["kind"] == "Reel" else r["reference"]
+                    ref = f"Roll {r['reference']}" if r["kind"] == "Reel" else bare_carton_no(r["reference"])
                     full = str(r.get("full_ref") or "")
                     n = int(r.get("print_count") or 0)
                     pst = str(r.get("print_status") or "pending")
                     label = f"Printed ×{n}" if pst == "printed" and n > 0 else "Pending"
                     rows.append([r["kind"], ref, full,
                                  f"J:{r['job_no']} {r['job_name']}", f"{r['net_weight']:.3f}", r["shift"],
-                                 r["status"], label, r["box"] or "—", r["recorded_at"][:16]])
+                                 r["status"], label, bare_carton_no(r["box"]) or "—", r["recorded_at"][:16]])
         except Exception as e:
             self.count.setText(f"Connection issue — {_err_text(e)}")
             return
@@ -332,8 +342,8 @@ class SummaryPage(QWidget):
             v = QVBoxLayout(f)
             v.setContentsMargins(12, 12, 12, 12)
             v.setSpacing(6)
-            title = {"reels_packed": "Reels packed today", "cartons_packed": "Cartons packed today",
-                     "in_stock": "Cartons in stock", "dispatched": "Cartons dispatched today",
+            title = {"reels_packed": "Reels packed today", "cartons_packed": "Boxes packed today",
+                     "in_stock": "Boxes in stock", "dispatched": "Boxes dispatched today",
                      "packed_wt": "Packed weight (Kg)", "dispatched_wt": "Dispatched weight (Kg)"}[key]
             t = QLabel(title)
             t.setProperty("field", "caption")

@@ -133,9 +133,9 @@ def test_save_pdf_full_text_and_layout():
     for r in slip["reel_rows"]:
         assert r["roll_label"] in txt, r["roll_label"]
     for b in slip["box_rows"]:
-        assert b["carton_no"] in txt, b["carton_no"]
+        assert DB.bare_carton_no(b["carton_no"]) in txt, b["carton_no"]
     assert "Reel totals" in txt and "Box totals" in txt
-    assert "Legacy box totals" in txt and "Total bundles/cartons" in txt
+    assert "Legacy box totals" in txt and "Total boxes" in txt
     assert txt.count("Page Nos.:") == len(pages), txt.count("Page Nos.:")
     for banned in ("qualified identity", "NOT added",
                    "independent boxes + legacy linked"):
@@ -204,7 +204,7 @@ def test_section_transition_paginates_before_footer():
     SP.save_pdf(job["id"], out, p)
     txt = _pdf_text(out)
     assert "C0001" in txt
-    assert "Reel totals" in txt and "Total bundles/cartons" in txt
+    assert "Reel totals" in txt and "Total boxes" in txt
     assert txt.count("Page Nos.:") == 2
 
 

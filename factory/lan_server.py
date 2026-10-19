@@ -472,6 +472,19 @@ def _h_job_reels(args: dict, actor: dict, dbp: str) -> list:
     return _svc.job_reels(_v_int(args, "job_id", minimum=1), dbp)  # type: ignore[arg-type]
 
 
+@_op("job_boxes", "read", ("job_id",))
+def _h_job_boxes(args: dict, actor: dict, dbp: str) -> list:
+    _need(args, "job_boxes", frozenset({"job_id"}))
+    return _svc.job_boxes(_v_int(args, "job_id", minimum=1), dbp)  # type: ignore[arg-type]
+
+
+@_op("pending_box_stickers", "read", ("job_id",))
+def _h_pending_box_stickers(args: dict, actor: dict, dbp: str) -> list:
+    _need(args, "pending_box_stickers", frozenset({"job_id"}))
+    jid = _v_int(args, "job_id", required=False, minimum=1)
+    return _svc.pending_box_stickers(jid, dbp)
+
+
 @_op("create_reel", "production.create",
      ("job_id", "gross", "core", "shift", "supervisor", "customer"))
 def _h_create_reel(args: dict, actor: dict, dbp: str) -> dict:
@@ -522,6 +535,24 @@ def _h_pack_weight(args: dict, actor: dict, dbp: str) -> dict:
     assert jid is not None and w is not None
     return _svc.pack_weight_carton(jid, w, shift=shift, customer=cust,
                                    path=dbp, actor=actor)
+
+
+@_op("pack_next_box", "production.create",
+     ("job_id", "gross_weight", "box_weight", "reels_per_box", "shift", "customer"))
+def _h_pack_next_box(args: dict, actor: dict, dbp: str) -> dict:
+    _need(args, "pack_next_box", frozenset(
+        {"job_id", "gross_weight", "box_weight", "reels_per_box", "shift", "customer"}))
+    jid = _v_int(args, "job_id", minimum=1)
+    gross = _v_float(args, "gross_weight", minimum=0.001, maximum=500)
+    box_wt = _v_float(args, "box_weight", minimum=0, maximum=500)
+    reels = _v_int(args, "reels_per_box", required=False, minimum=1,
+                   maximum=20, default=2) or 2
+    shift = _v_enum(args, "shift", ("DAY", "NIGHT"), required=False,
+                    default="DAY") or "DAY"
+    cust = _v_opt_str(args, "customer", max_len=128, upper=True)
+    assert jid is not None and gross is not None and box_wt is not None
+    return _svc.pack_next_box(jid, gross, box_wt, reels_per_box=reels,
+                              shift=shift, customer=cust, path=dbp, actor=actor)
 
 
 @_op("pack_carton", "production.create",
@@ -629,22 +660,29 @@ def _h_audit(args: dict, actor: dict, dbp: str) -> list:
 
 
 @_op("create_dispatch_order", "dispatch.mutate",
-     ("customer", "job_id", "required_bundles", "order_date"))
+     ("customer", "job_id", "required_bundles", "required_pieces", "order_date"))
 def _h_create_order(args: dict, actor: dict, dbp: str) -> dict:
     _need(args, "create_dispatch_order", frozenset(
-        {"customer", "job_id", "required_bundles", "order_date"}))
+        {"customer", "job_id", "required_bundles", "required_pieces", "order_date"}))
     cust = _v_str(args, "customer", max_len=256)
     jid = _v_int(args, "job_id", minimum=1)
-    n = _v_int(args, "required_bundles", minimum=1, maximum=100_000)
+    n = _v_int(args, "required_bundles", required=False, minimum=1,
+               maximum=100_000)
+    p = _v_int(args, "required_pieces", required=False, minimum=1,
+               maximum=100_000)
+    if n is None and p is None:
+        raise _ValidationError(
+            "Missing argument 'required_pieces' (or legacy 'required_bundles').")
     date = _v_opt_str(args, "order_date", default="")
     if date:
         import re as _re
         if not _re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
             raise _ValidationError(
                 "Argument 'order_date' must be YYYY-MM-DD.")
-    assert cust is not None and jid is not None and n is not None
+    assert cust is not None and jid is not None
     return _svc.create_dispatch_order(cust, jid, n,
-                                      order_date=date or None, path=dbp)
+                                      order_date=date or None, path=dbp,
+                                      required_pieces=p)
 
 
 @_op("list_orders", "report.read", ("status",))

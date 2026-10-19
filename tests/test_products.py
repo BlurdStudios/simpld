@@ -141,7 +141,7 @@ def test_jobs_page_shows_snapshot_offscreen():
     pg = JobsPage()
     pg.refresh()
     assert pg.table.columnCount() == 6
-    assert "Wrappers" in pg.table.horizontalHeaderItem(2).text()
+    assert "Pieces" in pg.table.horizontalHeaderItem(2).text()
     assert pg.table.item(0, 2).text() == "16500", "snapshot visible in Jobs UI"
     assert j["job_name"] == "UI PROD JOB"
     pg.close()

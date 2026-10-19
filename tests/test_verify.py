@@ -102,7 +102,7 @@ def test_verify_dialog_shows_order_when_dispatched():
     app.setStyleSheet(APP_QSS)
     found = S.carton_verify(ct["carton_no"], path=p)
     d = VerifyDialog(None, found)
-    assert ct["carton_no"] in d.windowTitle()
+    assert DB.bare_carton_no(ct["carton_no"]) in d.windowTitle()
     assert o["order_no"] in d.findChildren(QTextEdit)[0].toPlainText()
 
 

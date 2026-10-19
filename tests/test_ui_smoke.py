@@ -63,6 +63,25 @@ def test_role_nav_gating():
     assert not hasattr(pack, "btn_users")
     # nav is exclusive + first button checked
     assert pack.btns[0].isChecked()
+    assert pack.btns[0] is pack.pack_nav["reel"]
+    assert getattr(disp, "pack_nav", {}) == {}
+    for main in (pack, adm):
+        assert set(main.pack_nav) == {"reel", "carton"}
+        main.pack_nav["carton"].click()
+        assert main.pages["packaging"].pack_mode == "carton"
+        assert main.stack.currentIndex() == main.stack.indexOf(main.pages["packaging"])
+        main.pack_nav["reel"].click()
+        assert main.pages["packaging"].pack_mode == "reel"
+        # collapsible group: header stays, children hide, navigation re-expands
+        assert main.pack_group.is_expanded()
+        assert not main.pack_tree.isHidden()
+        main.pack_group.click()
+        assert not main.pack_group.is_expanded()
+        assert main.pack_tree.isHidden()
+        assert not main.pack_group.isHidden(), "the group header must stay"
+        main.pack_nav["carton"].click()
+        assert main.pack_group.is_expanded()
+        assert not main.pack_tree.isHidden()
     pack.close()
     disp.close()
     adm.close()
@@ -105,6 +124,10 @@ def test_tables_are_quiet_readonly():
     # packaging history: Roll/Net/Status/Label(print state), no manual-pack widgets
     pg = w.pages["packaging"]
     assert pg.table.columnCount() == 4
+    assert pg.box_table.editTriggers() == QAbstractItemView.NoEditTriggers
+    assert pg.box_table.selectionBehavior() == QAbstractItemView.SelectRows
+    assert not pg.box_table.showGrid()
+    assert pg.box_table.columnCount() == 5
     assert not hasattr(pg, "btn_select_all") and not hasattr(pg, "btn_clear")
     # history keeps production/Reels/Boxes/Dispatch tabs + search
     hp = w.pages["history"]
@@ -125,7 +148,7 @@ def test_empty_messages_and_login_state():
     w.pages["history"].refresh()
     w.pages["packaging"].refresh_history()
     assert "No jobs" in w.pages["jobs"].empty.text()
-    assert "No cartons in stock" in w.pages["stock"].count.text()
+    assert "No boxes in stock" in w.pages["stock"].count.text()
     assert "No " in w.pages["history"].count.text()
     assert "No reels yet" in w.pages["packaging"].sel_info.text()
     # dispatch is a real workspace (orders + scan + complete/cancel)
@@ -203,30 +226,38 @@ def test_jobs_single_row_selection_gating():
 
 
 def test_packaging_preview_room_and_table_fill():
-    """Preview card stays compact; weigh card gets the stretch; table fills."""
-    from PySide6.QtWidgets import QScrollArea
+    """Weigh/preview share a vertical split; the right table fills its card."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QScrollArea, QSplitter
     _fresh_db()
     _app()
     _login("admin")
     from factory.ui.main_window import MainWindow
     w = MainWindow()
     pg = w.pages["packaging"]
-    # Compact preview: small placeholder min, capped card, no surplus stretch.
+    # Weigh card scrolls above the preview in a 60/40 split.
     assert pg.sticker_preview.minimumHeight() <= 80, \
         pg.sticker_preview.minimumHeight()
-    assert pg._preview_card.maximumHeight() <= 300, \
-        pg._preview_card.maximumHeight()
-    assert pg._left_lay.stretch(pg._left_lay.indexOf(pg._preview_card)) == 0, \
-        "preview card must not hold layout stretch (weigh card gets the room)"
+    assert isinstance(pg._left_split, QSplitter)
+    assert pg._left_split.orientation() == Qt.Vertical
+    assert pg._left_split.indexOf(pg._preview_card) == 1
+    assert tuple(pg._left_split.widget(i).sizePolicy().verticalStretch()
+                 for i in range(2)) == (3, 2)
+    weigh_scroll = pg._left_split.widget(0)
+    assert isinstance(weigh_scroll, QScrollArea)
+    assert weigh_scroll.widget().isAncestorOf(pg.gross)
     lay = pg._right_lay
-    assert lay.stretch(lay.indexOf(pg.table)) == 1, "table must take the stretch"
-    assert lay.indexOf(pg.table) >= 0
+    assert pg.right_stack.currentWidget() is pg.reel_panel, \
+        "reel packing is the default workspace"
+    assert lay.stretch(lay.indexOf(pg.right_stack)) == 1, \
+        "the reel/box workspace must take the stretch"
+    rp = pg.reel_panel.layout()
+    assert rp.stretch(rp.indexOf(pg.table)) == 1, "table must take the stretch"
     assert pg._right_card.parent() is not None
-    from PySide6.QtWidgets import QWidget as _W
     p = pg._right_card.parent()
     while p is not None and not isinstance(p, QScrollArea):
         p = p.parent()
-    assert p is None, "loose-reel card must not sit inside a scroll area"
+    assert p is None, "right card must not sit inside a scroll area"
     w.close()
 
 
@@ -248,6 +279,22 @@ def test_dispatch_workspace_records_history():
     S.scan_into_order(o["id"], ct["carton_no"])
     w.pages["dispatch"].refresh()
     assert w.pages["dispatch"].order_combo.count() >= 1
+    job2 = S.create_job("PIECE JOB", core_wt=0.280)
+    for _ in range(4):
+        S.create_reel(job2["id"], gross=11.380, core=0.280)
+    boxes = [S.pack_next_box(job2["id"], 22.0, 0.300, reels_per_box=2)
+             for _ in range(2)]
+    order = S.create_dispatch_order("PIECE CO", job2["id"], required_pieces=3)
+    for box in boxes:
+        S.scan_into_order(order["id"], box["carton_no"])
+    progress = S.order_progress(order["id"])
+    assert progress["loaded_pieces"] == 4 >= progress["required_pieces"] == 3
+    assert S.complete_dispatch(order["id"])["status"] == "complete"
+    # Completion flips the loaded boxes and their reels to dispatched.
+    assert S.ready_stock(job2["id"]) == []
+    reels2 = S.job_reels(job2["id"])
+    assert len(reels2) == 4 and all(r["status"] == "dispatched" for r in reels2), \
+        [r["status"] for r in reels2]
     assert S.production_history(), "history must survive dispatch operations"
     w.close()
 

@@ -68,7 +68,7 @@ shared-file SQLite access, no DB copy/sync, and no offline local-write mode.
     nothing is written anywhere — reconnect, press Refresh, confirm the
     record is (not) there, then retry. Writes are attempted exactly once;
     an unknown-outcome write is never auto-retried (retrying blindly can
-    create a duplicate reel/carton/order — always refresh first).
+    create a duplicate reel/box/order — always refresh first).
   - `Session expired` (401): sign out and sign in again; stale tokens are
     never silently re-used.
 - Hostname/IP verification is always on. Login failures raise `LanAuthError`;

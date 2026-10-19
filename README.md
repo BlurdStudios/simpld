@@ -62,25 +62,25 @@ state resets. Factory floor: plain `python3 run.py` (no watcher).
 
 ## Workflow (matches old system + new decoupling)
 
-1. **Packaging — ONE scale, explicit Reel/Carton mode (no auto-detect)**
-   - Put a reel on the scale → READ SCALE → weight looks like 1 reel → SAVE + PRINT **Type-1 reel sticker (NO QR)** — bordered table (Company + J:no, Job Name, Date/No of Reels, Gross/Core/Net, big Roll No#). No customer, shift or supervisor on the sticker. The single preview under the Weigh card shows reel art while weighing, carton art when a carton is detected. Stick it on the reel, drop the reel in the carton.
-   - Put each packed carton on the scale → READ SCALE → weight matches 2–3 loose reels (±0.150 Kg, covers the empty carton — no box tare to type) → carton auto-detects and PACK enables immediately → PACK + PRINT **Type-2 carton sticker (WITH QR)** — same table + carton/bundle/rolls band, QR box with `C0007`. QR = `VASAVI:C0007`. Scanner types `C0007` + Enter.
+1. **Packaging — nested Reel packing / Box packing workspaces (no weight auto-detect)**
+   - **Reel packing** — set the session core weight once, weigh one reel → SAVE + PRINT **Type-1 reel sticker (NO QR)** — bordered table (Company + J:no, Job Name, Date/No of Reels, No of Pieces, Gross/Core/Net, big bare Roll No#). No customer, shift or supervisor on the sticker. The preview under the weigh card shows reel art here (box art in Box packing). Stick it on the reel, then the reel waits loose for Box packing.
+   - **Box packing** — set the session box/tare weight once (it applies to every box). Weigh the packed box: the next loose reels in production order are consumed into it, and PACK creates the box **without printing**. The Type-2 box sticker (WITH QR) is queued and printed one-by-one from the sticker queue (reprint available); it shows `Bundle:n · Rolls:24,25` and the bare box number once under the QR. QR = `VASAVI:<box code>`; the scanner accepts the QR or the plain code + Enter.
    - Fixed stock: 4 x 3 in Citizen media (101.6 x 76.2 mm @203dpi). No size options.
-   - Note: the carton layout is inferred from the reel-sticker photo — send a carton-sticker photo to correct it.
-   - Loose-reel list is display-only (no checkboxes / Select all / Clear / manual packing). PACK needs a live scale reading and is blocked on weight mismatch (±0.150 kg); ambiguous matches need explicit confirmation, stale detections clear automatically.
-2. **Ready Stock** — cartons with status Ready. No customer shown. Reprint QR, Packing Slip (A4 match of the old paper slip: left data table, right print preview, office-printer box + Save PDF). **Scan QR to verify**: scan any carton (Ready or dispatched) to see its batch + box details and dispatch status.
-3. **Dispatch** — New order (customer + product job + required bundles) → click SCAN box → scan each carton QR → progress Required/Loaded/Remaining → COMPLETE. Mismatch + duplicates blocked.
-4. **Jobs** — reusable **products master** (product name + wrappers/reel, a
+   - Note: the box layout is inferred from the reel-sticker photo — send a box-sticker photo to correct it.
+   - The loose-reel list is display-only (no checkboxes / Select all / Clear): Box packing always consumes the next loose reels in production order. PACK validates the gross weight, the session box/tare and the reels-per-box limit before writing anything.
+2. **Ready Stock** — boxes with status Ready, listed by bare box number. No customer shown. Search by number, code or job; reprint sticker, Packing Slip (A4 match of the old paper slip: left data table, right print preview, office-printer box + Save PDF). **Scan QR to verify**: scan any box (Ready or dispatched) to see its batch + box details and dispatch status.
+3. **Dispatch** — New order (customer + product job + required pieces; a 2-reel box counts as 2 pieces) → click SCAN box → scan each box QR → progress Required/Loaded in pieces → COMPLETE once the target is reached (the crossing box is accepted whole, so 21 required may load 22). Legacy bundle orders stay exact. Mismatch + duplicates blocked.
+4. **Jobs** — reusable **products master** (product name + pieces/reel, a
     positive whole number). New packaging jobs pick an existing product from
     the dropdown; add a product once in the same New-job area, then reuse it
-    across sessions. Each job snapshots the product name + wrappers count, so
+    across sessions. Each job snapshots the product name + pieces count, so
     later catalog edits cannot rewrite history. Legacy job names were
-    backfilled as products with wrappers *unknown* (never invented). Size /
+    backfilled as products with pieces *unknown* (never invented). Size /
     Core fields no longer appear in the new-job dialog; legacy size/core data
     stays in the DB and reel core behavior is unchanged. Customer lives on the
     **dispatch order** only — never on stickers.
    - QR stays an opaque ID (`VASAVI:Cxxxx`). No public lookup: distributor/software side stays protected; public data needs a client decision first. In-app scanner verification covers the floor need.
-5. **History / Summary** — dispatch log + daily totals (reels/cartons/stock/dispatched/weights) + CSV export for future dashboard upload + **Evening backup** (timestamped DB copy — run before closing the computer).
+5. **History / Summary** — dispatch log + daily totals (reels/boxes/stock/dispatched/weights) + CSV export for future dashboard upload + **Evening backup** (timestamped DB copy — run before closing the computer).
 
 ## Branding (Simpl'd identity, parent Blur'd)
 
@@ -146,9 +146,9 @@ Design constraints that are deliberate — do not "fix" them without re-checking
 ## Numbering (continues old series)
 
 - Job No: integer from 4169 (old was at 4168)
-- Roll No: per-job 1,2,3…
+- Roll No: monthly global 1,2,3… (resets each month across all jobs)
 - Bundle No: per-job 1,2,3… (packing-slip row)
-- Carton No: global `C0001…` (QR identity)
+- Box No: monthly global — stored/QR as `CYYYYMM-NNNN`; stickers and tables show the bare number (`1`, `24`)
 - Order No: `DO-0001…`
 
 ## Devices (3 devices, 2 stations, auto-detected)
@@ -177,9 +177,9 @@ it never silently falls back to a mock scale. Full detail in
 - `factory/hardware/devices.py` — shared instances from `config.load`
   (file `data/hardware.json`, env overrides). Blank port/name = demo/mock.
 - The scanner is a USB keyboard wedge: click a scan box and scan (Enter).
-- Weighing is explicit Reel/Carton mode chosen by the operator — the scale
-  never auto-detects the object type from weight.
-- While the mock scale is active, Packaging shows small Mock rows — Reel/Carton on scale (weigh simulation) and Test data (+3 test reels, Pack test carton for dummy data). They hide themselves on real hardware.
+- Weighing follows the selected workspace (Reel packing / Box packing) — the
+  scale never auto-detects the object type from weight.
+- While the mock scale is active, Packaging shows small Mock rows — Reel/Box on scale (weigh simulation) and Test data (+3 test reels, Pack test box for dummy data). They hide themselves on real hardware.
 - **Demo mode (training / no-hardware demos)** — the Packaging device strip
   has a **Demo** button: one click (plus a confirm) simulates the weigh
   machine and label printer on a PC with nothing plugged in. Weights are
@@ -188,7 +188,7 @@ it never silently falls back to a mock scale. Full detail in
   production. `SIMPLD_DEMO=1` forces it on at launch (per-machine setting in
   `hardware.json`).
 - Fresh databases start **empty** (schema only — production bootstrap never
-  creates jobs, reels, cartons, orders or logins; the first-run admin is set
+  creates jobs, reels, boxes, orders or logins; the first-run admin is set
   up in the login dialog). Test fixtures live in `seed_sample_data()`
   (test-only) and demo data is never written by production startup.
 

@@ -2,7 +2,8 @@
 from __future__ import annotations
 from PySide6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
                                QPushButton, QStackedWidget, QLabel, QButtonGroup)
-from PySide6.QtCore import Signal, QTimer, QSize
+from PySide6.QtCore import Signal, QTimer, QSize, Qt, QPointF, QEvent
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from factory import data_access as DA
 from factory.hardware import devices as DEV  # noqa: F401  (applies env/file config)
 from factory.ui.page_packaging import PackagingPage
@@ -32,6 +33,112 @@ NAV_ICON = {
     "history": "history",
     "summary": "summary",
 }
+
+
+class NavGroupButton(QPushButton):
+    """Collapsible nav-group header (glyph + label + chevron).
+
+    The chevron is painted rather than parented: hover and click then cover the
+    whole row (the `navGroup` QSS reserves the right-hand room via padding).
+    """
+
+    def __init__(self, text: str = "", parent: QWidget | None = None):
+        super().__init__(text, parent)
+        self._expanded = True
+
+    def is_expanded(self) -> bool:
+        return self._expanded
+
+    def set_expanded(self, on: bool) -> None:
+        on = bool(on)
+        if on != self._expanded:
+            self._expanded = on
+            self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        pen = QPen(QColor("#52525B"), 1.7)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        cx = self.width() - 12 - 8          # 8 = half the 16px chevron slot
+        cy = self.height() / 2
+        path = QPainterPath()
+        if self._expanded:                  # ^ — the open state (click closes)
+            path.moveTo(cx - 4.5, cy + 2.5)
+            path.lineTo(cx, cy - 2.5)
+            path.lineTo(cx + 4.5, cy + 2.5)
+        else:                               # v — collapsed (click opens)
+            path.moveTo(cx - 4.5, cy - 2.5)
+            path.lineTo(cx, cy + 2.5)
+            path.lineTo(cx + 4.5, cy - 2.5)
+        p.drawPath(path)
+
+
+class NavTree(QWidget):
+    """Indented child rows of a nav group, tied to it by the guide rail.
+
+    One quiet vertical connector runs the height of the block and every child
+    gets an elbow stub curving into its glyph. Accent marks the rail (and the
+    active child's elbow); everything else stays hairline grey — matching the
+    sidebar reference the group was drawn from.
+    """
+
+    RAIL_X = 18.0        # left inset of the vertical connector
+    ELBOW_R = 12.0       # corner radius of the stubs
+    STUB_END = 40.0      # px; the stub stops just short of the child glyph
+    TOP_OVER = 20.0      # how far the rail reaches above the first child
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(34, 2, 0, 6)
+        lay.setSpacing(2)
+        self._rows: list[QPushButton] = []
+
+    def add_row(self, btn: QPushButton) -> None:
+        self._rows.append(btn)
+        self.layout().addWidget(btn)
+
+    def _stub(self, y: float) -> QPainterPath:
+        """The elbow that leaves the rail into a child row centred on y."""
+        r = self.ELBOW_R
+        path = QPainterPath(QPointF(self.RAIL_X, y - r))
+        path.quadTo(QPointF(self.RAIL_X, y), QPointF(self.RAIL_X + r, y))
+        path.lineTo(self.STUB_END, y)
+        return path
+
+    def paintEvent(self, event):
+        if not self._rows:
+            return
+        ys = [w.geometry().center().y() for w in self._rows]
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        pen_accent = QPen(QColor(BRAND.ACCENT), 2.0)
+        pen_grey = QPen(QColor("#D4D4D8"), 1.5)
+        for pen in (pen_accent, pen_grey):
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        # Quiet elbows for every child but the last one...
+        p.setPen(pen_grey)
+        for y in ys[:-1]:
+            p.drawPath(self._stub(y))
+        # ...the rail itself, which turns into the last child's elbow.
+        r = self.ELBOW_R
+        rail = QPainterPath(QPointF(self.RAIL_X, ys[0] - self.TOP_OVER))
+        if len(ys) > 1:
+            rail.lineTo(self.RAIL_X, ys[-1] - r)
+        rail.quadTo(QPointF(self.RAIL_X, ys[-1]), QPointF(self.RAIL_X + r, ys[-1]))
+        rail.lineTo(self.STUB_END, ys[-1])
+        p.setPen(pen_accent)
+        p.drawPath(rail)
+        # The active child keeps an accent elbow of its own; the rail's last
+        # corner already points at the bottom row.
+        for w in self._rows[:-1]:
+            if w.isChecked():
+                p.drawPath(self._stub(w.geometry().center().y()))
 
 
 class MainWindow(QMainWindow):
@@ -111,14 +218,51 @@ class MainWindow(QMainWindow):
                 page = factory()
             self.pages[key] = page
 
+        self.pack_nav: dict[str, QPushButton] = {}
+        shortcut_n = 0
+
         for i, key in enumerate(keys):
             label, _ = PAGES[key]
+            if key == "packaging":
+                # Collapsible group: an ink header row (glyph + label +
+                # chevron) over an indented children block. Both children map
+                # to the same stack page; they only differ by the page mode.
+                hdr = NavGroupButton("   " + label)
+                hdr.setMinimumHeight(40)
+                hdr.setToolTip("Packaging workspaces — click to collapse or expand")
+                style_button(hdr, "navGroup")
+                self._set_nav_icon(hdr, NAV_ICON.get("packaging"))
+                hdr.clicked.connect(self._toggle_pack_group)
+                side.addWidget(hdr)
+                self.pack_group = hdr
+                tree = NavTree()
+                for clabel, cmode, cicon in (("Reel packing", "reel", "reel"),
+                                             ("Box packing", "carton", "box")):
+                    cb = QPushButton("   " + clabel)
+                    cb.setCheckable(True)
+                    cb.setMinimumHeight(36)
+                    style_button(cb, "navChild")
+                    self._set_nav_icon(cb, cicon, px=16)
+                    cb.setToolTip("Packaging workspace: " + clabel.lower())
+                    shortcut_n += 1
+                    cb.setShortcut(f"F{shortcut_n}")
+                    self.nav.addButton(cb, i)
+                    cb.clicked.connect(
+                        lambda _=False, m=cmode: self._activate_packaging(m))
+                    tree.add_row(cb)
+                    self.btns.append(cb)
+                    self.pack_nav[cmode] = cb
+                side.addWidget(tree)
+                self.pack_tree = tree
+                self.stack.addWidget(self.pages[key])
+                continue
             b = QPushButton("   " + label)
             b.setCheckable(True)
             b.setMinimumHeight(40)
             style_button(b, "nav")
             self._set_nav_icon(b, NAV_ICON.get(key))
-            b.setShortcut(f"F{i + 1}")
+            shortcut_n += 1
+            b.setShortcut(f"F{shortcut_n}")
             self.nav.addButton(b, i)
             side.addWidget(b)
             self.btns.append(b)
@@ -170,16 +314,21 @@ class MainWindow(QMainWindow):
         # ---- pages ----
         lay.addWidget(self.stack, 1)
         self.nav.buttonClicked.connect(lambda b: self.stack.setCurrentIndex(self.nav.id(b)))
-        self.btns[0].setChecked(True)
+        if self.pack_nav:
+            # The first nav row is the packaging workspace; its default mode
+            # is Reel packing (the page applies it in its constructor).
+            self.pack_nav["reel"].setChecked(True)
+            self._activate_packaging("reel")
+        else:
+            self.btns[0].setChecked(True)
         self.stack.setCurrentIndex(0)
+        self.statusBar().showMessage(
+            f"F1–F{shortcut_n}: switch pages."
+            + (" Shared packager DB — auto-refresh every 15s." if DA.is_lan() else ""))
         if DA.is_lan():
-            self.statusBar().showMessage(
-                "LAN mode: shared packager DB. F1–F6: switch pages. Auto-refresh every 15s.")
             self._lan_timer = QTimer(self)
             self._lan_timer.timeout.connect(self._lan_refresh)
             self._lan_timer.start(15000)
-        else:
-            self.statusBar().showMessage("F1–F6: switch pages.")
 
         # One silent update check per process, a few seconds after the window
         # is up (frozen fleet builds only; see factory/ui/update_ui.py). The
@@ -190,19 +339,61 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    def _set_nav_icon(self, btn, name: str | None) -> None:
+    def _toggle_pack_group(self) -> None:
+        self._set_pack_expanded(not self.pack_group.is_expanded())
+
+    def _set_pack_expanded(self, on: bool) -> None:
+        """Show/hide the packaging children block (the header row stays)."""
+        if not hasattr(self, "pack_group"):
+            return
+        self.pack_group.set_expanded(on)
+        self.pack_tree.setVisible(on)
+
+    def _activate_packaging(self, mode: str) -> None:
+        """Switch the packaging page to a nested workspace (reel/carton)."""
+        self._set_pack_expanded(True)
+        pack = self.pages.get("packaging")
+        if pack is None or not hasattr(pack, "set_mode"):
+            return
+        try:
+            pack.set_mode(mode)
+        except Exception:
+            pass
+
+    def _set_nav_icon(self, btn, name: str | None, px: int = 18) -> None:
         """Attach a brand glyph and keep it in sync with the checked state.
 
-        The accent nav pill is dark, so the white `-on` variant is swapped in
-        whenever the row is the active page (or a hovered row is pressed).
+        The active nav row is a white card carrying an accent glyph, so the
+        `-accent` variant replaces the default one while the row is the
+        active page. This is also where nav rows start watching focus, so the
+        accent ring is reserved for keyboard navigation (see eventFilter).
         """
         if not name:
             return
         btn.setProperty("navIcon", name)
-        btn.setIconSize(QSize(18, 18))
-        btn.setIcon(BRAND.icon(name, on=btn.isChecked()))
+        btn.installEventFilter(self)
+        btn.setIconSize(QSize(px, px))
+        btn.setIcon(BRAND.icon(
+            name, variant="accent" if btn.isChecked() else "default"))
         btn.toggled.connect(
-            lambda on, b=btn, n=name: b.setIcon(BRAND.icon(n, on=on)))
+            lambda on, b=btn, n=name: b.setIcon(BRAND.icon(
+                n, variant="accent" if on else "default")))
+
+    # Focus reasons that count as keyboard navigation. Mouse/tab-bar clicks
+    # focus the row too, but must not paint the accent ring.
+    _KB_FOCUS = (Qt.FocusReason.TabFocusReason,
+                 Qt.FocusReason.BacktabFocusReason,
+                 Qt.FocusReason.ShortcutFocusReason)
+
+    def eventFilter(self, obj, event):
+        """Keyboard-only focus ring on nav rows (QSS keys off `kbFocus`)."""
+        if event.type() in (QEvent.Type.FocusIn, QEvent.Type.FocusOut):
+            on = (event.type() == QEvent.Type.FocusIn
+                  and event.reason() in self._KB_FOCUS)
+            if on != bool(obj.property("kbFocus")):
+                obj.setProperty("kbFocus", on)
+                style_button(obj, obj.property("kind") or "nav")
+        return super().eventFilter(obj, event)
 
     def show_about(self):
         from factory.ui.splash import AboutDialog

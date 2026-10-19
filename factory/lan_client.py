@@ -228,6 +228,15 @@ class LanClient:
     def job_reels(self, job_id: int) -> list:
         return self.call("job_reels", {"job_id": job_id})
 
+    def job_boxes(self, job_id: int) -> list:
+        return self.call("job_boxes", {"job_id": job_id})
+
+    def pending_box_stickers(self, job_id: int | None = None) -> list:
+        args: dict = {}
+        if job_id is not None:
+            args["job_id"] = job_id
+        return self.call("pending_box_stickers", args)
+
     def ready_stock(self, job_id: int | None = None) -> list:
         args: dict = {}
         if job_id is not None:
@@ -348,6 +357,16 @@ class LanClient:
                           "shift": shift, "customer": customer},
                          request_id=request_id)
 
+    def pack_next_box(self, job_id: int, gross_weight: float, box_weight: float,
+                      reels_per_box: int = 2, shift: str = "DAY",
+                      customer: str = "",
+                      request_id: str | None = None) -> dict:
+        return self.call("pack_next_box",
+                         {"job_id": job_id, "gross_weight": gross_weight,
+                          "box_weight": box_weight, "reels_per_box": reels_per_box,
+                          "shift": shift, "customer": customer},
+                         request_id=request_id)
+
     def pack_carton(self, job_id: int, reel_ids: list[int], shift: str = "DAY",
                     customer: str | None = None,
                     request_id: str | None = None) -> dict:
@@ -368,11 +387,15 @@ class LanClient:
         return self.call("mark_carton_printed", {"carton_id": carton_id})
 
     def create_dispatch_order(self, customer: str, job_id: int,
-                              required_bundles: int,
+                              required_bundles: int | None = None,
                               order_date: str | None = None,
+                              required_pieces: int | None = None,
                               request_id: str | None = None) -> dict:
-        args: dict = {"customer": customer, "job_id": job_id,
-                      "required_bundles": required_bundles}
+        args: dict = {"customer": customer, "job_id": job_id}
+        if required_bundles is not None:
+            args["required_bundles"] = required_bundles
+        if required_pieces is not None:
+            args["required_pieces"] = required_pieces
         if order_date:
             args["order_date"] = order_date
         return self.call("create_dispatch_order", args,

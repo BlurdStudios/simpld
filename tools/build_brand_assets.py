@@ -44,10 +44,12 @@ INK_SOFT = "#D4D3DC"        # icon default on light surfaces -> overridden below
 TILE_TOP = "#33323D"
 TILE_BOT = "#141318"
 
-# In-app icon strokes. `default` sits on the #F4F4F5 sidebar, `on` is used
-# when a nav row is checked (white text on the near-black pill).
+# In-app icon strokes. `default` sits on the #F4F4F5 sidebar, `accent` marks
+# the active nav row, `on` is white for dark surfaces (kept for the lockup /
+# any checked control on a filled background).
 ICON_DEFAULT = "#52525B"    # zinc-600
 ICON_ON = "#FFFFFF"
+ICON_ACCENT = ACCENT        # violet-600
 
 STROKE = 1.7                # 24px grid
 
@@ -341,7 +343,8 @@ def main() -> int:
         for stem, _p in mark_svgs.items():
             render(_p, os.path.join(BRAND_DIR, f"{stem}-{px}.png"), px)
 
-    # 3. in-app icon set, default + `-on` (checked nav row) variants.
+    # 3. in-app icon set, default + `-accent` (active nav row) + `-on`
+    #    (white, dark surfaces) variants.
     #    Rendered at 24/32/48/64 so HiDPI (150%/200% Windows scaling) stays
     #    crisp instead of upscaling a 24px bitmap.
     names = list_icons()
@@ -355,7 +358,8 @@ def main() -> int:
     for name in names:
         with open(icon_svg_path(name), encoding="utf-8") as fh:
             base_svg = fh.read()
-        for suffix, color in (("", ICON_DEFAULT), ("-on", ICON_ON)):
+        for suffix, color in (("", ICON_DEFAULT), ("-on", ICON_ON),
+                              ("-accent", ICON_ACCENT)):
             # Vendored files carry stroke="currentColor"; swap in the real hex
             # so Qt's renderer (which has no CSS engine) can draw them.
             write_svg(scratch, base_svg.replace("currentColor", color))
@@ -388,7 +392,7 @@ def main() -> int:
           f"{os.path.relpath(SVG_DIR, ROOT)}/{','.join(s + '.svg' for s in mark_svgs)}")
     print(f"simpld.ico      -> {os.path.relpath(ico_path, ROOT)} "
           f"({len(frames)} frames: {', '.join(str(s) for s in ico_sizes)})")
-    print(f"icons           -> {len(names)} glyphs x 2 variants x "
+    print(f"icons           -> {len(names)} glyphs x 3 variants x "
           f"{len(icon_sizes)} sizes = {len(written)} PNGs in "
           f"{os.path.relpath(BRAND_DIR, ROOT)}")
     try:

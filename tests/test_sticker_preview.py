@@ -75,7 +75,7 @@ def test_reel_weigh_shows_only_reel_art():
     S.create_reel(job["id"], gross=11.380, core=0.280, path=p)
     app, pg = _page()
     _select_job(pg, job["id"])
-    pg.mode_tab.setCurrentIndex(0)  # explicit reel mode
+    pg.set_mode("reel")  # explicit reel mode
     pg.gross.setValue(11.380)
     app.processEvents()
     assert pg.pack_mode == "reel"
@@ -83,35 +83,54 @@ def test_reel_weigh_shows_only_reel_art():
     assert "reel" in pg.sticker_cap.text().casefold(), pg.sticker_cap.text()
 
 
-def test_box_preview_in_carton_mode_needs_no_reels():
-    """Weight-only carton art from the scale weight alone; nothing guessed."""
+def test_box_preview_needs_loose_reels_then_renders_art():
+    """Box previews need loose reels; linked and legacy sticker art both render."""
     from factory.hardware import labels as L
+    from factory.ui.label_preview import carton_label_text
     p = _fresh_db()
     job = S.create_job("PREVIEW BOX JOB", core_wt=0.280, path=p)
     app, pg = _page()
     _select_job(pg, job["id"])
     assert not hasattr(pg, "cust") and not hasattr(pg, "sup"), \
         "no customer/shift/supervisor inputs on the page"
-    pg.mode_tab.setCurrentIndex(1)  # explicit carton mode
+    pg.set_mode("carton")
     pg.gross.setValue(10.5)
     app.processEvents()
     assert pg.pack_mode == "carton"
-    assert pg.btn_action.isEnabled(), "valid box weight must arm PACK"
-    assert _has_px(pg.sticker_preview), "carton art must render"
-    assert "carton" in pg.sticker_cap.text().casefold(), pg.sticker_cap.text()
-    # bordered grid prints dark (top border pixel row); box-only, no rolls
-    detail = S.carton_detail(S.pack_weight_carton(job["id"], 10.5, path=p)["id"], path=p)
-    assert detail["reels"] == [] and detail["num_reels"] == 0
-    from factory.ui.label_preview import carton_label_text as _clt
-    assert "Roll" not in _clt(detail), _clt(detail)
-    img = L.render_carton(detail)
-    assert img.size[0] == 812, img.size  # 4in @203dpi
-    dark = sum(1 for x in range(0, img.size[0], 7) if sum(img.getpixel((x, 1))[:3]) < 120)
-    assert dark > img.size[0] // 7 * 0.9, "top border row must print dark"
+    assert not pg.btn_action.isEnabled()
+    assert "loose" in pg.sticker_preview.text().casefold()
+    assert not _has_px(pg.sticker_preview)
+
+    S.create_reel(job["id"], gross=11.380, core=0.280, path=p)
+    S.create_reel(job["id"], gross=11.120, core=0.280, path=p)
+    pg.refresh_history()
+    pg.set_mode("carton")
+    pg.gross.setValue(22.0)
+    app.processEvents()
+    assert pg.btn_action.isEnabled()
+    assert _has_px(pg.sticker_preview), "box art must render"
+    assert "WITH QR" in pg.sticker_cap.text(), pg.sticker_cap.text()
+
+    ct = S.pack_next_box(job["id"], 22.0, 0.300, reels_per_box=2, path=p)
+    detail = S.carton_detail(ct["id"], path=p)
+    assert detail["num_reels"] == 2
+    assert detail["box_wt"] == 0.300
+    assert sorted(detail["rolls"]) == [1, 2]
+    assert [r["roll_no"] for r in detail["reels"]] == [1, 2]
+    assert all(type(r["roll_no"]) is int for r in detail["reels"])
+
+    wt = S.carton_detail(S.pack_weight_carton(job["id"], 10.5, path=p)["id"], path=p)
+    assert wt["reels"] == [] and wt["num_reels"] == 0 and wt["box_wt"] == 0.0
+    assert "Roll" not in carton_label_text(wt), carton_label_text(wt)
+    for sticker in (detail, wt):
+        img = L.render_carton(sticker)
+        assert img.size == (812, 609), img.size
+        dark = sum(1 for x in range(0, img.size[0], 7) if sum(img.getpixel((x, 1))[:3]) < 120)
+        assert dark > img.size[0] // 7 * 0.9, "top border row must print dark"
 
 
 def test_mode_switch_changes_preview_only_without_writes():
-    """Same scale weight, Reel<->Carton tabs: preview swaps, PACK follows mode."""
+    """Same scale weight, reel/box modes: preview swaps, PACK follows mode."""
     p = _fresh_db()
     job = S.create_job("SUGGEST JOB 1", core_wt=0.280, path=p)
     S.create_reel(job["id"], gross=11.380, core=0.280, path=p)
@@ -119,17 +138,17 @@ def test_mode_switch_changes_preview_only_without_writes():
     _select_job(pg, job["id"])
     before_reels = S.loose_reels(job["id"], path=p)
     before_stock = S.ready_stock(path=p)
-    pg.mode_tab.setCurrentIndex(0)
+    pg.set_mode("reel")
     pg.gross.setValue(11.380)
     app.processEvents()
     assert "reel" in pg.sticker_cap.text().casefold()
     assert _has_px(pg.sticker_preview)
-    pg.mode_tab.setCurrentIndex(1)
+    pg.set_mode("carton")
     app.processEvents()
     assert pg.pack_mode == "carton"
     assert pg.btn_action.isEnabled() and "Pack" in pg.btn_action.text()
-    assert "carton" in pg.sticker_cap.text().casefold()
-    assert _has_px(pg.sticker_preview), "box-only carton art must render"
+    assert "box" in pg.sticker_cap.text().casefold() and "QR" in pg.sticker_cap.text()
+    assert _has_px(pg.sticker_preview), "box art must render"
     assert S.loose_reels(job["id"], path=p) == before_reels
     assert S.ready_stock(path=p) == before_stock
 
@@ -182,10 +201,10 @@ def test_preview_writes_nothing():
     before_stock = S.ready_stock(path=p)
     _, pg = _page()
     _select_job(pg, job["id"])
-    pg.mode_tab.setCurrentIndex(0)
+    pg.set_mode("reel")
     pg.gross.setValue(11.380)
     pg._render_previews()
-    pg.mode_tab.setCurrentIndex(1)
+    pg.set_mode("carton")
     pg._render_previews()
     assert S.loose_reels(job["id"], path=p) == before_reels
     assert S.ready_stock(path=p) == before_stock
@@ -210,17 +229,27 @@ def test_preview_fits_padded_bounds_on_resize():
     Usable area = label contentsRect (Qt subtracts the actual stylesheet
     padding/border). The displayed pixmap must fit within it, keep
     the 4:3 sticker aspect, fill one dimension (no excessive blank area),
-    and the card must stay compact (<=260px tall).
+    within the vertical weigh/preview splitter (stretch factors 3:2).
     """
     p = _fresh_db()
     job = S.create_job("PREVIEW RESIZE JOB", core_wt=0.280, path=p)
     app, pg = _page()
     _select_job(pg, job["id"])
-    pg.mode_tab.setCurrentIndex(0)
+    pg.set_mode("reel")
     pg.gross.setValue(11.380)
     pg.show()
     pg.resize(1100, 750)
     app.processEvents()
+
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QScrollArea, QSplitter
+    left = pg._left_split
+    assert isinstance(left, QSplitter)
+    assert left.orientation() == Qt.Vertical
+    assert left.count() == 2
+    assert isinstance(left.widget(0), QScrollArea)
+    assert left.widget(1) is pg._preview_card
+    assert tuple(left.widget(i).sizePolicy().verticalStretch() for i in range(2)) == (3, 2)
 
     lbl = pg.sticker_preview
     assert lbl.pixmap() is not None and not lbl.pixmap().isNull()
@@ -247,8 +276,6 @@ def test_preview_fits_padded_bounds_on_resize():
         from PySide6.QtWidgets import QSizePolicy as _SP
         assert lbl.sizePolicy().horizontalPolicy() == _SP.Ignored, tag
         assert lbl.minimumHeight() == 0, (tag, lbl.minimumHeight())
-        assert pg._preview_card.height() <= 260, \
-            (tag, pg._preview_card.height())
 
     _check_fits("large")
     # Shrink the window: layout compresses the label, the filter rescales
@@ -263,7 +290,7 @@ if __name__ == "__main__":
     test_stock_fixed_4x3in_no_height_option()
     test_idle_shows_hint_not_art()
     test_reel_weigh_shows_only_reel_art()
-    test_box_preview_in_carton_mode_needs_no_reels()
+    test_box_preview_needs_loose_reels_then_renders_art()
     test_mode_switch_changes_preview_only_without_writes()
     test_reel_table_art_matches_photo_layout()
     test_reel_sticker_shows_no_of_pieces()

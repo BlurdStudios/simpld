@@ -1,10 +1,12 @@
 """Dispatch workspace: customer orders, bay scanning, load tracking.
 
-Loading flow: dispatcher creates an order (customer + product job + exact
-bundle count), scans Ready cartons (QR or plain code) into the loading
-order, then completes ONLY when loaded == required (exact count — partial
-loads cannot complete, overloading is blocked at scan time). Cancelling is
-allowed only while loading; completed/cancelled orders are immutable.
+Loading flow: dispatcher creates an order (customer + product job + pieces
+required), scans Ready boxes (QR or plain code) into the loading order.
+Pieces are reels: a 2-reel box = 2 pieces. Scanning stops once the piece
+target is reached — the crossing box is accepted whole (21 needed, 2-reel
+boxes: 22 loaded). Completion requires loaded pieces >= required; legacy
+bundle orders (required_pieces NULL) stay exact. Cancelling is allowed only
+while loading; completed/cancelled orders are immutable.
 
 Authorization is session-resolved and distinct from production: dispatch
 mutations require dispatch.mutate (dispatcher/admin); deletions stay
@@ -17,6 +19,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QCombo
                                QAbstractItemView, QSpinBox, QSizePolicy)
 from PySide6.QtCore import Qt
 from factory import data_access as DA
+from factory.db import bare_carton_no
 from factory.hardware import status as HWStatus
 from factory.ui.styles import style_button, set_banner
 from factory.ui.device_strip import DeviceStrip
@@ -91,22 +94,22 @@ class DispatchPage(QWidget):
         # ---- scan row ----
         scan = QHBoxLayout()
         scan.setSpacing(8)
-        scan.addWidget(self._caption("Scan carton QR:"))
+        scan.addWidget(self._caption("Scan box QR:"))
         self.scan = QLineEdit()
         self.scan.setMinimumHeight(48)
-        self.scan.setPlaceholderText("Scan or type carton code, Enter to load")
+        self.scan.setPlaceholderText("Scan or type box code, Enter to load")
         self.scan.setClearButtonEnabled(True)
         scan.addWidget(self.scan, 1)
         self.btn_unscan = QPushButton("Remove")
         self.btn_unscan.setMinimumHeight(48)
         style_button(self.btn_unscan, "secondary")
-        self.btn_unscan.setToolTip("Remove the selected carton (loading orders only).")
+        self.btn_unscan.setToolTip("Remove the selected box (loading orders only).")
         scan.addWidget(self.btn_unscan)
         root.addLayout(scan)
 
         # ---- loaded table ----
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Carton", "Net · kg", "Scanned"])
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["Box", "Reels", "Net · kg", "Scanned"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(44)
@@ -177,6 +180,16 @@ class DispatchPage(QWidget):
             msg = str(e) or "Request failed."
         return msg
 
+    def _need_text(self, o: dict) -> str:
+        """Order target as seen by the floor: pieces for new orders, legacy
+        bundle counts for old rows (required_pieces NULL)."""
+        try:
+            if o.get("required_pieces") is not None:
+                return f"{int(o.get('loaded_pieces') or 0)}/{int(o['required_pieces'])} pcs"
+            return f"{int(o.get('loaded') or 0)}/{int(o.get('required_bundles') or 0)} boxes"
+        except Exception:
+            return "?"
+
     # ----- data -----
     def refresh(self, select_id: int | None = None):
         try:
@@ -189,7 +202,7 @@ class DispatchPage(QWidget):
         self.order_combo.clear()
         for o in orders:
             self.order_combo.addItem(
-                f"{o['order_no']} → {o['customer']} ({o['loaded']}/{o['required_bundles']}, {o['status']})",
+                f"{o['order_no']} → {o['customer']} ({self._need_text(o)}, {o['status']})",
                 userData=o["id"])
             if select_id and o["id"] == select_id:
                 self.order_combo.setCurrentIndex(self.order_combo.count() - 1)
@@ -238,23 +251,31 @@ class DispatchPage(QWidget):
         for it in self._loaded:
             r = self.table.rowCount()
             self.table.insertRow(r)
-            self.table.setItem(r, 0, QTableWidgetItem(str(it.get("carton_no") or "")))
-            self.table.setItem(r, 1, QTableWidgetItem(f"{float(it.get('total_net') or 0):.3f}"))
-            self.table.setItem(r, 2, QTableWidgetItem(str(it.get("scanned_at") or "")[:16]))
+            self.table.setItem(r, 0, QTableWidgetItem(bare_carton_no(it.get("carton_no") or "")))
+            n = int(it.get("num_reels") or 0)
+            self.table.setItem(r, 1, QTableWidgetItem(str(n) if n else "—"))
+            self.table.setItem(r, 2, QTableWidgetItem(f"{float(it.get('total_net') or 0):.3f}"))
+            self.table.setItem(r, 3, QTableWidgetItem(str(it.get("scanned_at") or "")[:16]))
         self.table.blockSignals(False)
         for o in self._rows:
             if o["id"] == self.order_id:
                 o["loaded"] = prog.get("loaded", 0)
+                o["loaded_pieces"] = prog.get("loaded_pieces", 0)
                 o["remaining"] = prog.get("remaining", 0)
         o = self.selected_order()
         if o:
+            if o.get("required_pieces") is not None:
+                counts = (f"loaded {prog.get('loaded', 0)} boxes /"
+                          f" {prog.get('loaded_pieces', 0)} pcs of {int(o['required_pieces'])}")
+            else:
+                counts = f"loaded {prog.get('loaded', 0)}/{int(o.get('required_bundles') or 0)} boxes"
             self._set_progress(
                 f"{o['order_no']} → {o['customer']} · J:{o.get('job_no','')} {o.get('job_name','')} · "
-                f"loaded {prog.get('loaded',0)}/{o['required_bundles']} · {o['status']}",
+                f"{counts} · {o['status']}",
                 _ORDER_BANNER.get(str(o.get('status') or '').lower(), "neutral"))
             self.order_combo.setItemText(
                 self.order_combo.currentIndex(),
-                f"{o['order_no']} → {o['customer']} ({prog.get('loaded',0)}/{o['required_bundles']}, {o['status']})")
+                f"{o['order_no']} → {o['customer']} ({self._need_text(o)}, {o['status']})")
         self._update_buttons()
 
     def _update_buttons(self):
@@ -298,9 +319,9 @@ class DispatchPage(QWidget):
             combo.addItem(f"J:{j['job_no']} — {j['job_name']}", userData=j["id"])
         f.addRow("Product job:", combo)
         need = QSpinBox()
-        need.setRange(1, 500)
-        need.setValue(1)
-        f.addRow("Bundles required:", need)
+        need.setRange(1, 5000)
+        need.setValue(2)
+        f.addRow("Pieces required:", need)
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         f.addRow(bb)
         bb.accepted.connect(d.accept)
@@ -310,13 +331,15 @@ class DispatchPage(QWidget):
         if not cust.text().strip():
             return self.say("Customer name required.", ok=False, kind="warning")
         try:
-            o = DA.create_dispatch_order(cust.text(), combo.currentData(), int(need.value()))
+            o = DA.create_dispatch_order(cust.text(), combo.currentData(),
+                                         required_pieces=int(need.value()))
         except (ValueError, PermissionError) as e:
             return self.say(str(e), ok=False)
         except Exception as e:
             return self.say(f"Connection issue: {self._err(e)}"
                             " Refresh, check the order exists, then retry.", ok=False)
-        self.say(f"Order {o['order_no']} created ({o['required_bundles']} bundles).", ok=True)
+        self.say(f"Order {o['order_no']} created"
+                 f" ({int(o['required_pieces'])} pieces required).", ok=True)
         self.refresh(select_id=o["id"])
 
     def do_scan(self):
@@ -326,7 +349,7 @@ class DispatchPage(QWidget):
             return self.say("Create/select an order first.", ok=False, kind="warning")
         text = self.scan.text()
         if not (text or "").strip():
-            return self.say("Scan the carton QR again.", ok=False, kind="warning")
+            return self.say("Scan the box QR again.", ok=False, kind="warning")
         try:
             ct = DA.scan_into_order(self.order_id, text)
         except (ValueError, PermissionError) as e:
@@ -341,7 +364,9 @@ class DispatchPage(QWidget):
         # this app — flip the scanner pill to active (see hardware/status.py).
         HWStatus.note_scan()
         self.devices.refresh()
-        self.say(f"{ct['carton_no']} loaded.", ok=True)
+        n = int(ct.get("num_reels") or 0)
+        self.say(f"Box {bare_carton_no(ct['carton_no'])} loaded"
+                 + (f" ({n} reel{'s' if n != 1 else ''})." if n else "."), ok=True)
         self.refresh_loaded()
         if self.on_stock_changed:
             self.on_stock_changed()
@@ -360,7 +385,7 @@ class DispatchPage(QWidget):
             return self.say("Create/select an order first.", ok=False, kind="warning")
         cid = self.selected_carton_id()
         if cid is None:
-            return self.say("Select a loaded carton row first.", ok=False, kind="warning")
+            return self.say("Select a loaded box row first.", ok=False, kind="warning")
         try:
             DA.remove_from_order(self.order_id, cid)
         except (ValueError, PermissionError) as e:
@@ -368,7 +393,7 @@ class DispatchPage(QWidget):
         except Exception as e:
             return self.say(f"Connection issue: {self._err(e)}"
                             " Refresh before retrying.", ok=False)
-        self.say("Carton removed (order still loading).", ok=True)
+        self.say("Box removed (order still loading).", ok=True)
         self.refresh_loaded()
         if self.on_stock_changed:
             self.on_stock_changed()
@@ -378,10 +403,15 @@ class DispatchPage(QWidget):
             return self.say("Dispatcher or admin only.", ok=False)
         if self.order_id is None:
             return self.say("Create/select an order first.", ok=False, kind="warning")
-        ans = QMessageBox.question(
-            self, "Complete dispatch",
-            "Complete this order? Cartons leave Ready stock.\n"
-            "Requires the exact bundle count — partial loads are blocked.")
+        o = self.selected_order()
+        if o and o.get("required_pieces") is not None:
+            body = ("Complete this order? Boxes leave Ready stock.\n"
+                    f"Requires {int(o['required_pieces'])} pieces (reels) —"
+                    " the last box may overshoot by its reel count.")
+        else:
+            body = ("Complete this order? Boxes leave Ready stock.\n"
+                    "Requires the exact bundle count — partial loads are blocked.")
+        ans = QMessageBox.question(self, "Complete dispatch", body)
         if ans != QMessageBox.StandardButton.Yes:
             return
         try:
@@ -392,7 +422,12 @@ class DispatchPage(QWidget):
             return self.say(f"Connection issue: {self._err(e)}"
                             " Refresh the order before retrying — it may have completed.",
                             ok=False)
-        self.say(f"Order {done['order_no']} dispatched ({done['loaded']} cartons).", ok=True)
+        if done.get("required_pieces") is not None:
+            self.say(f"Order {done['order_no']} dispatched"
+                     f" ({done.get('loaded', 0)} boxes, {done.get('loaded_pieces', 0)} pieces).",
+                     ok=True)
+        else:
+            self.say(f"Order {done['order_no']} dispatched ({done['loaded']} boxes).", ok=True)
         self.refresh(select_id=self.order_id)
         if self.on_stock_changed:
             self.on_stock_changed()
@@ -404,7 +439,7 @@ class DispatchPage(QWidget):
             return self.say("Create/select an order first.", ok=False, kind="warning")
         ans = QMessageBox.question(
             self, "Cancel order",
-            "Cancel this loading order? Scanned cartons return to Ready.\n"
+            "Cancel this loading order? Scanned boxes return to Ready.\n"
             "Completed orders cannot be cancelled.")
         if ans != QMessageBox.StandardButton.Yes:
             return
@@ -415,7 +450,7 @@ class DispatchPage(QWidget):
         except Exception as e:
             return self.say(f"Connection issue: {self._err(e)}"
                             " Refresh before retrying.", ok=False)
-        self.say("Order cancelled — cartons back to Ready.", ok=True)
+        self.say("Order cancelled — boxes back to Ready.", ok=True)
         self.refresh(select_id=self.order_id)
         if self.on_stock_changed:
             self.on_stock_changed()
