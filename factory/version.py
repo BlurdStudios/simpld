@@ -8,9 +8,9 @@ installer can never disagree.
 
 Release procedure: bump this value in the commit you tag.
 
-    VERSION = "1.0.1"   ->   git tag v1.0.1 && git push origin v1.0.1
+    VERSION = "1.0.2"   ->   git tag v1.0.2 && git push origin v1.0.2
 
 See UPDATES.md.
 """
 
-VERSION = "1.0.1"
+VERSION = "1.0.2"
