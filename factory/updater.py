@@ -3,9 +3,11 @@
 Three "release channels" deliver the same contract — an Inno Setup installer
 plus a SHA-256 for it, published together:
 
-- **github** — the company repo (default `BlurdStudios/simpld`) publishes one
-  GitHub Release per `vX.Y.Z` tag; the assets are `Simpld-Setup-X.Y.Z.exe`
-  and its `.sha256`. Works wherever the machine has internet.
+- **github** — the public release mirror (default
+  `BlurdStudios/simpld-releases`) publishes one GitHub Release per `vX.Y.Z`
+  tag; the assets are `Simpld-Setup-X.Y.Z.exe` and its `.sha256`. The source
+  repo is private; the mirror carries installers only, so this channel needs
+  no token and works wherever the machine has internet.
 - **lan** — the packager computer serves its updates folder over the existing
   HTTPS LAN service (`GET /updates/latest.json`, `GET /updates/<file>`, see
   factory/lan_server.py). Works with no internet at all.
@@ -58,7 +60,7 @@ from dataclasses import dataclass, replace
 
 log = logging.getLogger("simpld.updater")
 
-DEFAULT_REPO = "BlurdStudios/simpld"
+DEFAULT_REPO = "BlurdStudios/simpld-releases"
 GITHUB_API = "https://api.github.com/repos/{repo}/releases/latest"
 
 USER_AGENT = "Simpld-Updater/1 (+https://github.com/BlurdStudios/simpld)"

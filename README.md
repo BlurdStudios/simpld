@@ -27,16 +27,17 @@ stays silent when offline). Data in `data/factory.db` (SQLite). Print log in
 ## Updates (automatic, WiFi / LAN)
 
 The app updates itself: it checks silently a few seconds after the window
-opens (GitHub Releases where there is internet, the packager's LAN channel
-where there is none, a local folder on the packager) and offers verified
-installs via **About → Check for updates**. Every installer is SHA-256
-verified before it runs; a failure never blocks the floor.
+opens (the public release mirror where there is internet, the packager's LAN
+channel where there is none, a local folder on the packager) and offers
+verified installs via **About → Check for updates**. Every installer is
+SHA-256 verified before it runs; a failure never blocks the floor.
 
 Releasing a version = bump `factory/version.py`, then
 `git tag v1.0.1 && git push origin v1.0.1` — CI runs the tests, builds the
-installer, writes its checksum and publishes the GitHub Release the fleet
-updates from. Full procedures (LAN publishing, security properties,
-troubleshooting): **UPDATES.md**.
+installer, writes its checksum and publishes it to the public release mirror
+the fleet updates from. The source repo stays private; the mirror carries
+binaries only. Full procedures (mirror setup, LAN publishing, security
+properties, troubleshooting): **UPDATES.md**.
 
 ## Logins (offline, same software, different doors)
 

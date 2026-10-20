@@ -274,6 +274,12 @@ def test_default_sources_env(monkeypatch, tmp_path):
     lan = U.default_sources()[0]
     assert (lan.host, lan.port, lan.ca_cert) == ("192.168.1.10", 8443,
                                                  "/tmp/ca.pem")
+    # The default GitHub channel is the public release mirror: the source
+    # repo is private, so installed copies cannot read its releases.
+    assert U.default_sources()[-1].repo == "BlurdStudios/simpld-releases"
+
+    monkeypatch.setenv("SIMPLD_UPDATE_REPO", "example/fork")
+    assert U.default_sources()[-1].repo == "example/fork"
 
     monkeypatch.setenv("SIMPLD_UPDATE_GITHUB", "0")
     assert "github" not in [s.name for s in U.default_sources()]

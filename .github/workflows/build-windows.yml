@@ -181,14 +181,47 @@ jobs:
             dist/Simpld-Setup-*.exe
             dist/Simpld-Setup-*.exe.sha256
 
-      - name: Publish GitHub Release (version tags only)
+      # The source repo is private, so its releases are unreadable to an
+      # installed copy checking anonymously (the API 404s without a token).
+      # Only the installer and its checksum go to the public mirror; the
+      # updater reads that mirror with no credentials (see UPDATES.md).
+      - name: Publish to the public release mirror (version tags only)
         if: github.ref_type == 'tag'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          MIRROR_TOKEN: ${{ secrets.RELEASE_MIRROR_TOKEN }}
+          MIRROR_REPO: ${{ vars.RELEASE_MIRROR_REPO }}
         run: |
+          if (-not $env:MIRROR_TOKEN) {
+            throw "RELEASE_MIRROR_TOKEN is not set. Add a fine-grained PAT with Contents: write on the public mirror repo (UPDATES.md, 'Release mirror setup')."
+          }
+          $mirror = if ($env:MIRROR_REPO) { $env:MIRROR_REPO.Trim() } else { "BlurdStudios/simpld-releases" }
+
           # pwsh does not expand wildcards for native commands — resolve
           # the two asset paths first (gh does not glob either).
           $exe = (Get-ChildItem dist/Simpld-Setup-*.exe | Select-Object -First 1).FullName
+          if (-not $exe) { throw "installer missing" }
           $sha = "$exe.sha256"
-          gh release create "${{ github.ref_name }}" "$exe" "$sha" --title "Simpl'd $env:APP_VERSION" --generate-notes
+
+          # Notes come from THIS repo's history: the mirror has no source
+          # commits, so --generate-notes there would be empty.
+          $notes = gh api --method POST "repos/${{ github.repository }}/releases/generate-notes" `
+            -f tag_name="${{ github.ref_name }}" --jq .body
+          if ($LASTEXITCODE -ne 0) { throw "could not generate release notes" }
+          $notes | Out-File -Encoding utf8 release-notes.md
+
+          # Re-running a tag must be safe: refresh the assets in place
+          # instead of failing on an existing release.
+          $env:GH_TOKEN = $env:MIRROR_TOKEN
+          gh release view "${{ github.ref_name }}" -R $mirror *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload "${{ github.ref_name }}" $exe $sha -R $mirror --clobber
+            if ($LASTEXITCODE -ne 0) { throw "uploading assets to $mirror failed" }
+            gh release edit "${{ github.ref_name }}" -R $mirror --title "Simpl'd $env:APP_VERSION" --notes-file release-notes.md
+          } else {
+            gh release create "${{ github.ref_name }}" $exe $sha -R $mirror `
+              --title "Simpl'd $env:APP_VERSION" --notes-file release-notes.md
+          }
+          if ($LASTEXITCODE -ne 0) { throw "publishing to $mirror failed" }
+          echo "Published ${{ github.ref_name }} to $mirror"

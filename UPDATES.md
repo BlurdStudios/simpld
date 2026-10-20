@@ -6,7 +6,7 @@ SHA-256. The app never installs anything whose hash it cannot verify.
 
 | channel | who uses it | needs internet |
 |---------|-------------|----------------|
-| **GitHub Releases** on `BlurdStudios/simpld` | any PC with internet | yes |
+| **GitHub Releases** on the public mirror `BlurdStudios/simpld-releases` | any PC with internet | yes |
 | **LAN channel** — `/updates` on the packager's HTTPS service | dispatcher PC(s) | no |
 | **Local folder** — `<app data>/updates` (`SIMPLD_UPDATE_DIR`) | the packager itself (USB / share) | no |
 
@@ -41,20 +41,46 @@ install directory.
    ```
 
 3. CI (`.github/workflows/build-windows.yml`) runs the test suite, builds the
-   Windows installer, writes `Simpld-Setup-1.0.1.exe.sha256`, and publishes a
-   **GitHub Release** with both files. If the tag does not match
-   `factory/version.py` the build fails before anything is released — the
+   Windows installer, writes `Simpld-Setup-X.Y.Z.exe.sha256`, and publishes a
+   **GitHub Release** to the public mirror with both files. If the tag does not
+   match `factory/version.py` the build fails before anything is released — the
    tag, the About dialog and the installer can never disagree.
-4. Copy the release body into release notes at will — it is shown in the
-   update prompt (`--generate-notes` fills it from commits).
+4. The release body is generated from the private repo's commits and is shown
+   in the update prompt. Edit it on the mirror if you want operator-facing
+   wording instead.
 
 That is the whole release process. Every internet-connected machine picks the
-update up on its next launch; machines on the isolated LAN need step 4 below.
+update up on its next launch; machines on the isolated LAN need the next
+section.
+
+## Release mirror setup (one time)
+
+The source repo is **private**; GitHub does not serve releases from a private
+repo to an unauthenticated client (the API returns 404). The app therefore
+reads a **public mirror** that contains only release binaries — never source.
+No token ships in the app.
+
+1. Create a public repo, `BlurdStudios/simpld-releases`, with a README and no
+   code. Keep it public.
+2. Create a **fine-grained personal access token** scoped to that repo only:
+   *Repository access:* only `simpld-releases`; *Permissions:* **Contents:
+   Read and write** (Metadata is implicit). Set a long expiry and a reminder.
+3. In the **private** repo: *Settings → Secrets and variables → Actions* →
+   add the secret **`RELEASE_MIRROR_TOKEN`** with that token.
+4. Optional: add the repository **variable** `RELEASE_MIRROR_REPO` if the
+   mirror lives at a different `owner/name`. The workflow defaults to
+   `BlurdStudios/simpld-releases`.
+5. Set the private repo's visibility to private. The tag build publishes with
+   the token; installed copies keep reading the public mirror.
+
+If the mirror name ever changes, update `DEFAULT_REPO` in
+`factory/updater.py` and ship a build that carries the new name. Machines can
+also override it per-machine with `SIMPLD_UPDATE_REPO`.
 
 ## Publishing to the LAN channel (no-internet factory)
 
 On any machine with internet, download `Simpld-Setup-X.Y.Z.exe` from the
-GitHub release. Move it to the packager computer, then:
+release mirror. Move it to the packager computer, then:
 
 ```
 python3 tools/publish_update.py Simpld-Setup-1.0.1.exe \
@@ -92,13 +118,18 @@ back. `--prune` deletes older installers from the folder after publishing.
   `latest.json` and files matching `Simpld-Setup-*.exe[.sha256]` from the
   configured folder — no directory listing, no traversal, nothing else.
   It is unauthenticated by design (machines update before anyone logs in);
-  it exposes exactly the bytes that are public on the GitHub release anyway.
+  it exposes exactly the bytes that are public on the release mirror anyway.
+- **Private source, public binaries.** The source repo is private; only the
+  installer and its checksum are mirrored. The installer is a PyInstaller
+  bundle, so treat what it contains as extractable — no credentials or
+  secrets belong in the client.
 - **Known gap: code signing.** The installer is unsigned, so SmartScreen/UAC
   shows "Unknown publisher". When Blur'd has a code-signing certificate, sign
   `Simpld.exe` + the installer in CI; nothing else changes. Until then the
   SHA-256 + HTTPS are the integrity story.
-- Release integrity is GitHub account security: keep 2FA on the org and
-  restrict who can push tags.
+- Release integrity is GitHub account security: keep 2FA on the BlurdStudios
+  account, keep the mirror token scoped to `simpld-releases`, and restrict who
+  can push tags to the private repo.
 
 ## Switches (environment, per machine)
 
@@ -106,7 +137,7 @@ back. `--prune` deletes older installers from the folder after publishing.
 |----------|--------|
 | `SIMPLD_UPDATE_DISABLE=1` | no update checks at all (kill switch) |
 | `SIMPLD_UPDATE_GITHUB=0` | skip the GitHub channel (fully offline fleet) |
-| `SIMPLD_UPDATE_REPO=owner/name` | check a different repo (fork/testing) |
+| `SIMPLD_UPDATE_REPO=owner/name` | check a different repo (default: the public mirror) |
 | `SIMPLD_UPDATE_DIR=/path` | local updates folder (packager / USB) |
 | `SIMPLD_UPDATE_FORCE=1` | allow the startup check in a source (dev) run |
 | `SIMPLD_SERVER_HOST/PORT/CA_CERT` | existing LAN wiring — also selects the LAN update channel |
@@ -116,8 +147,14 @@ back. `--prune` deletes older installers from the folder after publishing.
 - **No toast, no update.** Expected when offline, already current, or
   `SIMPLD_UPDATE_DISABLE=1`. Check `%LOCALAPPDATA%\Simpld\logs\simpld.log`
   for lines from `simpld.updater` (each channel's miss/failure is logged).
-- **"No newer version was found" but GitHub has one.** The machine cannot
+- **"No newer version was found" but the mirror has one.** The machine cannot
   reach `api.github.com` — use the LAN channel (above), or a local folder.
+  If the log shows `HTTP 404 from https://api.github.com/repos/...`, the
+  updater is pointing at a repo it cannot read. It must point at the public
+  mirror (`SIMPLD_UPDATE_REPO` overrides it); releases in the private repo are
+  invisible to installed copies by design.
+- **Tag build fails: `RELEASE_MIRROR_TOKEN is not set`.** Complete
+  *Release mirror setup* above, then re-run the tag build.
 - **Update prompt appears, install fails at UAC.** The Windows account needs
   administrator approval (or admin credentials) for this one step. The
   running version stays unaffected.
