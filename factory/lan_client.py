@@ -243,6 +243,9 @@ class LanClient:
             args["job_id"] = job_id
         return self.call("ready_stock", args)
 
+    def ready_stock_summary(self) -> dict:
+        return self.call("ready_stock_summary", {})
+
     def find_carton(self, scan_text: str) -> dict | None:
         return self.call("find_carton", {"scan_text": scan_text})
 

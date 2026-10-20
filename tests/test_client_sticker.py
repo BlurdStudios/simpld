@@ -203,6 +203,33 @@ def test_progressive_piece_alert_thresholds():
         "Target reached — over by 180 pcs.", "warning")
 
 
+def test_ready_stock_summary_single_aggregate(tmp_path):
+    """Picker stock brackets: one GROUP BY, boxes/coils/pieces per job."""
+    p = _db(tmp_path)
+    job = _product_job(p, wrappers=1000)
+    _box(p, job, [11.38, 11.12])          # 2 coils
+    _box(p, job, [11.20, 11.10, 11.00])   # 3 coils
+    legacy = S.create_job("LEGACY NO WPR", core_wt=0.280, path=p)
+    _box(p, legacy, [11.38])
+    summ = S.ready_stock_summary(path=p)
+    assert summ[job["id"]] == {"boxes": 2, "coils": 5, "pieces": 5000}
+    assert summ[legacy["id"]] == {"boxes": 1, "coils": 1, "pieces": None}
+    # A loaded (dispatched) box leaves Ready, so it leaves the summary.
+    order = S.create_dispatch_order("SUMMARY CO", job["id"],
+                                    required_pieces=2000,
+                                    customer_po="PO-S", path=p)
+    first = S.ready_stock(job["id"], path=p)[0]
+    S.scan_into_order(order["id"], first["carton_no"], path=p)
+    S.complete_dispatch(order["id"], path=p)
+    summ = S.ready_stock_summary(path=p)
+    assert summ[job["id"]]["boxes"] == 1
+
+    from factory.ui.page_dispatch import _compact_pcs
+    assert _compact_pcs(116220) == "1.2L"
+    assert _compact_pcs(9500) == "9.5k"
+    assert _compact_pcs(999) == "999"
+
+
 def test_migration_adds_columns_and_backfills_box_numbers(tmp_path):
     p = _db(tmp_path)
     job = _product_job(p, wrappers=1000)

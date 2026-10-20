@@ -1183,6 +1183,37 @@ def ready_stock(job_id: int | None = None, path: str | None = None) -> list[dict
         c.close()
 
 
+def ready_stock_summary(path: str | None = None) -> dict:
+    """Ready-stock totals per job in ONE aggregate query (no per-job reads).
+
+    Returns {job_id: {"boxes": n, "coils": n, "pieces": n|None}}. Pieces is
+    None when the job has no wrappers-per-reel count (legacy rows). Used by
+    the New dispatch order dialog so the picker shows live stock in
+    brackets without N extra round trips (matters on the LAN backend).
+    """
+    c = get_conn(path)
+    try:
+        rows = c.execute(
+            "SELECT ct.job_id AS job_id, COUNT(*) AS boxes,"
+            " COALESCE(SUM(ct.num_reels), 0) AS coils,"
+            " j.wrappers_per_reel AS wpr"
+            " FROM cartons ct JOIN jobs j ON j.id=ct.job_id"
+            " WHERE ct.status='Ready' GROUP BY ct.job_id").fetchall()
+        out: dict = {}
+        for r in rows:
+            jid = int(r["job_id"])
+            coils = int(r["coils"] or 0)
+            try:
+                wpr = int(r["wpr"] or 0)
+            except (TypeError, ValueError):
+                wpr = 0
+            out[jid] = {"boxes": int(r["boxes"] or 0), "coils": coils,
+                        "pieces": coils * wpr if wpr > 0 else None}
+        return out
+    finally:
+        c.close()
+
+
 def find_carton(scan_text: str, path: str | None = None) -> dict | None:
     cn = parse_scan(scan_text)
     if not cn:

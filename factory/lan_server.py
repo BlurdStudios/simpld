@@ -603,6 +603,12 @@ def _h_ready_stock(args: dict, actor: dict, dbp: str) -> list:
     return _svc.ready_stock(jid, dbp)
 
 
+@_op("ready_stock_summary", "stock.read", ())
+def _h_ready_stock_summary(args: dict, actor: dict, dbp: str) -> dict:
+    _need(args, "ready_stock_summary", frozenset())
+    return _svc.ready_stock_summary(dbp)
+
+
 @_op("find_carton", "stock.read", ("scan_text",))
 def _h_find_carton(args: dict, actor: dict, dbp: str) -> dict | None:
     _need(args, "find_carton", frozenset({"scan_text"}))

@@ -498,6 +498,14 @@ def carton_detail(carton_id: int) -> dict:
     return _svc.carton_detail(carton_id)
 
 
+def ready_stock_summary() -> dict:
+    """Per-job Ready totals in one query (dialog picker; LAN-safe)."""
+    if backend() == "lan":
+        return _lan_client().ready_stock_summary()
+    from . import services as _svc
+    return _svc.ready_stock_summary()
+
+
 def ready_stock(job_id: int | None = None) -> list:
     if backend() == "lan":
         return _lan_client().ready_stock(job_id)

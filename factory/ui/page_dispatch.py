@@ -58,6 +58,19 @@ def _piece_alert(loaded: int, required: int, unit: str = "pcs"):
     return None
 
 
+def _compact_pcs(pcs) -> str:
+    """Short stock count for picker labels: 116220 -> '1.2L', 9500 -> '9.5k'."""
+    try:
+        p = int(pcs)
+    except (TypeError, ValueError):
+        return "—"
+    if p >= 100_000:
+        return f"{p / 100_000:.1f}L"
+    if p >= 1_000:
+        return f"{p / 1_000:.1f}k"
+    return f"{p:,}"
+
+
 def _toast(parent, text: str, ok: bool = True, kind: str | None = None):
     try:
         from factory.ui.toast import toast as _show
@@ -402,6 +415,14 @@ class DispatchPage(QWidget):
         if not jobs:
             return self.say("No open jobs — create a packaging job first.", ok=False)
         by_id = {int(j["id"]): j for j in jobs}
+        # Live Ready totals for the picker: ONE aggregate query (local or one
+        # LAN round trip), never per-job reads. Non-fatal — the dialog still
+        # opens with plain labels if the backend can't answer.
+        try:
+            _raw = DA.ready_stock_summary() or {}
+            stock = {int(k): (v or {}) for k, v in _raw.items()}
+        except Exception:
+            stock = {}
         d = QDialog(self)
         d.setWindowTitle("New dispatch order")
         f = QFormLayout(d)
@@ -410,9 +431,26 @@ class DispatchPage(QWidget):
         cust.setMinimumWidth(360)
         f.addRow("Customer:", cust)
         combo = QComboBox()
-        combo.setMinimumWidth(360)
+        combo.setMinimumWidth(480)
         for j in jobs:
-            combo.addItem(f"J:{j['job_no']} — {j['job_name']}", userData=j["id"])
+            jid = int(j["id"])
+            s = stock.get(jid, {})
+            boxes = int(s.get("boxes") or 0)
+            coils = int(s.get("coils") or 0)
+            pcs = s.get("pieces")
+            if boxes <= 0:
+                have = "no ready stock"
+            elif pcs is None:
+                have = (f"{boxes} box{'es' if boxes != 1 else ''} · "
+                        f"{coils} coil{'s' if coils != 1 else ''}")
+            else:
+                have = (f"{boxes} box{'es' if boxes != 1 else ''} · "
+                        f"{coils} coil{'s' if coils != 1 else ''} · "
+                        f"{_compact_pcs(pcs)} pcs")
+            label = f"J:{j['job_no']} — {j['job_name']} [{have}]"
+            combo.addItem(label, userData=j["id"])
+            combo.setItemData(combo.count() - 1, label,
+                              Qt.ItemDataRole.ToolTipRole)
         f.addRow("Product job:", combo)
         hint = QLabel("")
         hint.setWordWrap(True)
@@ -449,13 +487,23 @@ class DispatchPage(QWidget):
 
         def update_hint():
             w = current_wpr()
+            jid = int(combo.currentData() or 0)
+            s = stock.get(jid, {})
+            boxes = int(s.get("boxes") or 0)
+            if s.get("pieces") is None:
+                avail = (f"Ready stock: {boxes} box{'es' if boxes != 1 else ''}."
+                         if boxes else "Ready stock: none — pack boxes first.")
+            else:
+                avail = (f"Ready stock: {boxes} box{'es' if boxes != 1 else ''} · "
+                         f"{int(s.get('coils') or 0):,} coils · "
+                         f"{int(s['pieces']):,} pcs.")
             if w > 0:
-                hint.setText(f"Pieces per coil: {w:,}. "
+                hint.setText(f"{avail} Pieces per coil: {w:,}. "
                              "The order target is total wrappers (pieces).")
                 hint.setStyleSheet("")
                 save_btn.setEnabled(True)
             else:
-                hint.setText("This job has no wrappers-per-reel count. "
+                hint.setText(f"{avail} This job has no wrappers-per-reel count. "
                              "Set it on the product/job first.")
                 hint.setStyleSheet("color: #B45309; font-weight: 600;")
                 save_btn.setEnabled(False)
