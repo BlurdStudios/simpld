@@ -294,6 +294,10 @@ def test_dispatch_workspace_records_history():
     assert progress["loaded_pieces"] == 10000 >= progress["required_pieces"] == 6000
     assert [it["client_box_no"] for it in progress["items"]] == [1, 2]
     assert progress["customer_po"] == "4500048181"
+    # Client box numbers are the bare 1..N sequence, not 01/02 padding.
+    dp = w.pages["dispatch"]
+    dp.refresh(select_id=order["id"])
+    assert [dp.table.item(r, 0).text() for r in range(dp.table.rowCount())] == ["1", "2"]
     assert S.complete_dispatch(order["id"])["status"] == "complete"
     # Completion flips the loaded boxes and their reels to dispatched.
     assert S.ready_stock(job2["id"]) == []

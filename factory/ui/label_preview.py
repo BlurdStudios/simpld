@@ -401,7 +401,7 @@ class ClientLabelDialog(QDialog):
         self._detail, self._printer = dict(detail), printer
         self._img = LabelArt.render_client_box(self._detail)
         self.setWindowTitle(
-            f"Client sticker — BOX {int(self._detail.get('client_box_no') or 1):02d}")
+            f"Client sticker — BOX {int(self._detail.get('client_box_no') or 1)}")
         self.setMinimumWidth(980)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 16, 16, 16)
@@ -414,7 +414,7 @@ class ClientLabelDialog(QDialog):
         n = int(self._detail.get("num_coils") or len(self._detail.get("coils") or []))
         pieces = int(self._detail.get("total_pieces") or 0)
         hd = QLabel(
-            f"BOX {box:02d} · {n} coil{'s' if n != 1 else ''} · "
+            f"BOX {box} · {n} coil{'s' if n != 1 else ''} · "
             f"{pieces:,} pcs · {LabelArt.WIDE_WIDTH_MM:.0f} × {h_mm:.0f} mm")
         hd.setProperty("dialog", "desc")
         hd.setWordWrap(True)
@@ -452,7 +452,7 @@ class ClientLabelDialog(QDialog):
         from PySide6.QtWidgets import QFileDialog
         box = int(self._detail.get("client_box_no") or 1)
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save sticker PNG", f"client-box-{box:02d}.png",
+            self, "Save sticker PNG", f"client-box-{box}.png",
             "PNG image (*.png)")
         if not path:
             return
@@ -476,7 +476,7 @@ class ClientLabelDialog(QDialog):
                 self, "Could not print",
                 "Could not print. Check the printer and try again.")
         from factory.ui.toast import toast
-        toast(self, f"Client sticker BOX {int(self._detail.get('client_box_no') or 1):02d}"
+        toast(self, f"Client sticker BOX {int(self._detail.get('client_box_no') or 1)}"
                     " sent to the printer.")
         self.accept()
 

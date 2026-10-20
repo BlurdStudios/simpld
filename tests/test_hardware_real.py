@@ -222,6 +222,17 @@ def _fake_qt(monkey_state, begin_ok=True):
             return monkey_state["layout"]
 
         def pageRect(self, unit):
+            # Derive the printable area from the requested page layout so the
+            # same fake covers the 4x3 Citizen and the 210mm-wide client stock.
+            lay = monkey_state.get("layout")
+            if lay is not None:
+                try:
+                    full = lay.fullRect(G.QPageLayout.Millimeter)
+                    return QRect(0, 0,
+                                 int(round(full.width() / 25.4 * 203)),
+                                 int(round(full.height() / 25.4 * 203)))
+                except Exception:
+                    pass
             return QRect(0, 0, 812, 609)  # 4x3in @203dpi full-bleed
 
         def resolution(self):
@@ -323,6 +334,61 @@ def test_real_print_renders_complete_data_and_paints_stock():
     calls = st["FakePrinter"].instances[-1].calls
     assert ("fullpage", True) in calls, "must request full-page printing"
     assert ("resolution", 203) in calls, "must request 203dpi"
+
+
+def test_real_client_label_print_uses_wide_custom_stock():
+    """Type-3 wide client sticker: 210 x content-height, zero margins.
+
+    The real Qt path must request the exact custom paper size (not 4x3
+    Citizen stock), paint the full-resolution 203dpi art at the origin, and
+    still fail closed if the driver reports a different page.
+    """
+    from PySide6.QtGui import QPageLayout as _PL
+    detail = {
+        "customer": "PARLE AGRO PVT LTD",
+        "customer_po": "4500048181",
+        "batch_no": "SVSF/OCT-16",
+        "product_name": "APPY FIZZ 160ML NECK 10 RS",
+        "packed_at": "2026-10-20 10:00:00",
+        "client_box_no": 1,
+        "num_coils": 3,
+        "coils": [
+            {"roll_no": 1, "pieces": 38740, "gross": 8.68, "core": 0.28,
+             "net": 8.40, "mfg_date": "2026-10-16 08:00:00"},
+            {"roll_no": 2, "pieces": 38740, "gross": 8.64, "core": 0.28,
+             "net": 8.36, "mfg_date": "2026-10-16 09:00:00"},
+            {"roll_no": 3, "pieces": 38740, "gross": 8.78, "core": 0.28,
+             "net": 8.50, "mfg_date": "2026-10-16 10:00:00"},
+        ],
+        "total_pieces": 116220,
+        "total_gross": 26.10,
+        "total_tare": 0.84,
+        "total_net": 25.26,
+    }
+    st = {}
+    p1, p2, p3 = _fake_qt(st)
+    with p1, p2, p3:
+        assert QtCitizenCLS621("Wide").print_client_label(
+            {"detail": detail}) is True
+
+    lay = st["layout"]
+    assert lay.orientation() == _PL.Portrait, \
+        "210mm-wide stock is already wider than tall; keep it Portrait"
+    full = lay.fullRect(_PL.Millimeter)
+    assert abs(full.width() - 210.0) < 1.0, full
+    assert abs(full.height() - 91.0) < 1.0, full
+    margins = lay.margins(_PL.Millimeter)
+    assert (margins.left(), margins.top(), margins.right(),
+            margins.bottom()) == (0, 0, 0, 0), margins
+
+    assert st.get("ended") is True
+    assert st["painter"].drawn, "wide label image must be painted"
+    rect = st["painter"].drawn[-1][0]
+    assert (rect.x(), rect.y()) == (0, 0)
+    assert abs(rect.width() - 1678) < 3 and abs(rect.height() - 727) < 3
+    calls = st["FakePrinter"].instances[-1].calls
+    assert ("fullpage", True) in calls
+    assert ("resolution", 203) in calls
 
 
 def test_real_print_failures_never_report_success():

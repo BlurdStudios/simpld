@@ -173,6 +173,13 @@ def test_wide_renderer_size_rows_and_min_height(tmp_path):
     assert img.size == (1678, 727)
     assert img.convert("L").getextrema()[0] < 128  # has ink, not a blank page
 
+    # The Product row must be closed by a full-width rule before the table
+    # header; otherwise PRODUCT and S.no visually merge into one row.
+    rule_y = round(45 / 25.4 * L.WIDE_DPI)
+    rule = [img.getpixel((x, rule_y))
+            for x in range(60, img.width - 60, 7)]
+    assert all(sum(p[:3]) < 200 for p in rule)
+
     one = dict(detail, coils=detail["coils"][:1], num_coils=1,
                client_box_no=2)
     img1 = L.render_client_box(one)

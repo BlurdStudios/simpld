@@ -302,7 +302,7 @@ class DispatchPage(QWidget):
             box_no = int(it.get("client_box_no") or (r + 1))
             n = int(it.get("num_reels") or 0)
             pieces = n * wpr if unit == "wrapper" else 0
-            self.table.setItem(r, 0, QTableWidgetItem(f"{box_no:02d}"))
+            self.table.setItem(r, 0, QTableWidgetItem(str(box_no)))
             self.table.setItem(r, 1, QTableWidgetItem(bare_carton_no(it.get("carton_no") or "")))
             self.table.setItem(r, 2, QTableWidgetItem(str(n) if n else "—"))
             self.table.setItem(r, 3, QTableWidgetItem(f"{pieces:,}" if pieces else "—"))
@@ -497,7 +497,7 @@ class DispatchPage(QWidget):
         self.refresh_loaded()
         n = int(ct.get("num_reels") or 0)
         box_no = int(ct.get("client_box_no") or 0)
-        msg = f"Box {box_no:02d} loaded"
+        msg = f"Box {box_no} loaded"
         if n:
             msg += f" ({n} coil{'s' if n != 1 else ''})"
         msg += "."

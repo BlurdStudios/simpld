@@ -1502,7 +1502,7 @@ def scan_into_order(order_id: int, scan_text: str, path: str | None = None,
                 int(ct["num_reels"] or 0) * wpr if unit == "wrapper"
                 else int(ct["num_reels"] or 0))
             _audit(c, resolved, "scan", "order", order_id,
-                   f"{cn} loaded as client box {next_box_no:02d}"
+                   f"{cn} loaded as client box {next_box_no}"
                    + (f" ({loaded_now:,}/{int(rp):,} {_unit_word(unit)})"
                       if rp is not None else ""))
             ct["client_box_no"] = next_box_no

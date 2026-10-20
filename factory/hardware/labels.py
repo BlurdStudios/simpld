@@ -474,6 +474,10 @@ def render_client_box(detail: dict, width_mm: float = WIDE_WIDTH_MM,
         d.line([(left, y), (right, y)], fill="black", width=line)
     div_x = px(122)
     d.line([(div_x, band_bot), (div_x, head_bot)], fill="black", width=line)
+    # Close the third header row (Product / No of Coils) before the table
+    # header starts. Without this line the product row and the S.no header
+    # row run together on the printed sticker.
+    d.line([(left, head_bot), (right, head_bot)], fill="black", width=line)
 
     label_font = _font(px(3.0), bold=True)
     l_label_x, l_value_x = px(8), px(42)
@@ -568,9 +572,7 @@ def render_client_box(detail: dict, width_mm: float = WIDE_WIDTH_MM,
         _kgstr(total_gross),
         _kgstr(total_tare),
         _kgstr(total_net),
-        f"BOX NO: {box_no:02d}",
     )
-    total_font = _font(px(4.0), bold=True)
     yc = body_bot + total_h / 2
     for j, val in enumerate(totals):
         cw = xs[j + 1] - xs[j] - px(1.2)
@@ -578,6 +580,17 @@ def render_client_box(detail: dict, width_mm: float = WIDE_WIDTH_MM,
                                      bold=True, floor=px(2.2))
         d.text(((xs[j] + xs[j + 1]) / 2, yc), text,
                font=f, fill="black", anchor="mm")
+
+    # Client box number: a dedicated field in the final total cell, with the
+    # label on top and the bare 1..N number below it (never the scanned carton
+    # code, and no 01-style padding on the printed sticker).
+    bcx = (xs[5] + xs[6]) / 2
+    box_label_font = _font(px(2.2), bold=True)
+    box_num_font = _font(px(4.8), bold=True)
+    d.text((bcx, body_bot + total_h * 0.27), "BOX NO",
+           font=box_label_font, fill="black", anchor="mm")
+    d.text((bcx, body_bot + total_h * 0.68), str(box_no),
+           font=box_num_font, fill="black", anchor="mm")
     return img
 
 
