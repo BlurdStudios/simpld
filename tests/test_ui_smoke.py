@@ -279,16 +279,21 @@ def test_dispatch_workspace_records_history():
     S.scan_into_order(o["id"], ct["carton_no"])
     w.pages["dispatch"].refresh()
     assert w.pages["dispatch"].order_combo.count() >= 1
-    job2 = S.create_job("PIECE JOB", core_wt=0.280)
+    prod2 = S.create_product("PIECE PRODUCT", 2500)
+    job2 = S.create_job_for_product(prod2["id"], core_wt=0.280)
     for _ in range(4):
         S.create_reel(job2["id"], gross=11.380, core=0.280)
     boxes = [S.pack_next_box(job2["id"], 22.0, 0.300, reels_per_box=2)
              for _ in range(2)]
-    order = S.create_dispatch_order("PIECE CO", job2["id"], required_pieces=3)
+    order = S.create_dispatch_order("PIECE CO", job2["id"],
+                                    required_pieces=6000,
+                                    customer_po="4500048181")
     for box in boxes:
         S.scan_into_order(order["id"], box["carton_no"])
     progress = S.order_progress(order["id"])
-    assert progress["loaded_pieces"] == 4 >= progress["required_pieces"] == 3
+    assert progress["loaded_pieces"] == 10000 >= progress["required_pieces"] == 6000
+    assert [it["client_box_no"] for it in progress["items"]] == [1, 2]
+    assert progress["customer_po"] == "4500048181"
     assert S.complete_dispatch(order["id"])["status"] == "complete"
     # Completion flips the loaded boxes and their reels to dispatched.
     assert S.ready_stock(job2["id"]) == []

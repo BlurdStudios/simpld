@@ -10,7 +10,8 @@ from PySide6.QtCore import Qt, QRect, QRectF
 from PySide6.QtGui import (QPixmap, QPainter, QColor, QFont, QLinearGradient,
                            QGuiApplication, QTextDocument)
 from PySide6.QtWidgets import (QSplashScreen, QDialog, QVBoxLayout, QHBoxLayout,
-                               QLabel, QPushButton, QFrame)
+                               QLabel, QPushButton, QFrame, QFileDialog,
+                               QMessageBox)
 
 from factory.ui import brand as _brand
 
@@ -95,7 +96,7 @@ class AboutDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"About {_brand.PRODUCT_NAME}")
-        self.setFixedWidth(440)
+        self.setFixedWidth(480)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(24, 24, 24, 20)
@@ -135,6 +136,53 @@ class AboutDialog(QDialog):
         note.setWordWrap(True)
         outer.addWidget(note)
 
+        self._logo_b64 = ""
+        self._logo_card = QFrame()
+        self._logo_card.setProperty("card", True)
+        lc = QVBoxLayout(self._logo_card)
+        lc.setContentsMargins(16, 12, 16, 12)
+        lc.setSpacing(8)
+        lt = QLabel("CLIENT STICKER LOGO")
+        lt.setProperty("field", "caption")
+        lc.addWidget(lt)
+        self._logo_preview = QLabel("No logo — the company title prints centred")
+        self._logo_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._logo_preview.setMinimumHeight(62)
+        self._logo_preview.setStyleSheet(
+            "QLabel { background: #FFFFFF; border: 1px solid #E2E8F0;"
+            " border-radius: 6px; color: #64748B; }")
+        lc.addWidget(self._logo_preview)
+        lh = QLabel("Uploaded here and stored in the shared database, so every "
+                    "PC prints the same logo on the wide client sticker.")
+        lh.setProperty("hint", True)
+        lh.setWordWrap(True)
+        lc.addWidget(lh)
+        try:
+            from factory import data_access as _DA
+            me = _DA.current_user() or {}
+        except Exception:
+            _DA, me = None, {}
+        if str(me.get("role") or "") == "admin":
+            lr = QHBoxLayout()
+            lr.setSpacing(8)
+            self._logo_btn = QPushButton("Upload logo…")
+            self._logo_btn.setMinimumHeight(36)
+            self._logo_clear = QPushButton("Remove")
+            self._logo_clear.setMinimumHeight(36)
+            from factory.ui.styles import style_button
+            style_button(self._logo_btn, "outline")
+            style_button(self._logo_clear, "secondary")
+            self._logo_btn.clicked.connect(self._upload_logo)
+            self._logo_clear.clicked.connect(self._clear_logo)
+            lr.addWidget(self._logo_btn, 1)
+            lr.addWidget(self._logo_clear)
+            lc.addLayout(lr)
+            self._load_logo()
+        else:
+            lh.setText("An admin can upload the company logo here.")
+            self._load_logo()
+        outer.addWidget(self._logo_card)
+
         outer.addStretch(1)
         row = QHBoxLayout()
         # Update entry point lives here (plus the silent startup check): the
@@ -154,6 +202,81 @@ class AboutDialog(QDialog):
         close.clicked.connect(self.accept)
         row.addWidget(close)
         outer.addLayout(row)
+
+    def _load_logo(self):
+        from PySide6.QtGui import QPixmap
+        import base64
+        from factory import data_access as DA
+        try:
+            self._logo_b64 = DA.get_company_logo() or ""
+        except Exception:
+            self._logo_b64 = ""
+        if not self._logo_b64:
+            self._logo_preview.setPixmap(QPixmap())
+            self._logo_preview.setText("No logo — the company title prints centred")
+            if hasattr(self, "_logo_clear"):
+                self._logo_clear.setEnabled(False)
+            return
+        try:
+            raw = base64.b64decode(self._logo_b64)
+            pm = QPixmap()
+            if not pm.loadFromData(raw) or pm.isNull():
+                raise ValueError("Logo image could not be decoded")
+            self._logo_preview.setPixmap(
+                pm.scaled(360, 62, Qt.AspectRatioMode.KeepAspectRatio,
+                          Qt.TransformationMode.SmoothTransformation))
+            self._logo_preview.setText("")
+            if hasattr(self, "_logo_clear"):
+                self._logo_clear.setEnabled(True)
+        except Exception:
+            self._logo_preview.setPixmap(QPixmap())
+            self._logo_preview.setText("Logo could not be displayed")
+            if hasattr(self, "_logo_clear"):
+                self._logo_clear.setEnabled(True)
+
+    def _upload_logo(self):
+        import base64
+        import io
+        from factory import data_access as DA
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose the company logo", "",
+            "Images (*.png *.jpg *.jpeg *.webp *.bmp)")
+        if not path:
+            return
+        try:
+            from PIL import Image
+            im = Image.open(path)
+            im.load()
+            im = im.convert("RGBA")
+            # 600px wide is ample for a 203dpi 210mm label and keeps the
+            # shared-DB / LAN payload small.
+            im.thumbnail((600, 300), Image.LANCZOS)
+            buf = io.BytesIO()
+            im.save(buf, format="PNG", optimize=True)
+            b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+            DA.set_company_logo(b64)
+        except (ValueError, PermissionError) as e:
+            return QMessageBox.warning(self, "Company logo", str(e))
+        except Exception as e:
+            return QMessageBox.warning(
+                self, "Company logo",
+                f"Could not read that image: {str(e).strip() or 'unknown error'}")
+        self._load_logo()
+
+    def _clear_logo(self):
+        from factory import data_access as DA
+        ans = QMessageBox.question(
+            self, "Remove logo",
+            "Remove the company logo from the wide client sticker?")
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            DA.set_company_logo("")
+        except (ValueError, PermissionError) as e:
+            return QMessageBox.warning(self, "Company logo", str(e))
+        except Exception as e:
+            return QMessageBox.warning(self, "Company logo", str(e))
+        self._load_logo()
 
     def _check_updates(self):
         from factory.ui import update_ui

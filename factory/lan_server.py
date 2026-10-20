@@ -83,7 +83,7 @@ from . import slip_pdf as _slip
 # Limits
 # --------------------------------------------------------------------------
 
-MAX_BODY_BYTES = 256 * 1024          # request bound (413 over)
+MAX_BODY_BYTES = 2 * 1024 * 1024     # request bound (413 over; logo uploads)
 MAX_STR_LEN = 512                    # generic string arg bound
 MAX_TOKEN_LEN = 256
 MAX_REQUEST_ID_LEN = 64
@@ -660,16 +660,18 @@ def _h_audit(args: dict, actor: dict, dbp: str) -> list:
 
 
 @_op("create_dispatch_order", "dispatch.mutate",
-     ("customer", "job_id", "required_bundles", "required_pieces", "order_date"))
+     ("customer", "job_id", "required_bundles", "required_pieces", "order_date",
+      "customer_po", "batch_no", "piece_unit"))
 def _h_create_order(args: dict, actor: dict, dbp: str) -> dict:
     _need(args, "create_dispatch_order", frozenset(
-        {"customer", "job_id", "required_bundles", "required_pieces", "order_date"}))
+        {"customer", "job_id", "required_bundles", "required_pieces", "order_date",
+         "customer_po", "batch_no", "piece_unit"}))
     cust = _v_str(args, "customer", max_len=256)
     jid = _v_int(args, "job_id", minimum=1)
     n = _v_int(args, "required_bundles", required=False, minimum=1,
                maximum=100_000)
     p = _v_int(args, "required_pieces", required=False, minimum=1,
-               maximum=100_000)
+               maximum=100_000_000)
     if n is None and p is None:
         raise _ValidationError(
             "Missing argument 'required_pieces' (or legacy 'required_bundles').")
@@ -679,10 +681,16 @@ def _h_create_order(args: dict, actor: dict, dbp: str) -> dict:
         if not _re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
             raise _ValidationError(
                 "Argument 'order_date' must be YYYY-MM-DD.")
+    po = _v_opt_str(args, "customer_po", max_len=64, default="")
+    batch = _v_opt_str(args, "batch_no", max_len=64, default="", upper=True)
+    unit = _v_opt_str(args, "piece_unit", default="reel").lower()
+    if unit not in ("wrapper", "reel"):
+        raise _ValidationError("Argument 'piece_unit' must be wrapper/reel.")
     assert cust is not None and jid is not None
     return _svc.create_dispatch_order(cust, jid, n,
                                       order_date=date or None, path=dbp,
-                                      required_pieces=p)
+                                      required_pieces=p, customer_po=po,
+                                      batch_no=batch, piece_unit=unit)
 
 
 @_op("list_orders", "report.read", ("status",))
@@ -699,6 +707,32 @@ def _h_list_orders(args: dict, actor: dict, dbp: str) -> list:
 def _h_progress(args: dict, actor: dict, dbp: str) -> dict:
     _need(args, "order_progress", frozenset({"order_id"}))
     return _svc.order_progress(_v_int(args, "order_id", minimum=1), dbp)  # type: ignore[arg-type]
+
+
+@_op("client_label_detail", "report.read", ("order_id", "carton_id"))
+def _h_client_label(args: dict, actor: dict, dbp: str) -> dict:
+    _need(args, "client_label_detail", frozenset({"order_id", "carton_id"}))
+    oid = _v_int(args, "order_id", minimum=1)
+    cid = _v_int(args, "carton_id", minimum=1)
+    assert oid is not None and cid is not None
+    return _svc.client_label_detail(oid, cid, dbp)
+
+
+@_op("get_company_logo", "read", ())
+def _h_get_logo(args: dict, actor: dict, dbp: str) -> str:
+    _need(args, "get_company_logo", frozenset())
+    return _svc.get_company_logo(dbp)
+
+
+@_op("set_company_logo", "settings.manage", ("logo",))
+def _h_set_logo(args: dict, actor: dict, dbp: str) -> dict:
+    _need(args, "set_company_logo", frozenset({"logo"}))
+    logo = args.get("logo")
+    if not isinstance(logo, str):
+        raise _ValidationError("Argument 'logo' must be a base64 string.")
+    if len(logo) > 1_500_000:
+        raise _ValidationError("Argument 'logo' is too large.")
+    return _svc.set_company_logo(logo.strip(), dbp, actor=actor)
 
 
 @_op("scan_into_order", "dispatch.mutate", ("order_id", "scan_text"))

@@ -68,6 +68,9 @@ class _BrokenPrinter:
     def print_carton_label(self, data: dict) -> bool:
         raise RuntimeError(f"Printer unavailable: {self._error}")
 
+    def print_client_label(self, data: dict) -> bool:
+        raise RuntimeError(f"Printer unavailable: {self._error}")
+
 
 def build_scale(cfg: dict):
     """Real Essae when a port is configured, else the demo/mock scale."""
@@ -184,7 +187,8 @@ def require_printer(cfg: dict | None = None) -> None:
     """
     if printer_configured(cfg) or mock_allowed() or demo_mode(cfg):
         return
-    raise RuntimeError("Printer not configured — open Devices to configure the printer.")
+    raise RuntimeError(
+        "Printer not configured — set the label printer for this PC.")
 
 
 def _override_suffix() -> str:

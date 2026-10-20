@@ -45,6 +45,10 @@ class _RaisingPrinter:
         self.calls.append(("carton", payload))
         raise RuntimeError(self._msg)
 
+    def print_client_label(self, payload):
+        self.calls.append(("client", payload))
+        raise RuntimeError(self._msg)
+
 
 def _assert_warning_shows_real_error(dialog, method_name, printer_msg):
     from unittest import mock as _mock
@@ -89,7 +93,27 @@ def test_carton_dialog_shows_actual_exception():
     host.close()
 
 
+def test_client_dialog_shows_actual_exception():
+    _fresh_db()
+    from factory.ui.label_preview import ClientLabelDialog
+    _, host = _app_host()
+    msg = "Wide printer 'TSC TTP-244' refused the job — test offline"
+    detail = {
+        "customer": "ERR CLIENT", "customer_po": "PO-1", "batch_no": "B1",
+        "product_name": "ERR PRODUCT", "packed_at": "2026-10-10 10:00:00",
+        "client_box_no": 7, "num_coils": 1,
+        "coils": [{"roll_no": 19, "pieces": 100, "gross": 1.0,
+                   "core": 0.1, "net": 0.9, "mfg_date": "2026-10-10"}],
+        "total_pieces": 100, "total_gross": 1.0, "total_tare": 0.1,
+        "total_net": 0.9,
+    }
+    d = ClientLabelDialog(host, detail, _RaisingPrinter(msg))
+    _assert_warning_shows_real_error(d, "do_print", msg)
+    host.close()
+
+
 if __name__ == "__main__":
     test_reel_dialog_shows_actual_exception()
     test_carton_dialog_shows_actual_exception()
+    test_client_dialog_shows_actual_exception()
     print("test_label_print_errors PASS")

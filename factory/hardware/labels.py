@@ -12,8 +12,10 @@ Fixed media: 4in wide (101.6mm) x 3in tall (76.2mm). No height option.
 Also used for the on-screen preview.
 """
 from __future__ import annotations
+import base64
 import io
 import os
+from datetime import datetime
 
 from factory.db import COMPANY, fmt_date_ddmmyy, bare_carton_no
 
@@ -22,6 +24,18 @@ from factory.db import COMPANY, fmt_date_ddmmyy, bare_carton_no
 LABEL_WIDTH_MM = 101.6
 LABEL_HEIGHT_MM = 76.2
 LABEL_DPI = 203
+
+# Type-3 client box sticker: A4-width media (210 mm), height follows the
+# number of coils in the box. Printed on the dispatch station's wide label
+# printer, not the 4x3 Citizen used for reel/box stickers.
+WIDE_WIDTH_MM = 210.0
+WIDE_DPI = 203
+WIDE_MIN_H_MM = 78.0
+
+
+def wide_label_height_mm(n_rows: int) -> float:
+    """Content height: fixed header/table chrome + one 8 mm band per coil."""
+    return max(WIDE_MIN_H_MM, 67.0 + 8.0 * max(0, int(n_rows or 0)))
 
 
 def label_px(width_mm: float = LABEL_WIDTH_MM, height_mm: float = LABEL_HEIGHT_MM,
@@ -53,6 +67,30 @@ def _font(size: int, bold: bool = True):
             except Exception:
                 continue
         return ImageFont.load_default()
+    except Exception:
+        return None
+
+
+def _serif(size: int, bold: bool = False):
+    """Serif face for the company title (the sample uses a serif wordmark)."""
+    try:
+        from PIL import ImageFont
+        if bold:
+            names = ("timesbd.ttf", "georgiab.ttf",
+                     "/usr/share/fonts/liberation-serif-fonts/LiberationSerif-Bold.ttf",
+                     "/usr/share/fonts/dejavu-serif-fonts/DejaVuSerif-Bold.ttf",
+                     "DejaVuSerif-Bold.ttf")
+        else:
+            names = ("times.ttf", "georgia.ttf",
+                     "/usr/share/fonts/liberation-serif-fonts/LiberationSerif-Regular.ttf",
+                     "/usr/share/fonts/dejavu-serif-fonts/DejaVuSerif.ttf",
+                     "DejaVuSerif.ttf", "DejaVuSerif-Bold.ttf")
+        for name in names:
+            try:
+                return ImageFont.truetype(name, size)
+            except Exception:
+                continue
+        return _font(size, bold=bold)
     except Exception:
         return None
 
@@ -295,6 +333,251 @@ def render_carton(detail: dict, width_mm=LABEL_WIDTH_MM,
         mid = r4a + (r6b - r4a) * 0.28
         _cell_text(d, (C, r4a, E, mid), "Box No#", 26)
         _cell_text(d, (C, mid, E, r6b), bare_carton_no(detail["carton_no"]), 80)
+    return img
+
+
+def _dmystr(ts) -> str:
+    s = str(ts or "")
+    try:
+        return datetime.strptime(s[:10], "%Y-%m-%d").strftime("%d-%m-%Y")
+    except (TypeError, ValueError):
+        return s[:10] or "—"
+
+
+def _kgstr(v) -> str:
+    try:
+        s = f"{float(v):.2f}"
+    except (TypeError, ValueError):
+        return "—"
+    s = s.rstrip("0").rstrip(".")
+    return s or "0"
+
+
+def _pcsstr(v) -> str:
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return "—"
+    return str(n) if n > 0 else "—"
+
+
+def _text_height(font) -> int:
+    try:
+        b = font.getbbox("Ag")
+        return max(1, b[3] - b[1])
+    except Exception:
+        return int(getattr(font, "size", 20))
+
+
+def _fit_text_ellipsis(d, text: str, max_w: int, start: int,
+                       bold: bool = True, floor: int = 16):
+    f = _fit_font(d, str(text), max_w, start, bold=bold, floor=floor)
+    t = str(text)
+    if _text_w(d, t, f) <= max_w:
+        return t, f
+    while len(t) > 1 and _text_w(d, t + "…", f) > max_w:
+        t = t[:-1]
+    return (t + "…") if t else "…", f
+
+
+def _spaced_w(d, text: str, font, spacing: int) -> int:
+    return sum(_text_w(d, ch, font) for ch in text) + spacing * max(0, len(text) - 1)
+
+
+def _draw_spaced_center(d, cx: int, cy: int, text: str, font, spacing: int) -> None:
+    total = _spaced_w(d, text, font, spacing)
+    x = cx - total / 2
+    for ch in text:
+        d.text((x, cy), ch, font=font, fill="black", anchor="lm")
+        x += _text_w(d, ch, font) + spacing
+
+
+def _logo_image(data):
+    if not data:
+        return None
+    try:
+        from PIL import Image
+        raw = base64.b64decode(str(data), validate=True)
+        if not raw:
+            return None
+        im = Image.open(io.BytesIO(raw))
+        im.load()
+        return im.convert("RGBA")
+    except Exception:
+        return None
+
+
+# Wide client sticker columns, left -> right. The sample's table has no
+# vertical padding tricks: a plain six-column grid with a total/box-no row.
+_WIDE_COLS = (0.09, 0.20, 0.16, 0.14, 0.16, 0.25)
+_WIDE_HEAD = ("S.no", "No of pcs", "Gross Wt (kgs)",
+              "Tare Wt (kgs)", "Net Wt (kgs)", "Mfg Date")
+
+
+def render_client_box(detail: dict, width_mm: float = WIDE_WIDTH_MM,
+                      dpi: int = WIDE_DPI):
+    """Type-3 wide client sticker (one per box, one row per coil).
+
+    Layout (from the Vasavi photo): logo + company title, header grid with
+    Pack. Date / Customer / Product and Batch No. / Customer Po / No of
+    Coils, then S.no / pieces / gross / tare / net / mfg-date rows, a Total
+    row and BOX NO (the client-facing sequence, never the scanned carton
+    code). Height grows with the coil count; width is A4 (210 mm).
+    """
+    from PIL import Image, ImageDraw
+
+    rows = list(detail.get("coils") or [])
+    n = len(rows)
+    h_mm = wide_label_height_mm(n)
+    W, H = label_px(width_mm, h_mm, dpi)
+    img = Image.new("RGB", (W, H), "white")
+    d = ImageDraw.Draw(img)
+
+    def px(v: float) -> int:
+        return int(round(v / 25.4 * dpi))
+
+    left, right = px(5), W - px(5)
+    top, bottom = px(5), H - px(5)
+    line = max(2, px(0.22))
+    d.rectangle([left, top, right, bottom], outline="black", width=max(3, line))
+
+    # ---- top band: logo + company title ----
+    band_bot = px(25)
+    d.line([(left, band_bot), (right, band_bot)], fill="black", width=line)
+    logo = _logo_image(detail.get("company_logo"))
+    if logo is not None:
+        box_w, box_h = px(52), px(16)
+        logo.thumbnail((box_w, box_h), Image.LANCZOS)
+        lx = px(8)
+        ly = px(15) - logo.height // 2
+        img.paste(logo, (lx, ly), logo)
+        tx0, tx1 = px(63), right - px(3)
+    else:
+        tx0, tx1 = left + px(3), right - px(3)
+
+    title = str(detail.get("company_name") or COMPANY).strip().upper()
+    spacing = px(0.35)
+    size = px(7.0)
+    floor = px(4.0)
+    tf = _serif(size, bold=False)
+    while size > floor and _spaced_w(d, title, tf, spacing) > (tx1 - tx0):
+        size -= 2
+        tf = _serif(size, bold=False)
+    _draw_spaced_center(d, (tx0 + tx1) // 2, (top + band_bot) // 2,
+                        title, tf, spacing)
+
+    # ---- header grid: 3 rows, left + right groups ----
+    head_bot = px(45)
+    row_h = (head_bot - band_bot) / 3
+    for i in (1, 2):
+        y = int(band_bot + row_h * i)
+        d.line([(left, y), (right, y)], fill="black", width=line)
+    div_x = px(122)
+    d.line([(div_x, band_bot), (div_x, head_bot)], fill="black", width=line)
+
+    label_font = _font(px(3.0), bold=True)
+    l_label_x, l_value_x = px(8), px(42)
+    r_label_x, r_value_x = px(126), px(160)
+    l_max = div_x - px(3) - l_value_x
+    r_max = right - px(3) - r_value_x
+    left_fields = (
+        ("Pack. Date", _dmystr(detail.get("packed_at"))),
+        ("CUSTOMER", str(detail.get("customer") or "—")),
+        ("PRODUCT", str(detail.get("product_name") or detail.get("job_name") or "—")),
+    )
+    right_fields = (
+        ("BATCH NO.", str(detail.get("batch_no") or "—")),
+        ("Customer Po:", str(detail.get("customer_po") or "—")),
+        ("NO OF Coils:", str(detail.get("num_coils", n) or 0)),
+    )
+    for i, (lab, val) in enumerate(left_fields):
+        yc = int(band_bot + row_h * (i + 0.5))
+        d.text((l_label_x, yc), lab, font=label_font, fill="black", anchor="lm")
+        text, f = _fit_text_ellipsis(d, val, l_max, px(4.4),
+                                     bold=False, floor=px(2.6))
+        d.text((l_value_x, yc), text, font=f, fill="black", anchor="lm")
+    for i, (lab, val) in enumerate(right_fields):
+        yc = int(band_bot + row_h * (i + 0.5))
+        d.text((r_label_x, yc), lab, font=label_font, fill="black", anchor="lm")
+        text, f = _fit_text_ellipsis(d, val, r_max, px(4.4),
+                                     bold=False, floor=px(2.6))
+        d.text((r_value_x, yc), text, font=f, fill="black", anchor="lm")
+
+    # ---- table ----
+    t_top = head_bot
+    t_bottom = bottom
+    head_h = px(8)
+    total_h = px(9)
+    body_top = t_top + head_h
+    body_bot = t_bottom - total_h
+    n_draw = max(1, n)
+    body_row_h = (body_bot - body_top) / n_draw
+
+    xs = [left + (right - left) * sum(_WIDE_COLS[:i])
+          for i in range(len(_WIDE_COLS) + 1)]
+    xs[-1] = right
+    d.line([(left, t_top + head_h), (right, t_top + head_h)],
+           fill="black", width=line)
+    d.line([(left, body_bot), (right, body_bot)], fill="black", width=max(3, line))
+    for x in xs[1:-1]:
+        d.line([(int(x), t_top), (int(x), t_bottom)], fill="black", width=line)
+    for i in range(1, n_draw):
+        y = int(body_top + body_row_h * i)
+        d.line([(left, y), (right, y)], fill="black", width=line)
+
+    head_font = _font(px(3.1), bold=True)
+    for i, label in enumerate(_WIDE_HEAD):
+        cw = xs[i + 1] - xs[i] - px(1.2)
+        text, f = _fit_text_ellipsis(d, label, int(cw), px(3.1),
+                                     bold=True, floor=px(1.9))
+        d.text(((xs[i] + xs[i + 1]) / 2, t_top + head_h / 2), text,
+               font=f, fill="black", anchor="mm")
+
+    row_font = _font(px(4.0), bold=False)
+    if n:
+        for i, r in enumerate(rows):
+            yc = body_top + body_row_h * (i + 0.5)
+            vals = (
+                str(r.get("roll_no", "—")),
+                _pcsstr(r.get("pieces")),
+                _kgstr(r.get("gross")),
+                _kgstr(r.get("core")),
+                _kgstr(r.get("net")),
+                _dmystr(r.get("mfg_date")),
+            )
+            for j, val in enumerate(vals):
+                cw = xs[j + 1] - xs[j] - px(1.2)
+                text, f = _fit_text_ellipsis(d, val, int(cw), px(4.0),
+                                             bold=False, floor=px(2.2))
+                d.text(((xs[j] + xs[j + 1]) / 2, yc), text,
+                       font=f, fill="black", anchor="mm")
+    else:
+        yc = body_top + body_row_h / 2
+        for j in range(len(_WIDE_HEAD)):
+            d.text(((xs[j] + xs[j + 1]) / 2, yc), "—",
+                   font=row_font, fill="black", anchor="mm")
+
+    total_pieces = sum(int(r.get("pieces") or 0) for r in rows)
+    total_gross = sum(float(r.get("gross") or 0) for r in rows)
+    total_tare = sum(float(r.get("core") or 0) for r in rows)
+    total_net = sum(float(r.get("net") or 0) for r in rows)
+    box_no = int(detail.get("client_box_no") or 1)
+    totals = (
+        "Total",
+        _pcsstr(total_pieces),
+        _kgstr(total_gross),
+        _kgstr(total_tare),
+        _kgstr(total_net),
+        f"BOX NO: {box_no:02d}",
+    )
+    total_font = _font(px(4.0), bold=True)
+    yc = body_bot + total_h / 2
+    for j, val in enumerate(totals):
+        cw = xs[j + 1] - xs[j] - px(1.2)
+        text, f = _fit_text_ellipsis(d, val, int(cw), px(4.0),
+                                     bold=True, floor=px(2.2))
+        d.text(((xs[j] + xs[j + 1]) / 2, yc), text,
+               font=f, fill="black", anchor="mm")
     return img
 
 

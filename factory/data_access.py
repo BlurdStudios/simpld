@@ -555,16 +555,22 @@ def order_progress(order_id: int) -> dict:
 def create_dispatch_order(customer: str, job_id: int,
                           required_bundles: int | None = None,
                           order_date: str | None = None,
-                          required_pieces: int | None = None) -> dict:
-    """New orders count pieces; legacy callers keep required_bundles exact."""
+                          required_pieces: int | None = None,
+                          customer_po: str = "", batch_no: str = "",
+                          piece_unit: str = "wrapper") -> dict:
+    """New orders count wrappers; legacy callers keep required_bundles exact."""
     if backend() == "lan":
         return _lan_client().create_dispatch_order(
             customer, job_id, required_bundles, order_date=order_date,
-            required_pieces=required_pieces)
+            required_pieces=required_pieces, customer_po=customer_po,
+            batch_no=batch_no, piece_unit=piece_unit)
     from . import services as _svc
     return _svc.create_dispatch_order(customer, job_id, required_bundles,
                                       order_date=order_date,
-                                      required_pieces=required_pieces)
+                                      required_pieces=required_pieces,
+                                      customer_po=customer_po,
+                                      batch_no=batch_no,
+                                      piece_unit=piece_unit)
 
 
 def scan_into_order(order_id: int, scan_text: str) -> dict:
@@ -587,6 +593,28 @@ def complete_dispatch(order_id: int) -> dict:
         return _lan_client().complete_dispatch(order_id)
     from . import services as _svc
     return _svc.complete_dispatch(order_id)
+
+
+def client_label_detail(order_id: int, carton_id: int) -> dict:
+    """One wide client sticker: order PO/batch + client box no + coil rows."""
+    if backend() == "lan":
+        return _lan_client().client_label_detail(order_id, carton_id)
+    from . import services as _svc
+    return _svc.client_label_detail(order_id, carton_id)
+
+
+def get_company_logo() -> str:
+    if backend() == "lan":
+        return _lan_client().get_company_logo()
+    from . import services as _svc
+    return _svc.get_company_logo()
+
+
+def set_company_logo(logo_b64: str) -> dict:
+    if backend() == "lan":
+        return _lan_client().set_company_logo(logo_b64)
+    from . import services as _svc
+    return _svc.set_company_logo(logo_b64)
 
 
 def cancel_order(order_id: int) -> None:

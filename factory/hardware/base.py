@@ -32,6 +32,12 @@ class PrinterInterface(ABC):
 
         Pass COMPLETE rendering inputs: {"detail": carton_detail}."""
 
+    @abstractmethod
+    def print_client_label(self, data: dict) -> bool:
+        """Type-3 wide client sticker: one box, one row per coil.
+
+        Pass COMPLETE rendering inputs: {"detail": client_label_detail}."""
+
 
 class ScannerInterface(ABC):
     """USB scanners type the code + Enter. UI just needs a focused QLineEdit.

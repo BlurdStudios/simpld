@@ -4,8 +4,11 @@ Production: Job -> Reels (single sticker, NO QR) -> Cartons (bundle sticker WITH
 Dispatch: Customer Order -> Scan Ready Cartons -> Load -> Dispatch
 """
 from __future__ import annotations
+import base64
+import io
 import math
 import sqlite3
+from datetime import datetime
 from .db import (get_conn, now_iso, today_iso, current_period, roll_code_for,
                  carton_no_for, bare_carton_no, full_roll_label, _alloc_job_no,
                  _alloc_order_seq)
@@ -49,6 +52,10 @@ def _dispatch_actor(path: str | None) -> dict:
 
 def _delete_actor(path: str | None) -> dict:
     return _auth.require_permission("delete", path)
+
+
+def _settings_actor(path: str | None) -> dict:
+    return _auth.require_permission("settings.manage", path)
 
 
 def _finite_weight(value, label: str) -> float:
@@ -1229,21 +1236,32 @@ def next_order_no(c: sqlite3.Connection) -> str:
 def create_dispatch_order(customer: str, job_id: int, required_bundles: int | None = None,
                           order_date: str | None = None, path: str | None = None,
                           actor: dict | None = None,
-                          required_pieces: int | None = None) -> dict:
+                          required_pieces: int | None = None,
+                          customer_po: str = "", batch_no: str = "",
+                          piece_unit: str = "wrapper") -> dict:
     """Create a loading order.
 
-    New orders count PIECES (reels): `required_pieces` is the piece target and
-    scanning stops once it is reached (a 2-reel box may overshoot the last
-    piece, e.g. 21 needed -> 22 loaded; that is accepted). Legacy orders
-    created with `required_bundles` keep the exact bundle-count behavior:
-    required_pieces stays NULL and completion requires loaded == required.
-    Exactly one of the two must be given (pieces wins when both are passed).
+    New orders count WRAPPERS (the client's "pieces"): `required_pieces` is
+    the wrapper target and loaded pieces are each box's coil count multiplied
+    by the job's `wrappers_per_reel`. Scanning stops once the target is
+    reached; the crossing box is accepted whole (a 3-coil box can overshoot
+    the target and that is flagged in the UI). Legacy piece orders created
+    before this change carry `piece_unit='reel'` (one linked reel = one
+    piece) and keep their old arithmetic. Legacy bundle orders created with
+    `required_bundles` keep the exact bundle-count behavior.
+
+    `customer_po` is the client PO printed on the wide sticker; `batch_no`
+    is optional (blank = derive SVSF/MON-DD from the coil mfg date at print
+    time). Exactly one of required_pieces / required_bundles must be given.
     """
     resolved = _dispatch_actor(path)
     if not (customer or "").strip():
         raise ValueError("Customer name required")
     if required_pieces is None and required_bundles is None:
         raise ValueError("Provide required_pieces (pieces) or required_bundles (legacy)")
+    unit = str(piece_unit or "wrapper").strip().lower()
+    if unit not in ("wrapper", "reel"):
+        raise ValueError("Piece unit must be 'wrapper' or 'reel'")
     req_p: int | None = None
     req_b: int | None = None
     if required_pieces is not None:
@@ -1261,6 +1279,13 @@ def create_dispatch_order(customer: str, job_id: int, required_bundles: int | No
             raise ValueError("Required bundles must be a positive whole number")
         if not math.isfinite(float(req_b)) or req_b <= 0:
             raise ValueError("Required bundles must be > 0")
+        unit = "reel"  # bundle orders have no piece unit
+    po = (customer_po or "").strip()
+    batch = (batch_no or "").strip().upper()
+    if len(po) > 64:
+        raise ValueError("Customer PO must be 64 characters or fewer")
+    if len(batch) > 64:
+        raise ValueError("Batch number must be 64 characters or fewer")
     c = get_conn(path)
     c.isolation_level = None
     try:
@@ -1269,18 +1294,26 @@ def create_dispatch_order(customer: str, job_id: int, required_bundles: int | No
             job = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
             if not job:
                 raise ValueError("Select a product job for this order")
+            if req_p is not None and unit == "wrapper":
+                wpr = int(job["wrappers_per_reel"] or 0)
+                if wpr <= 0:
+                    raise ValueError(
+                        "This job has no wrappers-per-reel count. Set it on the "
+                        "product/job before creating a piece-based order.")
             seq = _alloc_order_seq(c)
             on = f"DO-{seq:04d}"
             cur = c.execute(
-                "INSERT INTO dispatch_orders(order_no, customer, job_id, required_bundles,"
-                " required_pieces, status, order_date, created_at)"
-                " VALUES(?,?,?,?,?, 'loading', ?, ?)",
-                (on, customer.strip().upper(), job_id, req_b, req_p,
-                 order_date or today_iso(), now_iso()))
+                "INSERT INTO dispatch_orders(order_no, customer, customer_po, batch_no,"
+                " job_id, required_bundles, required_pieces, piece_unit, status,"
+                " order_date, created_at)"
+                " VALUES(?,?,?,?,?,?,?,?, 'loading', ?, ?)",
+                (on, customer.strip().upper(), po, batch, job_id, req_b, req_p,
+                 unit, order_date or today_iso(), now_iso()))
             oid = cur.lastrowid
-            need = f"pieces={req_p}" if req_p is not None else f"bundles={req_b}"
+            need = (f"pieces={req_p} ({unit})" if req_p is not None
+                    else f"bundles={req_b}")
             _audit(c, resolved, "create_order", "order", oid,
-                   f"{on} J:{job['job_no']} need={need}")
+                   f"{on} J:{job['job_no']} need={need} po={po or '—'}")
             c.execute("COMMIT")
         except Exception:
             try:
@@ -1295,16 +1328,29 @@ def create_dispatch_order(customer: str, job_id: int, required_bundles: int | No
 
 
 def _order_items(c: sqlite3.Connection, order_id: int) -> list[sqlite3.Row]:
-    """Loaded cartons with the reel count used for piece accounting."""
+    """Loaded cartons with their client box number, in scan order."""
     return c.execute(
-        "SELECT ct.*, di.scanned_at FROM dispatch_items di"
+        "SELECT ct.*, di.scanned_at, di.client_box_no FROM dispatch_items di"
         " JOIN cartons ct ON ct.id=di.carton_id WHERE di.order_id=?"
         " ORDER BY di.id", (order_id,)).fetchall()
 
 
-def _piece_counts(items: list) -> int:
-    """Pieces = linked reels across the loaded boxes (2-reel box = 2 pieces)."""
+def _piece_counts(items: list, unit: str = "reel",
+                  wrappers_per_reel: int | None = None) -> int:
+    """Order pieces.
+
+    `wrapper` (new orders): each linked coil contributes the job's
+    wrappers_per_reel, so a 3-coil box is 3 × wrappers. `reel` (legacy piece
+    orders): one linked reel = one piece, preserving old targets/history.
+    """
+    if str(unit or "reel").lower() == "wrapper":
+        w = int(wrappers_per_reel or 0)
+        return sum(int(x["num_reels"] or 0) * w for x in items)
     return sum(int(x["num_reels"] or 0) for x in items)
+
+
+def _unit_word(unit: str) -> str:
+    return "pcs" if str(unit or "reel").lower() == "wrapper" else "coils"
 
 
 def list_orders(status: str | None = None, path: str | None = None) -> list[dict]:
@@ -1312,19 +1358,24 @@ def list_orders(status: str | None = None, path: str | None = None) -> list[dict
     try:
         if status:
             rows = c.execute(
-                "SELECT o.*, j.job_no, j.job_name FROM dispatch_orders o JOIN jobs j ON j.id=o.job_id"
+                "SELECT o.*, j.job_no, j.job_name, j.wrappers_per_reel"
+                " FROM dispatch_orders o JOIN jobs j ON j.id=o.job_id"
                 " WHERE o.status=? ORDER BY o.id DESC", (status,)).fetchall()
         else:
             rows = c.execute(
-                "SELECT o.*, j.job_no, j.job_name FROM dispatch_orders o JOIN jobs j ON j.id=o.job_id"
+                "SELECT o.*, j.job_no, j.job_name, j.wrappers_per_reel"
+                " FROM dispatch_orders o JOIN jobs j ON j.id=o.job_id"
                 " ORDER BY o.id DESC").fetchall()
         out = []
         for r in rows:
             d = dict(r)
             items = _order_items(c, d["id"])
+            unit = str(d.get("piece_unit") or "reel")
+            wpr = int(d.get("wrappers_per_reel") or 0)
+            d["piece_unit"] = unit
             d["loaded"] = len(items)          # loaded cartons/bundles
             d["loaded_cartons"] = len(items)
-            d["loaded_pieces"] = _piece_counts(items)
+            d["loaded_pieces"] = _piece_counts(items, unit, wpr)
             rp = d.get("required_pieces")
             if rp is not None:
                 rp = int(rp)
@@ -1344,25 +1395,36 @@ def order_progress(order_id: int, path: str | None = None) -> dict:
     c = get_conn(path)
     try:
         o = c.execute(
-            "SELECT o.*, j.job_no, j.job_name FROM dispatch_orders o JOIN jobs j ON j.id=o.job_id"
+            "SELECT o.*, j.job_no, j.job_name, j.wrappers_per_reel"
+            " FROM dispatch_orders o JOIN jobs j ON j.id=o.job_id"
             " WHERE o.id=?", (order_id,)).fetchone()
         if not o:
             raise ValueError("Order not found")
         d = dict(o)
         items = _order_items(c, order_id)
+        unit = str(d.get("piece_unit") or "reel")
+        wpr = int(d.get("wrappers_per_reel") or 0)
+        d["piece_unit"] = unit
+        d["pieces_word"] = _unit_word(unit)
         d["items"] = [dict(x) for x in items]
+        for i, it in enumerate(d["items"], 1):
+            if it.get("client_box_no") is None:
+                it["client_box_no"] = i
         d["loaded"] = len(items)
         d["loaded_cartons"] = len(items)
-        d["loaded_pieces"] = _piece_counts(items)
+        d["loaded_pieces"] = _piece_counts(items, unit, wpr)
         rp = d.get("required_pieces")
         if rp is not None:
             rp = int(rp)
             d["required_pieces"] = rp
             d["remaining_pieces"] = max(0, rp - d["loaded_pieces"])
             d["remaining"] = d["remaining_pieces"]  # legacy alias, pieces here
+            d["pieces_pct"] = (round(d["loaded_pieces"] * 100.0 / rp, 1)
+                               if rp > 0 else 0.0)
         else:
             d["remaining_pieces"] = 0
             d["remaining"] = max(0, int(d["required_bundles"]) - len(items))
+            d["pieces_pct"] = 0.0
         d["loaded_net"] = round(sum(x["total_net"] for x in items), 3)
         return d
     finally:
@@ -1403,14 +1465,24 @@ def scan_into_order(order_id: int, scan_text: str, path: str | None = None,
                 raise ValueError(f"Box {bare_carton_no(ct['carton_no'])} is already loaded in another order.")
             items = _order_items(c, order_id)
             rp = o["required_pieces"]
+            unit = str(o["piece_unit"] or "reel")
+            job = c.execute("SELECT wrappers_per_reel FROM jobs WHERE id=?",
+                            (o["job_id"],)).fetchone()
+            wpr = int((job["wrappers_per_reel"] if job else 0) or 0)
+            if rp is not None and unit == "wrapper" and wpr <= 0:
+                raise ValueError(
+                    "This order counts wrappers, but its job has no wrappers-per-reel "
+                    "count. Set it on the product/job before loading boxes.")
+            pieces_before = _piece_counts(items, unit, wpr)
             if rp is not None:
                 # Piece-based order: stop once the target is reached. The
-                # scan that crosses the target is accepted whole (a 2-reel
-                # box may take 20 -> 22 when 21 are needed).
+                # scan that crosses the target is accepted whole (a 3-coil
+                # box may take 190,000 -> 306,000 when 200,000 are needed);
+                # the UI flags the overshoot so the operator can remove it.
                 rp = int(rp)
-                if _piece_counts(items) >= rp:
+                if pieces_before >= rp:
                     raise ValueError(
-                        f"Order already full ({_piece_counts(items)}/{rp} pieces loaded)."
+                        f"Order already full ({pieces_before:,}/{rp:,} {_unit_word(unit)} loaded)."
                         " Complete it first.")
                 if int(ct["num_reels"] or 0) <= 0:
                     raise ValueError(
@@ -1418,14 +1490,24 @@ def scan_into_order(order_id: int, scan_text: str, path: str | None = None,
                         " piece-based order.")
             elif len(items) >= int(o["required_bundles"]):
                 raise ValueError(f"Order already full ({o['required_bundles']} bundles). Complete it first.")
+            next_box_no = len(items) + 1
             try:
-                c.execute("INSERT INTO dispatch_items(order_id, carton_id, scanned_at) VALUES(?,?,?)",
-                          (order_id, ct["id"], now_iso()))
+                c.execute(
+                    "INSERT INTO dispatch_items(order_id, carton_id, client_box_no, scanned_at)"
+                    " VALUES(?,?,?,?)",
+                    (order_id, ct["id"], next_box_no, now_iso()))
             except sqlite3.IntegrityError:
                 raise ValueError(f"Box {bare_carton_no(ct['carton_no'])} already scanned (duplicate).")
-            loaded_now = _piece_counts(items) + int(ct["num_reels"] or 0)
+            loaded_now = pieces_before + (
+                int(ct["num_reels"] or 0) * wpr if unit == "wrapper"
+                else int(ct["num_reels"] or 0))
             _audit(c, resolved, "scan", "order", order_id,
-                   f"{cn} loaded" + (f" ({loaded_now}/{int(rp)} pieces)" if rp is not None else ""))
+                   f"{cn} loaded as client box {next_box_no:02d}"
+                   + (f" ({loaded_now:,}/{int(rp):,} {_unit_word(unit)})"
+                      if rp is not None else ""))
+            ct["client_box_no"] = next_box_no
+            ct["loaded_pieces"] = loaded_now
+            ct["piece_unit"] = unit
             c.execute("COMMIT")
         except Exception:
             try:
@@ -1456,7 +1538,14 @@ def remove_from_order(order_id: int, carton_id: int, path: str | None = None,
             cur = c.execute("DELETE FROM dispatch_items WHERE order_id=? AND carton_id=?", (order_id, carton_id))
             if cur.rowcount == 0:
                 raise ValueError("Box is not in this order.")
-            _audit(c, resolved, "unscan", "order", order_id, f"carton_id={carton_id} removed")
+            # Keep the client-facing sequence contiguous 1..N after a removal.
+            left = c.execute("SELECT id FROM dispatch_items WHERE order_id=? ORDER BY id",
+                             (order_id,)).fetchall()
+            for i, row in enumerate(left, 1):
+                c.execute("UPDATE dispatch_items SET client_box_no=? WHERE id=?",
+                          (i, row["id"]))
+            _audit(c, resolved, "unscan", "order", order_id,
+                   f"carton_id={carton_id} removed; boxes renumbered 1..{len(left)}")
             c.execute("COMMIT")
         except Exception:
             try:
@@ -1491,14 +1580,18 @@ def complete_dispatch(order_id: int, path: str | None = None,
             if not items:
                 raise ValueError("Nothing scanned yet. Scan at least 1 box.")
             rp = o["required_pieces"]
+            unit = str(o["piece_unit"] or "reel")
+            job = c.execute("SELECT wrappers_per_reel FROM jobs WHERE id=?",
+                            (o["job_id"],)).fetchone()
+            wpr = int((job["wrappers_per_reel"] if job else 0) or 0)
             if rp is not None:
                 rp = int(rp)
-                pieces = _piece_counts(items)
+                pieces = _piece_counts(items, unit, wpr)
                 if pieces < rp:
                     raise ValueError(
-                        f"Partial load: {pieces}/{rp} pieces scanned."
+                        f"Partial load: {pieces:,}/{rp:,} {_unit_word(unit)} scanned."
                         " Scan the remaining boxes or remove this order's extras first.")
-                done_note = f"{pieces}/{rp} pieces"
+                done_note = f"{pieces:,}/{rp:,} {_unit_word(unit)}"
             else:
                 if len(items) != int(o["required_bundles"]):
                     raise ValueError(
@@ -1554,6 +1647,166 @@ def cancel_order(order_id: int, path: str | None = None,
             except sqlite3.Error:
                 pass
             raise
+    finally:
+        c.close()
+
+
+# ---------- wide client sticker ----------
+def _batch_code(ts: str) -> str:
+    """Batch shown on the wide sticker: SVSF/<MON>-<DD> from the mfg date.
+
+    The sample (SVSF/OCT-16) matches the coil mfg date, not the pack date.
+    """
+    try:
+        d = datetime.strptime(str(ts or "")[:10], "%Y-%m-%d")
+    except (TypeError, ValueError):
+        d = datetime.now()
+    return f"SVSF/{d:%b}-{d.day:02d}".upper()
+
+
+def _setting_from(c: sqlite3.Connection, key: str, default: str = "") -> str:
+    row = c.execute("SELECT value FROM settings WHERE key=?", (str(key),)).fetchone()
+    return str(row["value"]) if row else default
+
+
+def get_setting(key: str, default: str = "", path: str | None = None) -> str:
+    c = get_conn(path)
+    try:
+        return _setting_from(c, key, default)
+    finally:
+        c.close()
+
+
+def get_company_logo(path: str | None = None) -> str:
+    return get_setting("company_logo", "", path=path)
+
+
+def set_company_logo(logo_b64: str, path: str | None = None,
+                     actor: dict | None = None) -> dict:
+    """Admin-only. Store a normalized PNG logo (base64) in settings.
+
+    Empty string clears the logo. The image is validated/re-encoded and
+    downscaled so the LAN JSON request stays small and every PC prints the
+    same bytes. The logo is part of the shared DB, not a local file.
+    """
+    resolved = _settings_actor(path)
+    data = (logo_b64 or "").strip()
+    if data:
+        try:
+            raw = base64.b64decode(data, validate=True)
+        except Exception:
+            raise ValueError("Logo must be a base64-encoded image")
+        if len(raw) > 768 * 1024:
+            raise ValueError("Logo is too large (max 750 KB)")
+        try:
+            from PIL import Image
+            img = Image.open(io.BytesIO(raw))
+            img.load()
+            img = img.convert("RGBA")
+            # A 1200px-wide logo is plenty for a 203dpi 210mm label and
+            # keeps the shared DB/JSON payload comfortably small.
+            img.thumbnail((1200, 800), Image.LANCZOS)
+            buf = io.BytesIO()
+            img.save(buf, format="PNG", optimize=True)
+        except Exception:
+            raise ValueError("Logo could not be read as a PNG/JPEG image")
+        data = base64.b64encode(buf.getvalue()).decode("ascii")
+    c = get_conn(path)
+    c.isolation_level = None
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        try:
+            c.execute(
+                "INSERT INTO settings(key, value, updated_at) VALUES('company_logo',?,?)"
+                " ON CONFLICT(key) DO UPDATE SET value=excluded.value,"
+                " updated_at=excluded.updated_at",
+                (data, now_iso()))
+            _audit(c, resolved, "set_company_logo", "setting", 0,
+                   "logo cleared" if not data else "logo updated")
+            c.execute("COMMIT")
+        except Exception:
+            try:
+                c.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise
+        return {"ok": True, "has_logo": bool(data)}
+    finally:
+        c.close()
+
+
+def client_label_detail(order_id: int, carton_id: int,
+                        path: str | None = None) -> dict:
+    """Everything the wide client sticker renders, for ONE loaded box.
+
+    The sticker lists the coils inside the box and the client-facing box
+    number (`dispatch_items.client_box_no`), never the scanned carton code.
+    Customer PO and the optional batch override come from the dispatch order;
+    a blank batch derives SVSF/MON-DD from the earliest coil mfg date.
+    """
+    c = get_conn(path)
+    try:
+        o = c.execute(
+            "SELECT o.*, j.job_no, j.job_name, j.product_name, j.wrappers_per_reel"
+            " FROM dispatch_orders o JOIN jobs j ON j.id=o.job_id WHERE o.id=?",
+            (order_id,)).fetchone()
+        if not o:
+            raise ValueError("Order not found")
+        ct = c.execute("SELECT * FROM cartons WHERE id=?", (carton_id,)).fetchone()
+        if not ct:
+            raise ValueError("Box not found")
+        di = c.execute(
+            "SELECT * FROM dispatch_items WHERE order_id=? AND carton_id=?",
+            (order_id, carton_id)).fetchone()
+        if not di:
+            raise ValueError("Box is not loaded in this order.")
+        coils = c.execute(
+            "SELECT r.* FROM reels r JOIN carton_items ci ON ci.reel_id=r.id"
+            " WHERE ci.carton_id=? ORDER BY r.roll_no", (carton_id,)).fetchall()
+        wpr = int(o["wrappers_per_reel"] or 0)
+        rows = []
+        for r in coils:
+            rows.append({
+                "roll_no": int(r["roll_no"]),
+                "pieces": wpr,
+                "gross": float(r["gross"]),
+                "core": float(r["core"]),
+                "net": float(r["net"]),
+                "mfg_date": str(r["created_at"] or ""),
+            })
+        mfg_dates = [r["mfg_date"] for r in rows if r["mfg_date"]]
+        batch = (o["batch_no"] or "").strip()
+        if not batch:
+            batch = _batch_code(min(mfg_dates) if mfg_dates else ct["packed_at"])
+        total_gross = sum(r["gross"] for r in rows)
+        total_tare = sum(r["core"] for r in rows)
+        total_net = sum(r["net"] for r in rows)
+        if not rows:
+            total_gross = float(ct["total_gross"] or 0)
+            total_tare = float(ct["total_core"] or 0)
+            total_net = float(ct["total_net"] or 0)
+        return {
+            "order_no": o["order_no"],
+            "customer": o["customer"],
+            "customer_po": o["customer_po"] or "",
+            "batch_no": batch,
+            "job_no": o["job_no"],
+            "job_name": o["job_name"],
+            "product_name": o["product_name"] or o["job_name"],
+            "carton_no": ct["carton_no"],
+            "bundle_no": int(ct["bundle_no"] or 0),
+            "packed_at": str(ct["packed_at"] or ""),
+            "client_box_no": int(di["client_box_no"] or 1),
+            "num_coils": len(rows),
+            "wrappers_per_reel": wpr,
+            "coils": rows,
+            "total_pieces": sum(r["pieces"] for r in rows),
+            "total_gross": round(total_gross, 3),
+            "total_tare": round(total_tare, 3),
+            "total_net": round(total_net, 3),
+            "company_name": _setting_from(c, "company_name", ""),
+            "company_logo": _setting_from(c, "company_logo", ""),
+        }
     finally:
         c.close()
 

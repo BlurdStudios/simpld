@@ -48,6 +48,8 @@ PERMISSION_ROLES: dict[str, tuple[str, ...]] = {
     "dispatch.mutate": ("dispatcher", "admin"),
     # Destructive deletions (any domain) are admin-only.
     "delete": ("admin",),
+    # App-wide presentation settings (company logo).
+    "settings.manage": ("admin",),
     # User management is admin-only.
     "users.manage": ("admin",),
     # Reads: stock visible to floor roles; history to dispatch/admin;

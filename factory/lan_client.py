@@ -390,15 +390,34 @@ class LanClient:
                               required_bundles: int | None = None,
                               order_date: str | None = None,
                               required_pieces: int | None = None,
+                              customer_po: str = "", batch_no: str = "",
+                              piece_unit: str = "wrapper",
                               request_id: str | None = None) -> dict:
-        args: dict = {"customer": customer, "job_id": job_id}
+        args: dict = {"customer": customer, "job_id": job_id,
+                      "piece_unit": piece_unit}
         if required_bundles is not None:
             args["required_bundles"] = required_bundles
         if required_pieces is not None:
             args["required_pieces"] = required_pieces
         if order_date:
             args["order_date"] = order_date
+        if customer_po:
+            args["customer_po"] = customer_po
+        if batch_no:
+            args["batch_no"] = batch_no
         return self.call("create_dispatch_order", args,
+                         request_id=request_id)
+
+    def client_label_detail(self, order_id: int, carton_id: int) -> dict:
+        return self.call("client_label_detail",
+                         {"order_id": order_id, "carton_id": carton_id})
+
+    def get_company_logo(self) -> str:
+        return self.call("get_company_logo")
+
+    def set_company_logo(self, logo_b64: str,
+                         request_id: str | None = None) -> dict:
+        return self.call("set_company_logo", {"logo": logo_b64},
                          request_id=request_id)
 
     def scan_into_order(self, order_id: int, scan_text: str,

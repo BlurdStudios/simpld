@@ -66,11 +66,11 @@ state resets. Factory floor: plain `python3 run.py` (no watcher).
 1. **Packaging — nested Reel packing / Box packing workspaces (no weight auto-detect)**
    - **Reel packing** — set the session core weight once, weigh one reel → SAVE + PRINT **Type-1 reel sticker (NO QR)** — bordered table (Company + J:no, Job Name, Date/No of Reels, No of Pieces, Gross/Core/Net, big bare Roll No#). No customer, shift or supervisor on the sticker. The preview under the weigh card shows reel art here (box art in Box packing). Stick it on the reel, then the reel waits loose for Box packing.
    - **Box packing** — set the session box/tare weight once (it applies to every box). Weigh the packed box: the next loose reels in production order are consumed into it, and PACK creates the box **without printing**. The Type-2 box sticker (WITH QR) is queued and printed one-by-one from the sticker queue (reprint available); it shows `Bundle:n · Rolls:24,25` and the bare box number once under the QR. QR = `VASAVI:<box code>`; the scanner accepts the QR or the plain code + Enter.
-   - Fixed stock: 4 x 3 in Citizen media (101.6 x 76.2 mm @203dpi). No size options.
+   - Fixed stock for Type-1/Type-2: 4 x 3 in Citizen media (101.6 x 76.2 mm @203dpi). No size options.
    - Note: the box layout is inferred from the reel-sticker photo — send a box-sticker photo to correct it.
    - The loose-reel list is display-only (no checkboxes / Select all / Clear): Box packing always consumes the next loose reels in production order. PACK validates the gross weight, the session box/tare and the reels-per-box limit before writing anything.
 2. **Ready Stock** — boxes with status Ready, listed by bare box number. No customer shown. Search by number, code or job; reprint sticker, Packing Slip (A4 match of the old paper slip: left data table, right print preview, office-printer box + Save PDF). **Scan QR to verify**: scan any box (Ready or dispatched) to see its batch + box details and dispatch status.
-3. **Dispatch** — New order (customer + product job + required pieces; a 2-reel box counts as 2 pieces) → click SCAN box → scan each box QR → progress Required/Loaded in pieces → COMPLETE once the target is reached (the crossing box is accepted whole, so 21 required may load 22). Legacy bundle orders stay exact. Mismatch + duplicates blocked.
+3. **Dispatch** — New order (customer + product job + **Customer PO** + required **pieces/wrappers**; a 3-coil box is 3 × pieces-per-coil). Scan each box QR: boxes are numbered **1..N for that client order** (never the scanned carton code), progress shows loaded/required wrappers with 75% / 90% / target / over-target alerts, and the crossing box is accepted whole. The scan opens the **Type-3 wide client sticker** preview (A4 width, content height) showing logo, Pack. Date, Customer, Product, Batch No., **Customer PO**, No of Coils, one row per coil (S.no, pieces, gross/tare/net, mfg date), totals and `BOX NO: n`. Batch is `SVSF/MON-DD` from the coil mfg date unless the order overrides it. COMPLETE once the target is reached; legacy bundle/reel orders stay exact. Mismatch + duplicates blocked. The company logo is uploaded in **About → Client sticker logo** (admin) and stored in the shared DB, so every PC prints the same logo.
 4. **Jobs** — reusable **products master** (product name + pieces/reel, a
     positive whole number). New packaging jobs pick an existing product from
     the dropdown; add a product once in the same New-job area, then reuse it
@@ -150,13 +150,15 @@ Design constraints that are deliberate — do not "fix" them without re-checking
 - Roll No: monthly global 1,2,3… (resets each month across all jobs)
 - Bundle No: per-job 1,2,3… (packing-slip row)
 - Box No: monthly global — stored/QR as `CYYYYMM-NNNN`; stickers and tables show the bare number (`1`, `24`)
+- Client box No: per dispatch order 1..N in scan order (renumbered on removal); this is the `BOX NO` on the wide client sticker
 - Order No: `DO-0001…`
 
 ## Devices (3 devices, 2 stations, auto-detected)
 
 No Devices dialog, no port dropdown. Simpl'd works out the hardware itself: it
 probes every serial port for a weigh machine that answers with a parseable
-weight frame, and picks the Citizen label printer out of the OS printer list.
+weight frame, and picks the configured label printer out of the OS printer list
+(the 4x3 Citizen on packaging; the wide client-sticker printer on dispatch).
 The QR scanner is a keyboard wedge and needs no configuration. Each station page
 shows clickable device pills; click one to re-detect it, or press Refresh.
 
@@ -170,9 +172,11 @@ it never silently falls back to a mock scale. Full detail in
 - `factory/hardware/essae.py` — real Essae DS-215 over RS232 (pyserial;
   fresh reading per Read, errors on timeout/unstable/disconnect — never a
   stale or 0.000 kg value presented as measured)
-- `factory/hardware/qtprint.py` — real Citizen CL-S621II through its
-  installed OS printer driver via Qt (QPrinter/QPainter, fixed 101.6 x
-  76.2 mm stock, zero margins). No EPL/ZPL commands.
+- `factory/hardware/qtprint.py` — real label printers through their installed
+  OS driver via Qt (QPrinter/QPainter, zero margins). Type-1/Type-2 use the
+  fixed 101.6 x 76.2 mm Citizen stock; Type-3 renders a 210 mm-wide sticker
+  whose height follows the coil count and requires that exact custom paper
+  size on the dispatch printer. No EPL/ZPL commands.
 - `factory/hardware/mock.py` — MockEssaeDS215, MockCitizenCLS621 (file log),
   MockScanner (keyboard wedge, nothing to do)
 - `factory/hardware/devices.py` — shared instances from `config.load`

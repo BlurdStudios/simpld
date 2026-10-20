@@ -148,9 +148,12 @@ CREATE TABLE IF NOT EXISTS dispatch_orders (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   order_no TEXT UNIQUE NOT NULL,
   customer TEXT NOT NULL,
+  customer_po TEXT NOT NULL DEFAULT '',
+  batch_no TEXT NOT NULL DEFAULT '',
   job_id INTEGER NOT NULL REFERENCES jobs(id),
   required_bundles INTEGER NOT NULL,
   required_pieces INTEGER,
+  piece_unit TEXT NOT NULL DEFAULT 'reel',
   status TEXT NOT NULL DEFAULT 'loading',
   order_date TEXT NOT NULL,
   created_at TEXT NOT NULL,
@@ -160,8 +163,14 @@ CREATE TABLE IF NOT EXISTS dispatch_items (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   order_id INTEGER NOT NULL REFERENCES dispatch_orders(id) ON DELETE CASCADE,
   carton_id INTEGER UNIQUE NOT NULL REFERENCES cartons(id),
+  client_box_no INTEGER,
   scanned_at TEXT NOT NULL,
   UNIQUE(order_id, carton_id)
+);
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -207,6 +216,45 @@ def _ensure_box_piece_columns(c) -> None:
     cols = {r["name"] for r in c.execute("PRAGMA table_info(dispatch_orders)").fetchall()}
     if cols and "required_pieces" not in cols:
         c.execute("ALTER TABLE dispatch_orders ADD COLUMN required_pieces INTEGER")
+
+
+def _ensure_wide_label_columns(c) -> None:
+    """Additive columns for the wide client sticker + settings.
+
+    Existing orders are explicitly marked `piece_unit='reel'` (the old
+    semantics: one linked reel = one piece), so their targets and history are
+    never reinterpreted as wrappers. New orders created by the UI use
+    `piece_unit='wrapper'` and count wrappers via jobs.wrappers_per_reel.
+
+    Client box numbers are backfilled per order in scan order, so an old
+    loaded order still prints a sane 1..N sequence.
+    """
+    c.execute("""CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL DEFAULT '')""")
+    cols = {r["name"] for r in c.execute("PRAGMA table_info(dispatch_orders)").fetchall()}
+    if cols:
+        if "customer_po" not in cols:
+            c.execute("ALTER TABLE dispatch_orders ADD COLUMN customer_po TEXT NOT NULL DEFAULT ''")
+        if "batch_no" not in cols:
+            c.execute("ALTER TABLE dispatch_orders ADD COLUMN batch_no TEXT NOT NULL DEFAULT ''")
+        if "piece_unit" not in cols:
+            c.execute("ALTER TABLE dispatch_orders ADD COLUMN piece_unit TEXT NOT NULL DEFAULT 'reel'")
+    cols = {r["name"] for r in c.execute("PRAGMA table_info(dispatch_items)").fetchall()}
+    if cols and "client_box_no" not in cols:
+        c.execute("ALTER TABLE dispatch_items ADD COLUMN client_box_no INTEGER")
+    # Backfill only rows still missing a number; never renumber a live order.
+    starts = {r["order_id"]: int(r["n"] or 0) for r in c.execute(
+        "SELECT order_id, COALESCE(MAX(client_box_no),0) n FROM dispatch_items"
+        " GROUP BY order_id").fetchall()}
+    rows = c.execute(
+        "SELECT id, order_id FROM dispatch_items WHERE client_box_no IS NULL"
+        " ORDER BY order_id, id").fetchall()
+    for r in rows:
+        nxt = starts.get(r["order_id"], 0) + 1
+        c.execute("UPDATE dispatch_items SET client_box_no=? WHERE id=?",
+                  (nxt, r["id"]))
+        starts[r["order_id"]] = nxt
 
 
 def _ensure_id_counters(c) -> None:
@@ -506,6 +554,7 @@ def init_db(path: str | None = None) -> str:
             _ensure_products_migration(c)
             _ensure_monthly_migration(c)
             _ensure_box_piece_columns(c)
+            _ensure_wide_label_columns(c)
             _ensure_id_counters(c)
             bad = c.execute("PRAGMA foreign_key_check").fetchall()
             if bad:

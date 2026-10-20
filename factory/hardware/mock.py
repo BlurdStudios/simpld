@@ -99,6 +99,9 @@ class MockCitizenCLS621(PrinterInterface):
     def print_carton_label(self, data: dict) -> bool:
         return self._log("CARTON-QR", data)
 
+    def print_client_label(self, data: dict) -> bool:
+        return self._log("CLIENT-WIDE", data)
+
 
 class MockScanner(ScannerInterface):
     def __init__(self):

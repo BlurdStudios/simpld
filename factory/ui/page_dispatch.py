@@ -1,12 +1,15 @@
 """Dispatch workspace: customer orders, bay scanning, load tracking.
 
-Loading flow: dispatcher creates an order (customer + product job + pieces
-required), scans Ready boxes (QR or plain code) into the loading order.
-Pieces are reels: a 2-reel box = 2 pieces. Scanning stops once the piece
-target is reached — the crossing box is accepted whole (21 needed, 2-reel
-boxes: 22 loaded). Completion requires loaded pieces >= required; legacy
-bundle orders (required_pieces NULL) stay exact. Cancelling is allowed only
-while loading; completed/cancelled orders are immutable.
+Loading flow: a dispatcher creates an order (customer + product job +
+customer PO + pieces required), then scans Ready boxes (QR or plain code)
+into the loading order. New orders count WRAPPERS: a 3-coil box at 38,740
+pieces/coil is 116,220 pieces. Boxes are numbered 1..N for that client order
+in scan order and renumbered when one is removed; that client number is what
+prints as BOX NO on the wide sticker, never the scanned carton code.
+Scanning stops once the target is reached — the crossing box is accepted
+whole. Completion requires loaded pieces >= required; legacy bundle/reel
+orders (piece_unit 'reel' or required_pieces NULL) stay exact. Cancelling is
+allowed only while loading; completed/cancelled orders are immutable.
 
 Authorization is session-resolved and distinct from production: dispatch
 mutations require dispatch.mutate (dispatcher/admin); deletions stay
@@ -20,9 +23,39 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QCombo
 from PySide6.QtCore import Qt
 from factory import data_access as DA
 from factory.db import bare_carton_no
+from factory.hardware import mock as HW
+from factory.hardware import devices as DEV
 from factory.hardware import status as HWStatus
+from factory.ui.label_preview import ClientLabelDialog
 from factory.ui.styles import style_button, set_banner
 from factory.ui.device_strip import DeviceStrip
+
+
+def _piece_alert(loaded: int, required: int, unit: str = "pcs"):
+    """Progressive loading alert: 75% on track, 90% almost done, target/over.
+
+    Returns (text, toast/banner kind) or None below 75%. The backend still
+    owns the hard stop; this only tells the operator how close they are.
+    """
+    try:
+        loaded, required = int(loaded), int(required)
+    except (TypeError, ValueError):
+        return None
+    if required <= 0:
+        return None
+    pct = loaded * 100.0 / required
+    if loaded >= required:
+        over = loaded - required
+        if over > 0:
+            return (f"Target reached — over by {over:,} {unit}.", "warning")
+        return (f"Target reached — {loaded:,}/{required:,} {unit}.", "success")
+    left = required - loaded
+    if pct >= 90:
+        return (f"Almost done — {left:,} {unit} left "
+                f"({loaded:,}/{required:,}).", "warning")
+    if pct >= 75:
+        return (f"{left:,} {unit} left ({pct:.0f}% loaded).", "info")
+    return None
 
 
 def _toast(parent, text: str, ok: bool = True, kind: str | None = None):
@@ -52,6 +85,7 @@ class DispatchPage(QWidget):
         self.order_id: int | None = None
         self._rows: list[dict] = []
         self._loaded: list[dict] = []
+        self._alert = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 12, 0, 12)
@@ -100,6 +134,13 @@ class DispatchPage(QWidget):
         self.scan.setPlaceholderText("Scan or type box code, Enter to load")
         self.scan.setClearButtonEnabled(True)
         scan.addWidget(self.scan, 1)
+        self.btn_sticker = QPushButton("Sticker")
+        self.btn_sticker.setMinimumHeight(48)
+        self.btn_sticker.setMinimumWidth(96)
+        style_button(self.btn_sticker, "secondary")
+        self.btn_sticker.setToolTip(
+            "Print the wide client sticker for the selected box.")
+        scan.addWidget(self.btn_sticker)
         self.btn_unscan = QPushButton("Remove")
         self.btn_unscan.setMinimumHeight(48)
         style_button(self.btn_unscan, "secondary")
@@ -108,8 +149,9 @@ class DispatchPage(QWidget):
         root.addLayout(scan)
 
         # ---- loaded table ----
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Box", "Reels", "Net · kg", "Scanned"])
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(
+            ["Client box", "Box", "Reels", "Pieces", "Net · kg", "Scanned"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(44)
@@ -138,6 +180,7 @@ class DispatchPage(QWidget):
         self.btn_refresh.clicked.connect(self.refresh)
         self.order_combo.currentIndexChanged.connect(self.order_changed)
         self.scan.returnPressed.connect(self.do_scan)
+        self.btn_sticker.clicked.connect(self.print_sticker)
         self.btn_unscan.clicked.connect(self.do_unscan)
         self.btn_complete.clicked.connect(self.do_complete)
         self.btn_cancel.clicked.connect(self.do_cancel)
@@ -185,7 +228,10 @@ class DispatchPage(QWidget):
         bundle counts for old rows (required_pieces NULL)."""
         try:
             if o.get("required_pieces") is not None:
-                return f"{int(o.get('loaded_pieces') or 0)}/{int(o['required_pieces'])} pcs"
+                unit = ("pcs" if str(o.get("piece_unit") or "reel") != "reel"
+                        else "coils")
+                return (f"{int(o.get('loaded_pieces') or 0)}/"
+                        f"{int(o['required_pieces'])} {unit}")
             return f"{int(o.get('loaded') or 0)}/{int(o.get('required_bundles') or 0)} boxes"
         except Exception:
             return "?"
@@ -246,16 +292,22 @@ class DispatchPage(QWidget):
             self._set_progress(f"Connection issue — {self._err(e)}", "err")
             return
         self._loaded = prog.get("items", [])
+        unit = str(prog.get("piece_unit") or "reel")
+        wpr = int(prog.get("wrappers_per_reel") or 0)
         self.table.blockSignals(True)
         self.table.setRowCount(0)
         for it in self._loaded:
             r = self.table.rowCount()
             self.table.insertRow(r)
-            self.table.setItem(r, 0, QTableWidgetItem(bare_carton_no(it.get("carton_no") or "")))
+            box_no = int(it.get("client_box_no") or (r + 1))
             n = int(it.get("num_reels") or 0)
-            self.table.setItem(r, 1, QTableWidgetItem(str(n) if n else "—"))
-            self.table.setItem(r, 2, QTableWidgetItem(f"{float(it.get('total_net') or 0):.3f}"))
-            self.table.setItem(r, 3, QTableWidgetItem(str(it.get("scanned_at") or "")[:16]))
+            pieces = n * wpr if unit == "wrapper" else 0
+            self.table.setItem(r, 0, QTableWidgetItem(f"{box_no:02d}"))
+            self.table.setItem(r, 1, QTableWidgetItem(bare_carton_no(it.get("carton_no") or "")))
+            self.table.setItem(r, 2, QTableWidgetItem(str(n) if n else "—"))
+            self.table.setItem(r, 3, QTableWidgetItem(f"{pieces:,}" if pieces else "—"))
+            self.table.setItem(r, 4, QTableWidgetItem(f"{float(it.get('total_net') or 0):.3f}"))
+            self.table.setItem(r, 5, QTableWidgetItem(str(it.get("scanned_at") or "")[:16]))
         self.table.blockSignals(False)
         for o in self._rows:
             if o["id"] == self.order_id:
@@ -263,16 +315,28 @@ class DispatchPage(QWidget):
                 o["loaded_pieces"] = prog.get("loaded_pieces", 0)
                 o["remaining"] = prog.get("remaining", 0)
         o = self.selected_order()
+        self._alert = None
         if o:
+            alert = None
+            unit_word = "pcs" if unit != "reel" else "coils"
             if o.get("required_pieces") is not None:
+                required = int(o["required_pieces"])
+                loaded_pieces = int(prog.get("loaded_pieces") or 0)
                 counts = (f"loaded {prog.get('loaded', 0)} boxes /"
-                          f" {prog.get('loaded_pieces', 0)} pcs of {int(o['required_pieces'])}")
+                          f" {loaded_pieces:,} {unit_word} of {required:,}")
+                alert = _piece_alert(loaded_pieces, required, unit_word)
             else:
                 counts = f"loaded {prog.get('loaded', 0)}/{int(o.get('required_bundles') or 0)} boxes"
+            self._alert = alert
+            text = (f"{o['order_no']} → {o['customer']} · "
+                    f"J:{o.get('job_no','')} {o.get('job_name','')} · "
+                    f"{counts} · {o['status']}")
+            if alert:
+                text += f" · {alert[0]}"
             self._set_progress(
-                f"{o['order_no']} → {o['customer']} · J:{o.get('job_no','')} {o.get('job_name','')} · "
-                f"{counts} · {o['status']}",
-                _ORDER_BANNER.get(str(o.get('status') or '').lower(), "neutral"))
+                text,
+                alert[1] if alert
+                else _ORDER_BANNER.get(str(o.get('status') or '').lower(), "neutral"))
             self.order_combo.setItemText(
                 self.order_combo.currentIndex(),
                 f"{o['order_no']} → {o['customer']} ({self._need_text(o)}, {o['status']})")
@@ -288,6 +352,10 @@ class DispatchPage(QWidget):
             self.btn_complete.setEnabled(bool(loading and can))
             self.btn_cancel.setEnabled(bool(loading and can))
             self.btn_unscan.setEnabled(bool(loading and can and has_sel))
+            self.btn_sticker.setEnabled(bool(can and has_sel))
+            self.btn_sticker.setToolTip(
+                "Print the wide client sticker for the selected box."
+                if (can and has_sel) else "Select a loaded box first.")
             self.btn_new.setEnabled(can)
             if not can:
                 self.btn_complete.setToolTip("Dispatcher or admin only.")
@@ -297,7 +365,8 @@ class DispatchPage(QWidget):
 
     # ----- actions -----
     def new_order(self):
-        from PySide6.QtWidgets import QDialog, QFormLayout, QLineEdit as _LE, QDialogButtonBox
+        from PySide6.QtWidgets import (QDialog, QFormLayout, QLineEdit as _LE,
+                                       QDialogButtonBox)
         if not self._can_dispatch():
             return self.say("Dispatcher or admin only.", ok=False)
         try:
@@ -306,40 +375,101 @@ class DispatchPage(QWidget):
             return self.say(f"Connection issue: {self._err(e)}", ok=False)
         if not jobs:
             return self.say("No open jobs — create a packaging job first.", ok=False)
+        by_id = {int(j["id"]): j for j in jobs}
         d = QDialog(self)
         d.setWindowTitle("New dispatch order")
         f = QFormLayout(d)
         cust = _LE()
         cust.setPlaceholderText("e.g. PARLE AGRO HYD")
-        cust.setMinimumWidth(300)
+        cust.setMinimumWidth(360)
         f.addRow("Customer:", cust)
         combo = QComboBox()
-        combo.setMinimumWidth(300)
+        combo.setMinimumWidth(360)
         for j in jobs:
             combo.addItem(f"J:{j['job_no']} — {j['job_name']}", userData=j["id"])
         f.addRow("Product job:", combo)
+        hint = QLabel("")
+        hint.setWordWrap(True)
+        hint.setMinimumWidth(360)
+        hint.setProperty("hint", True)
+        f.addRow("", hint)
+        po = _LE()
+        po.setPlaceholderText("Client PO number — always printed on the sticker")
+        po.setMinimumWidth(360)
+        f.addRow("Customer PO:", po)
+        batch = _LE()
+        batch.setPlaceholderText("Optional — blank = SVSF/MON-DD from coil mfg date")
+        batch.setMinimumWidth(360)
+        f.addRow("Batch no:", batch)
         need = QSpinBox()
-        need.setRange(1, 5000)
-        need.setValue(2)
-        f.addRow("Pieces required:", need)
+        need.setRange(1, 100_000_000)
+        need.setValue(100_000)
+        need.setSingleStep(1000)
+        need.setGroupSeparatorShown(True)
+        need.setMinimumWidth(180)
+        f.addRow("Pieces required (wrappers):", need)
+        note = QLabel("Client orders are in pieces (wrappers), not boxes. "
+                      "The sticker numbers boxes 1..N as they are scanned.")
+        note.setWordWrap(True)
+        note.setProperty("hint", True)
+        f.addRow("", note)
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         f.addRow(bb)
-        bb.accepted.connect(d.accept)
+        save_btn = bb.button(QDialogButtonBox.Save)
+
+        def current_wpr() -> int:
+            j = by_id.get(int(combo.currentData() or 0)) or {}
+            return int(j.get("wrappers_per_reel") or 0)
+
+        def update_hint():
+            w = current_wpr()
+            if w > 0:
+                hint.setText(f"Pieces per coil: {w:,}. "
+                             "The order target is total wrappers (pieces).")
+                hint.setStyleSheet("")
+                save_btn.setEnabled(True)
+            else:
+                hint.setText("This job has no wrappers-per-reel count. "
+                             "Set it on the product/job first.")
+                hint.setStyleSheet("color: #B45309; font-weight: 600;")
+                save_btn.setEnabled(False)
+
+        combo.currentIndexChanged.connect(lambda _i: update_hint())
+        update_hint()
+
+        def validate_and_accept():
+            if not cust.text().strip():
+                QMessageBox.warning(d, "New order", "Customer name required.")
+                return
+            if not po.text().strip():
+                QMessageBox.warning(
+                    d, "New order",
+                    "Customer PO required — it always prints on the sticker.")
+                return
+            if current_wpr() <= 0:
+                QMessageBox.warning(
+                    d, "New order",
+                    "Set wrappers per reel on this job/product first.")
+                return
+            d.accept()
+
+        bb.accepted.connect(validate_and_accept)
         bb.rejected.connect(d.reject)
         if d.exec() != QDialog.Accepted:
             return
-        if not cust.text().strip():
-            return self.say("Customer name required.", ok=False, kind="warning")
         try:
-            o = DA.create_dispatch_order(cust.text(), combo.currentData(),
-                                         required_pieces=int(need.value()))
+            o = DA.create_dispatch_order(
+                cust.text(), combo.currentData(),
+                required_pieces=int(need.value()),
+                customer_po=po.text(), batch_no=batch.text(),
+                piece_unit="wrapper")
         except (ValueError, PermissionError) as e:
             return self.say(str(e), ok=False)
         except Exception as e:
             return self.say(f"Connection issue: {self._err(e)}"
                             " Refresh, check the order exists, then retry.", ok=False)
         self.say(f"Order {o['order_no']} created"
-                 f" ({int(o['required_pieces'])} pieces required).", ok=True)
+                 f" ({int(o['required_pieces']):,} pcs required).", ok=True)
         self.refresh(select_id=o["id"])
 
     def do_scan(self):
@@ -364,12 +494,54 @@ class DispatchPage(QWidget):
         # this app — flip the scanner pill to active (see hardware/status.py).
         HWStatus.note_scan()
         self.devices.refresh()
-        n = int(ct.get("num_reels") or 0)
-        self.say(f"Box {bare_carton_no(ct['carton_no'])} loaded"
-                 + (f" ({n} reel{'s' if n != 1 else ''})." if n else "."), ok=True)
         self.refresh_loaded()
+        n = int(ct.get("num_reels") or 0)
+        box_no = int(ct.get("client_box_no") or 0)
+        msg = f"Box {box_no:02d} loaded"
+        if n:
+            msg += f" ({n} coil{'s' if n != 1 else ''})"
+        msg += "."
+        alert = self._alert
+        if alert:
+            msg += " " + alert[0]
+        self.say(msg, ok=True, kind=alert[1] if alert else None)
         if self.on_stock_changed:
             self.on_stock_changed()
+        # New wrapper orders print the wide client sticker from the dispatch
+        # station. Legacy bundle/reel orders have no client sticker, so they
+        # stay on the scan-only path (the Sticker button can still preview).
+        cur = self.selected_order() or {}
+        auto = (str(cur.get("piece_unit") or "reel") == "wrapper"
+                and cur.get("required_pieces") is not None)
+        if auto:
+            self._open_client_sticker(ct["id"])
+
+    def _open_client_sticker(self, carton_id: int) -> None:
+        """Preview + print the wide sticker for one loaded box."""
+        try:
+            DEV.require_printer()
+            detail = DA.client_label_detail(self.order_id, carton_id)
+            ClientLabelDialog(self, detail, HW.printer).exec()
+        except RuntimeError as e:
+            self.say(f"Box loaded. Sticker not printed: {e}",
+                     ok=False, kind="warning")
+        except (ValueError, PermissionError) as e:
+            self.say(f"Box loaded. Sticker unavailable: {e}",
+                     ok=False, kind="warning")
+        except Exception as e:
+            self.say(f"Box loaded. Sticker unavailable: {self._err(e)}",
+                     ok=False, kind="warning")
+
+    def print_sticker(self):
+        """Reprint the wide client sticker for the selected loaded box."""
+        if not self._can_dispatch():
+            return self.say("Dispatcher or admin only.", ok=False)
+        if self.order_id is None:
+            return self.say("Create/select an order first.", ok=False, kind="warning")
+        cid = self.selected_carton_id()
+        if cid is None:
+            return self.say("Select a loaded box row first.", ok=False, kind="warning")
+        self._open_client_sticker(cid)
 
     def selected_carton_id(self) -> int | None:
         rows = self.table.selectionModel().selectedRows() if self.table.selectionModel() else []
@@ -405,9 +577,10 @@ class DispatchPage(QWidget):
             return self.say("Create/select an order first.", ok=False, kind="warning")
         o = self.selected_order()
         if o and o.get("required_pieces") is not None:
+            unit = "pieces (wrappers)" if str(o.get("piece_unit") or "reel") != "reel" else "pieces (coils, legacy)"
             body = ("Complete this order? Boxes leave Ready stock.\n"
-                    f"Requires {int(o['required_pieces'])} pieces (reels) —"
-                    " the last box may overshoot by its reel count.")
+                    f"Requires {int(o['required_pieces']):,} {unit} —"
+                    " the last box may overshoot by its own piece count.")
         else:
             body = ("Complete this order? Boxes leave Ready stock.\n"
                     "Requires the exact bundle count — partial loads are blocked.")
@@ -423,8 +596,10 @@ class DispatchPage(QWidget):
                             " Refresh the order before retrying — it may have completed.",
                             ok=False)
         if done.get("required_pieces") is not None:
+            unit = "pcs" if str(done.get("piece_unit") or "reel") != "reel" else "coils"
             self.say(f"Order {done['order_no']} dispatched"
-                     f" ({done.get('loaded', 0)} boxes, {done.get('loaded_pieces', 0)} pieces).",
+                     f" ({done.get('loaded', 0)} boxes, "
+                     f"{int(done.get('loaded_pieces') or 0):,} {unit}).",
                      ok=True)
         else:
             self.say(f"Order {done['order_no']} dispatched ({done['loaded']} boxes).", ok=True)

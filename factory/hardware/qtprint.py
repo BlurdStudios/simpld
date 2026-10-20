@@ -38,16 +38,17 @@ def printer_exists(name: str) -> bool:
 
 
 class QtCitizenCLS621(PrinterInterface):
-    """Real Citizen CL-S621II through its installed OS printer driver.
+    """Real label printer through its installed OS driver.
 
-    printer_name must exactly match an installed printer
-    (see available_printers() / the Devices dialog).
+    Used for the 4x3 Citizen on packaging and the wide client-sticker
+    printer on dispatch. printer_name must exactly match an installed
+    printer (see available_printers() / the Devices dialog).
     """
 
     def __init__(self, printer_name: str):
         name = (printer_name or "").strip()
         if not name:
-            raise ValueError("Printer not configured (pick the Citizen printer in Devices)")
+            raise ValueError("Printer not configured (pick the label printer in Devices)")
         self.printer_name = name
 
     # ----- payload handling (complete data only) -----
@@ -79,6 +80,18 @@ class QtCitizenCLS621(PrinterInterface):
                     f"Incomplete box label data: detail lacks {key!r}")
         return LabelArt.render_carton(detail)
 
+    @staticmethod
+    def _client_image(data: dict):
+        detail = data.get("detail", data) if isinstance(data, dict) else None
+        if not isinstance(detail, dict):
+            raise ValueError(
+                "Incomplete client label data: need {'detail': client_label_detail}")
+        for key in ("customer", "packed_at", "client_box_no", "coils"):
+            if key not in detail:
+                raise ValueError(
+                    f"Incomplete client label data: detail lacks {key!r}")
+        return LabelArt.render_client_box(detail)
+
     # ----- Qt submission -----
     @staticmethod
     def _effective_mm(eff_layout) -> tuple[float, float]:
@@ -109,11 +122,14 @@ class QtCitizenCLS621(PrinterInterface):
         except Exception:
             return 0.0
 
-    def _submit(self, pil_img, doc_name: str) -> bool:
+    def _submit(self, pil_img, doc_name: str,
+                width_mm: float = LABEL_WIDTH_MM,
+                height_mm: float = LABEL_HEIGHT_MM,
+                dpi: int = 203) -> bool:
         if not printer_exists(self.printer_name):
             raise RuntimeError(
-                f"Printer {self.printer_name!r} not found — install the "
-                f"Citizen driver and pick it in Devices")
+                f"Printer {self.printer_name!r} not found — install its "
+                f"driver and pick it in Devices")
         try:
             from PySide6.QtPrintSupport import QPrinter
             from PySide6.QtGui import QPainter, QImage
@@ -140,27 +156,27 @@ class QtCitizenCLS621(PrinterInterface):
             except Exception:
                 pass
             try:
-                printer.setResolution(203)  # CL-S621II native resolution
+                printer.setResolution(int(dpi))
             except Exception:
                 pass
             # Qt rotates the custom size by the orientation (verified:
-            # Landscape swaps fullRect to 76.2x101.6), so Portrait keeps the
-            # defined 101.6-wide x 76.2-tall stock as-is. The effective-size
-            # check below guards this against Qt/driver changes instead of
-            # trusting the request.
-            orient = (QPageLayout.Portrait if LABEL_WIDTH_MM >= LABEL_HEIGHT_MM
+            # Landscape swaps fullRect). A wide stock (width >= height) stays
+            # Portrait as defined; the effective-size check guards this
+            # against Qt/driver changes instead of trusting the request.
+            orient = (QPageLayout.Portrait if width_mm >= height_mm
                       else QPageLayout.Landscape)
-            size = QPageSize(QSizeF(LABEL_WIDTH_MM, LABEL_HEIGHT_MM),
+            size = QPageSize(QSizeF(width_mm, height_mm),
                              QPageSize.Millimeter)
             layout = QPageLayout(size, orient, QMarginsF(0, 0, 0, 0))
             printer.setPageLayout(layout)
             eff = printer.pageLayout()
             ew, eh = self._effective_mm(eff)
-            if abs(ew - LABEL_WIDTH_MM) > 1.0 or abs(eh - LABEL_HEIGHT_MM) > 1.0:
+            if abs(ew - width_mm) > 1.0 or abs(eh - height_mm) > 1.0:
                 raise RuntimeError(
                     f"Printer {self.printer_name!r} reports a "
-                    f"{ew:.1f}x{eh:.1f}mm page, not the 101.6x76.2mm stock — "
-                    f"set a 4x3in custom paper size in the Citizen driver")
+                    f"{ew:.1f}x{eh:.1f}mm page, not the "
+                    f"{width_mm:.1f}x{height_mm:.1f}mm stock — set that exact "
+                    f"custom paper size in the printer driver")
             if self._margins_mm(eff) > 0.25:
                 raise RuntimeError(
                     f"Printer {self.printer_name!r} enforces non-zero margins — "
@@ -173,21 +189,21 @@ class QtCitizenCLS621(PrinterInterface):
         if not painter.begin(printer):
             raise RuntimeError(
                 f"Printer {self.printer_name!r} refused the job — check it is "
-                f"online with 4x3in stock loaded")
+                f"online with the right label stock loaded")
         try:
             # Paint 1:1 onto the fixed 101.6x76.2mm stock at the printer's
             # own resolution, origin (0,0), zero margins by construction.
-            res = int(printer.resolution() or 203)
-            w_px = int(LABEL_WIDTH_MM / 25.4 * res)
-            h_px = int(LABEL_HEIGHT_MM / 25.4 * res)
+            res = int(printer.resolution() or dpi)
+            w_px = int(width_mm / 25.4 * res)
+            h_px = int(height_mm / 25.4 * res)
             try:
                 pr = printer.pageRect(QPrinter.DevicePixel)
                 if pr.width() < w_px or pr.height() < h_px:
                     raise RuntimeError(
                         f"Printer {self.printer_name!r} printable area is "
                         f"{pr.width()}x{pr.height()}px < label {w_px}x{h_px}px — "
-                        f"check the 4x3in stock and borderless setting "
-                        f"(refusing to clip)")
+                        f"check the {width_mm:.1f}x{height_mm:.1f}mm stock and "
+                        f"borderless setting (refusing to clip)")
             except RuntimeError:
                 raise
             except Exception:
@@ -207,7 +223,21 @@ class QtCitizenCLS621(PrinterInterface):
         return True
 
     def print_reel_label(self, data: dict) -> bool:
-        return self._submit(self._reel_image(data), "Simpld reel sticker")
+        return self._submit(self._reel_image(data), "Simpld reel sticker",
+                            width_mm=LABEL_WIDTH_MM,
+                            height_mm=LABEL_HEIGHT_MM, dpi=203)
 
     def print_carton_label(self, data: dict) -> bool:
-        return self._submit(self._carton_image(data), "Simpld box sticker")
+        return self._submit(self._carton_image(data), "Simpld box sticker",
+                            width_mm=LABEL_WIDTH_MM,
+                            height_mm=LABEL_HEIGHT_MM, dpi=203)
+
+    def print_client_label(self, data: dict) -> bool:
+        img = self._client_image(data)
+        detail = data.get("detail", data) if isinstance(data, dict) else {}
+        width_mm = float(detail.get("width_mm") or LabelArt.WIDE_WIDTH_MM)
+        dpi = int(detail.get("dpi") or LabelArt.WIDE_DPI)
+        height_mm = float(detail.get("height_mm")
+                          or (img.height / dpi * 25.4))
+        return self._submit(img, "Simpld client box sticker",
+                            width_mm=width_mm, height_mm=height_mm, dpi=dpi)
