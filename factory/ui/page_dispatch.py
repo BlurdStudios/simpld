@@ -96,7 +96,8 @@ class DispatchPage(QWidget):
         root.addWidget(title)
 
         # ---- station devices (dispatch owns the QR scanner) ----
-        self.devices = DeviceStrip("dispatch", show_station_label=True)
+        self.devices = DeviceStrip("dispatch", show_station_label=True,
+                                     demo_switch=True)
         root.addWidget(self.devices)
 
         # ---- order bar ----
