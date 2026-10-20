@@ -43,6 +43,10 @@ DEFAULTS = {
     # Citizen CL-S621 (USB): Windows printer share name from driver install.
     "printer_name": "",        # e.g. "Citizen CL-S621". "" = file-log/mock
     "demo_mode": False,        # explicit demo switch: simulate scale+printer (no hardware)
+    "mock_qr": False,          # test aid: show a Dispatch button that loads the
+                               # next Ready box as if its QR was scanned. Off on
+                               # the floor; enable from About (admin) or
+                               # SIMPLD_MOCK_QR=1. Does not change printer mode.
     "label_width_mm": 100,     # 4-inch media default; dialog-adjustable
     "label_height_mm": 100,
     "label_dpi": 203,          # CL-S621 = 203dpi
@@ -65,6 +69,8 @@ def load(path: str | None = None) -> dict:
         cfg["printer_name"] = os.environ["SIMPLD_PRINTER_NAME"]
     if os.environ.get("SIMPLD_DEMO") == "1":
         cfg["demo_mode"] = True
+    if "SIMPLD_MOCK_QR" in os.environ:
+        cfg["mock_qr"] = os.environ.get("SIMPLD_MOCK_QR") == "1"
     return cfg
 
 

@@ -11,7 +11,7 @@ from PySide6.QtGui import (QPixmap, QPainter, QColor, QFont, QLinearGradient,
                            QGuiApplication, QTextDocument)
 from PySide6.QtWidgets import (QSplashScreen, QDialog, QVBoxLayout, QHBoxLayout,
                                QLabel, QPushButton, QFrame, QFileDialog,
-                               QMessageBox)
+                               QMessageBox, QCheckBox)
 
 from factory.ui import brand as _brand
 
@@ -183,6 +183,33 @@ class AboutDialog(QDialog):
             self._load_logo()
         outer.addWidget(self._logo_card)
 
+        if str(me.get("role") or "") == "admin":
+            from factory.hardware import devices as _HWDevices
+            test_card = QFrame()
+            test_card.setProperty("card", True)
+            tc = QVBoxLayout(test_card)
+            tc.setContentsMargins(16, 10, 16, 10)
+            tc.setSpacing(4)
+            tt = QLabel("DISPATCH TEST AID")
+            tt.setProperty("field", "caption")
+            tc.addWidget(tt)
+            self._test_cb = QCheckBox(
+                "Show Test scan in Dispatch on this PC")
+            try:
+                self._test_cb.setChecked(_HWDevices.mock_qr_enabled())
+            except Exception:
+                self._test_cb.setChecked(False)
+            self._test_cb.toggled.connect(self._toggle_mock_qr)
+            tc.addWidget(self._test_cb)
+            th = QLabel(
+                "Loads the next Ready box as if its QR was scanned, so the "
+                "client sticker can be tested without a scanner. It does not "
+                "change the printer or scale. Turn it off after testing.")
+            th.setProperty("hint", True)
+            th.setWordWrap(True)
+            tc.addWidget(th)
+            outer.addWidget(test_card)
+
         outer.addStretch(1)
         row = QHBoxLayout()
         # Update entry point lives here (plus the silent startup check): the
@@ -277,6 +304,42 @@ class AboutDialog(QDialog):
         except Exception as e:
             return QMessageBox.warning(self, "Company logo", str(e))
         self._load_logo()
+
+    def _toggle_mock_qr(self, on: bool) -> None:
+        """Admin-only switch for the Dispatch test-scan aid on this PC."""
+        from factory.hardware import config as HWConfig
+        from factory.hardware import devices as HWDevices
+        if on:
+            ans = QMessageBox.question(
+                self, "Enable Test scan?",
+                "This adds a Test scan button to Dispatch on this PC.\n\n"
+                "It loads the next Ready box as if its QR was scanned, so you "
+                "can test the client sticker without a scanner. It does not "
+                "change the printer or scale.\n\nTurn it off after testing.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if ans != QMessageBox.StandardButton.Yes:
+                self._test_cb.blockSignals(True)
+                self._test_cb.setChecked(False)
+                self._test_cb.blockSignals(False)
+                return
+        try:
+            cfg = HWConfig.load()
+            cfg["mock_qr"] = bool(on)
+            HWConfig.save(cfg)
+            HWDevices.reload_hardware(cfg)
+        except Exception as e:
+            self._test_cb.blockSignals(True)
+            self._test_cb.setChecked(not on)
+            self._test_cb.blockSignals(False)
+            return QMessageBox.warning(
+                self, "Test scan", f"Could not change the test aid: {e}")
+        # The Dispatch page may already be built behind this dialog.
+        try:
+            page = getattr(self.parent(), "pages", {}).get("dispatch")
+            if page is not None:
+                page.refresh()
+        except Exception:
+            pass
 
     def _check_updates(self):
         from factory.ui import update_ui

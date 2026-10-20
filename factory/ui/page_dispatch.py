@@ -146,6 +146,18 @@ class DispatchPage(QWidget):
         style_button(self.btn_unscan, "secondary")
         self.btn_unscan.setToolTip("Remove the selected box (loading orders only).")
         scan.addWidget(self.btn_unscan)
+        # Test aid: only visible when mock_qr is enabled on this PC. It loads a
+        # real Ready box through the same scan_into_order path as a scanner, so
+        # the label preview/print can be tested without a QR scanner. It never
+        # changes the printer mode — a configured real printer still prints.
+        self.btn_test_scan = QPushButton("Test scan")
+        self.btn_test_scan.setMinimumHeight(48)
+        self.btn_test_scan.setMinimumWidth(104)
+        style_button(self.btn_test_scan, "outline")
+        self.btn_test_scan.setToolTip(
+            "Testing aid: load the next Ready box as if its QR was scanned.\n"
+            "Enable/disable in About (admin). It does not change printer mode.")
+        scan.addWidget(self.btn_test_scan)
         root.addLayout(scan)
 
         # ---- loaded table ----
@@ -182,6 +194,7 @@ class DispatchPage(QWidget):
         self.scan.returnPressed.connect(self.do_scan)
         self.btn_sticker.clicked.connect(self.print_sticker)
         self.btn_unscan.clicked.connect(self.do_unscan)
+        self.btn_test_scan.clicked.connect(self.do_test_scan)
         self.btn_complete.clicked.connect(self.do_complete)
         self.btn_cancel.clicked.connect(self.do_cancel)
         self.table.itemSelectionChanged.connect(self._update_buttons)
@@ -216,6 +229,17 @@ class DispatchPage(QWidget):
             return False
         return bool(me) and str(me.get("role") or "") in ("dispatcher", "admin")
 
+    def _sync_test_scan(self) -> None:
+        """Show the test aid only when this PC has mock_qr enabled."""
+        try:
+            on = DEV.mock_qr_enabled()
+        except Exception:
+            on = False
+        try:
+            self.btn_test_scan.setVisible(bool(on))
+        except Exception:
+            pass
+
     def _err(self, e) -> str:
         try:
             msg, _kind = DA.describe_error(e)
@@ -238,6 +262,7 @@ class DispatchPage(QWidget):
 
     # ----- data -----
     def refresh(self, select_id: int | None = None):
+        self._sync_test_scan()
         try:
             orders = DA.list_orders()
         except Exception as e:
@@ -515,6 +540,44 @@ class DispatchPage(QWidget):
                 and cur.get("required_pieces") is not None)
         if auto:
             self._open_client_sticker(ct["id"])
+
+    def do_test_scan(self) -> None:
+        """Testing aid: scan the next Ready box for this order without a scanner.
+
+        Uses the same payload/path as a real keyboard-wedge scan
+        (`VASAVI:<carton_no>` -> scan_into_order), so it exercises product
+        matching, client box numbering, the progress alerts, and the wide
+        sticker preview exactly like a physical QR. It does not touch the
+        printer/scale selection: a real configured printer still prints.
+        """
+        if not DEV.mock_qr_enabled():
+            return self.say("Test scan is off for this PC. Enable it in About.",
+                            ok=False, kind="warning")
+        if not self._can_dispatch():
+            return self.say("Dispatcher or admin only.", ok=False)
+        if self.order_id is None:
+            return self.say("Create/select an order first.", ok=False, kind="warning")
+        order = self.selected_order() or {}
+        if str(order.get("status") or "") != "loading":
+            return self.say(
+                f"Order is {order.get('status') or 'not loading'}. "
+                "Only loading orders accept scans.", ok=False, kind="warning")
+        try:
+            ready = DA.ready_stock(order.get("job_id"))
+        except Exception as e:
+            return self.say(f"Connection issue: {self._err(e)}"
+                            " Refresh and try again.", ok=False)
+        loaded = {int(it.get("id")) for it in self._loaded
+                  if it.get("id") is not None}
+        candidates = [r for r in ready
+                      if int(r.get("id") or 0) not in loaded]
+        if not candidates:
+            return self.say(
+                "No Ready boxes left for this order's job. "
+                "Pack another box first.", ok=False, kind="warning")
+        box = candidates[0]
+        self.scan.setText(DA.qr_payload(str(box.get("carton_no") or "")))
+        self.do_scan()
 
     def _open_client_sticker(self, carton_id: int) -> None:
         """Preview + print the wide sticker for one loaded box."""

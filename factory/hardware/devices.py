@@ -167,6 +167,17 @@ def demo_mode(cfg: dict | None = None) -> bool:
     return bool(cfg.get("demo_mode"))
 
 
+def mock_qr_enabled(cfg: dict | None = None) -> bool:
+    """True when the Dispatch test-scan aid is enabled on this PC.
+
+    Deliberately independent of demo_mode: a site can keep its real label
+    printer while simulating the missing scanner. Off unless explicitly
+    enabled in hardware.json, from About (admin), or SIMPLD_MOCK_QR=1.
+    """
+    cfg = cfg if cfg is not None else _config.load()
+    return bool(cfg.get("mock_qr"))
+
+
 def require_scale(cfg: dict | None = None) -> None:
     """Fail closed when no scale is configured (and mock not test-enabled).
 
