@@ -50,25 +50,17 @@ jobs:
         run: |
           python -c "from PySide6.QtGui import QGuiApplication, QFontDatabase; app = QGuiApplication([]); fams = QFontDatabase.families(); assert 'Arial' in fams, 'no Arial among %d families' % len(fams); print('fonts OK:', len(fams), 'families')"
 
-      # Windows-only hazard: this file runs in its own process. In the same
-      # interpreter as the Qt tests, its concurrent test dies with an access
-      # violation (3/3 full-suite runs; the fault site moves between sqlite3
-      # and the TLS read, so it is process state, not this test — which then
-      # passes 3/3 in a fresh process). Root cause still open; see the
-      # 2026-10-17 CI note in plans/README.md.
-      - name: Run LAN transport tests (own process)
+      # One interpreter per test file. In a single process the Qt tests
+      # eventually abort the interpreter (Windows access violation; the
+      # fault site moves between unrelated tests, so it is process state —
+      # see the 2026-10-17 CI note in plans/README.md). Each file passes on
+      # its own, and tools/run_tests.py retries a crashed file once.
+      # SIMPLD_DB must stay per-step: the runner context is not available in
+      # job-level env.
+      - name: Run test suite (one process per file)
         env:
           SIMPLD_DB: ${{ runner.temp }}\test-factory.db
-        run: python -m pytest tests/test_lan_transport.py -q -p no:cacheprovider
-
-      # SIMPLD_DB must stay per-step: the runner context is not available
-      # in job-level env.
-      - name: Run test suite
-        env:
-          SIMPLD_DB: ${{ runner.temp }}\test-factory.db
-        run: >-
-          python -m pytest tests -q -p no:cacheprovider
-          --ignore=tests/test_lan_transport.py
+        run: python tools/run_tests.py
 
       # The suite runs headless under offscreen (FreeType fonts). The
       # shipped app uses the native Windows platform (DirectWrite fonts),
@@ -82,19 +74,23 @@ jobs:
           python -m pytest tests/test_slip_pdf.py tests/test_slip_evidence.py
           -q -p no:cacheprovider
 
-      # On failure, re-run fail-fast: a pytest that dies mid-run (native
-      # crash) never prints its failure summary, and this captures the
-      # first real traceback instead. Kept as insurance while the Windows
-      # access-violation root cause is open (2026-10-17 note in
-      # plans/README.md).
+      # On failure, re-run just the failing files fail-fast: a pytest that
+      # dies mid-test (native crash) never prints its failure summary, and
+      # this captures the first real traceback instead. Kept as insurance
+      # while the Qt/PySide6 crash family is open (plans/README.md).
       - name: Diagnose (fail fast, first traceback)
         if: failure()
         continue-on-error: true
         env:
           SIMPLD_DB: ${{ runner.temp }}\test-factory.db
-        run: >-
-          python -m pytest tests -q -p no:cacheprovider -x
-          --ignore=tests/test_lan_transport.py
+        shell: pwsh
+        run: |
+          if (-not (Test-Path .pytest-failed-files)) { exit 0 }
+          Get-Content .pytest-failed-files | Where-Object { $_ } | ForEach-Object {
+            Write-Host "::group::$_"
+            python -m pytest $_ -q -p no:cacheprovider -x
+            Write-Host "::endgroup::"
+          }
 
   build:
     needs: test
