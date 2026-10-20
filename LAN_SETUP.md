@@ -88,8 +88,9 @@ shared-file SQLite access, no DB copy/sync, and no offline local-write mode.
   actor dicts, or roles are accepted from clients — the server re-resolves
   the actor from its DB and enforces per-op permissions on every call.
 - Login is rate-limited per source IP (10 failures / 5 min -> HTTP 429).
-- Requests are size-bounded (256 KB); errors are generic (401/403/409/413/
-  422/429/500) and never leak tokens, paths, or tracebacks.
+- Requests are size-bounded (2 MB, to allow base64 logo uploads); errors are
+  generic (401/403/409/413/422/429/500) and never leak tokens, paths, or
+  tracebacks.
 - Not exposed: user management (do it in the main app on the packager),
   files/backups, hardware/scale/printer access (each machine's own).
 
@@ -102,7 +103,15 @@ committed). The caller must refresh via a read (`ready_stock`, `list_jobs`,
 `order_progress`, …) and only then decide whether a retry with a **new**
 `request_id` is safe. Retrying blindly can create a duplicate.
 
-## 5. Troubleshooting
+## 5. Measuring LAN latency
+
+`tools/benchmark.py` can measure the real packager → dispatcher HTTPS round
+trip without touching production data: run `--serve` on the packager (temp DB
+and cert), then run the printed read/write client command on dispatch. A
+production server can be measured read-only with a normal dispatcher login.
+See **BENCHMARKING.md** for safety, commands and interpretation.
+
+## 6. Troubleshooting
 
 - `LanConnectionError`: server process down, wrong host/port, firewall, or
   the client clock/CA mismatch (TLS). Check `GET https://host:port/health`.

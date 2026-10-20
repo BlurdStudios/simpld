@@ -220,6 +220,24 @@ it never silently falls back to a mock scale. Full detail in
    A failed real read/print shows an error and blocks the action — nothing
    silently falls back to fake weights or file-log prints.
 
+## Benchmarking (local limits + LAN latency)
+
+`tools/benchmark.py` is a safe, repeatable way to answer "how fast is this PC
+and this LAN?" without touching production data. It measures real service
+writes (reel → box → order → scan), concurrent inventory updates, large local
+datasets, and the actual HTTPS round trip to the packager. Local runs and the
+built-in LAN server use throwaway DBs; a remote server is read-only unless
+writes are explicitly enabled.
+
+```
+python3 tools/benchmark.py --quick
+python3 tools/benchmark.py --mode lan --local-server --quick
+```
+
+For a real packager → dispatcher measurement, start `--serve` on the packager
+(temp DB/cert), then run the printed client command on dispatch. Full safe
+procedure, interpretation, and a baseline table: **BENCHMARKING.md**.
+
 ## Test the 8-step flow without UI
 
 ```
