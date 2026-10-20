@@ -156,17 +156,30 @@ stack with a safe DB.
 ## Example baseline (dev host, loopback — not your factory LAN)
 
 Measured on the development host: Fedora 44, 16 CPUs, Python 3.14,
-SQLite 3.51, loopback HTTPS. These numbers are only a reference; run the same
-commands on the packager and dispatcher PCs.
+SQLite 3.51, loopback HTTPS, 20 iterations, 4 clients x 5 cycles. These
+numbers are only a reference; run the same commands on the packager and
+dispatcher PCs.
 
 | Operation | Local p50 | Loopback LAN p50 | Loopback delta |
 |---|---:|---:|---:|
-| create reel | 0.89 ms | 3.88 ms | ~3.0 ms |
-| pack box | 1.04 ms | 4.04 ms | ~3.0 ms |
-| create order | 0.84 ms | 3.70 ms | ~2.9 ms |
-| scan box into order | 0.84 ms | 3.91 ms | ~3.1 ms |
-| order progress (10 boxes) | 0.42 ms | 3.36 ms | ~2.9 ms |
-| ready stock (10 boxes) | 0.46 ms | 3.40 ms | ~2.9 ms |
+| create reel | 0.86 ms | 5.17 ms | 4.30 ms |
+| pack box | 1.09 ms | 5.51 ms | 4.42 ms |
+| create order | 0.85 ms | 4.90 ms | 4.05 ms |
+| scan box into order | 0.87 ms | 5.21 ms | 4.34 ms |
+| order progress (20 boxes) | 0.47 ms | 3.77 ms | 3.30 ms |
+| ready stock (20 boxes) | 0.59 ms | 4.26 ms | 3.66 ms |
+
+Concurrency on the same run (four independent clients, five complete
+`reel -> box -> order -> scan -> complete` cycles each):
+
+| Path | Cycles/s | Calls/s | Errors |
+|---|---:|---:|---:|
+| local services | 168.77 | 1,181.41 | 0 |
+| loopback HTTPS | 72.32 | 506.24 | 0 |
+
+The loopback penalty is almost entirely per-call TLS setup: the current client
+does not keep the connection alive. A real Ethernet/Wi-Fi link adds network
+round-trip time on top of that. This is the baseline to improve.
 
 Scale on the same host (real service writes, 5 read repetitions):
 
