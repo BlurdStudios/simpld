@@ -170,6 +170,12 @@ back. `--prune` deletes older installers from the folder after publishing.
 
 The shipped 1.0.0 predates the updater, so the **first** update-enabled
 release must be installed manually once per machine (double-click the
-installer). From that version on, every update is automatic. The updater
+installer). From that version on, every update is automatic.
+
+**Moving to the private repo (1.0.2).** 1.0.1 checks `BlurdStudios/simpld`
+directly. 1.0.2 is the first build that checks the public mirror, so a 1.0.1
+machine must reach 1.0.2 once: update in-app while the source repo is still
+public, or install `Simpld-Setup-1.0.2.exe` from the mirror manually. From
+1.0.2 on, updates keep working after the source repo is made private. The updater
 checks after login on the main window; the login screen itself never blocks
 on the network.
