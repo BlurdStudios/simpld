@@ -286,7 +286,8 @@ class DispatchPage(QWidget):
     def refresh(self, select_id: int | None = None):
         self._sync_test_scan()
         try:
-            orders = DA.list_orders()
+            orders = [o for o in DA.list_orders()
+                      if o.get("status") != "cancelled"]
         except Exception as e:
             self._set_progress(f"Connection issue — {self._err(e)}", "err")
             return

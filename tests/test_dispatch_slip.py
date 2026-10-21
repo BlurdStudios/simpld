@@ -223,3 +223,31 @@ def test_migration_creates_slips_table_on_old_db(tmp_path):
         "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
     assert "dispatch_slips" in tables
     reset_auth()
+
+
+def test_cancelled_orders_hidden_in_dropdown(tmp_path):
+    from PySide6.QtWidgets import QApplication
+    from factory.ui.page_dispatch import DispatchPage
+    from factory.ui.styles import APP_QSS
+    p = _db(tmp_path)
+    try:
+        job = S.create_job("DROPDOWN JOB", size_mm=160, core_wt=0.280, path=p)
+        keep = S.create_dispatch_order("KEEP CO", job["id"], required_bundles=1,
+                                       path=p)
+        drop = S.create_dispatch_order("DROP CO", job["id"], required_bundles=1,
+                                       path=p)
+        S.cancel_order(drop["id"], path=p)
+        app = QApplication.instance() or QApplication([])
+        app.setStyle("Fusion")
+        app.setStyleSheet(APP_QSS)
+        pg = DispatchPage()
+        try:
+            pg.refresh()
+            labels = [pg.order_combo.itemText(i)
+                      for i in range(pg.order_combo.count())]
+            assert any(keep["order_no"] in t for t in labels), labels
+            assert not any(drop["order_no"] in t for t in labels), labels
+        finally:
+            pg.close()
+    finally:
+        reset_auth()
