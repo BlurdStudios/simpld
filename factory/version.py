@@ -8,7 +8,7 @@ installer can never disagree.
 
 Release procedure: bump VERSION in the commit you tag.
 
-    VERSION = "1.2.0"   ->   git tag v1.2.0 && git push origin v1.2.0
+    VERSION = "1.2.1"   ->   git tag v1.2.1 && git push origin v1.2.1
 
 See UPDATES.md.
 
@@ -21,6 +21,6 @@ USB only and are never published to the update mirror, so the fleet can
 never auto-update into a demo build.
 """
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 
 DEMO_ENABLED = False
