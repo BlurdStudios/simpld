@@ -766,6 +766,18 @@ def _h_complete(args: dict, actor: dict, dbp: str) -> dict:
     return _svc.complete_dispatch(_v_int(args, "order_id", minimum=1), dbp)  # type: ignore[arg-type]
 
 
+@_op("dispatch_slip", "report.read", ("order_id",))
+def _h_dispatch_slip(args: dict, actor: dict, dbp: str) -> dict:
+    _need(args, "dispatch_slip", frozenset({"order_id"}))
+    return _svc.get_dispatch_slip(_v_int(args, "order_id", minimum=1), dbp)  # type: ignore[arg-type]
+
+
+@_op("mark_dispatch_slip_printed", "dispatch.mutate", ("order_id",))
+def _h_mark_slip(args: dict, actor: dict, dbp: str) -> dict:
+    _need(args, "mark_dispatch_slip_printed", frozenset({"order_id"}))
+    return _svc.mark_dispatch_slip_printed(_v_int(args, "order_id", minimum=1), dbp)  # type: ignore[arg-type]
+
+
 @_op("cancel_order", "dispatch.mutate", ("order_id",))
 def _h_cancel(args: dict, actor: dict, dbp: str) -> dict:
     _need(args, "cancel_order", frozenset({"order_id"}))

@@ -198,8 +198,15 @@ class DispatchPage(QWidget):
         self.btn_cancel = QPushButton("Cancel order")
         self.btn_cancel.setMinimumHeight(56)
         style_button(self.btn_cancel, "danger")
+        self.btn_slip = QPushButton("Slip")
+        self.btn_slip.setMinimumHeight(56)
+        self.btn_slip.setMinimumWidth(96)
+        style_button(self.btn_slip, "secondary")
+        self.btn_slip.setToolTip(
+            "Open the dispatch slip (whole order details) — saved at completion, reprintable.")
         row.addWidget(self.btn_complete, 2)
         row.addWidget(self.btn_cancel, 1)
+        row.addWidget(self.btn_slip, 0)
         root.addLayout(row)
 
         self.btn_new.clicked.connect(self.new_order)
@@ -211,6 +218,7 @@ class DispatchPage(QWidget):
         self.btn_test_scan.clicked.connect(self.do_test_scan)
         self.btn_complete.clicked.connect(self.do_complete)
         self.btn_cancel.clicked.connect(self.do_cancel)
+        self.btn_slip.clicked.connect(self.open_slip)
         self.table.itemSelectionChanged.connect(self._update_buttons)
         self.refresh()
 
@@ -396,6 +404,7 @@ class DispatchPage(QWidget):
                 "Print the wide client sticker for the selected box."
                 if (can and has_sel) else "Select a loaded box first.")
             self.btn_new.setEnabled(can)
+            self.btn_slip.setEnabled(bool(can and o))
             if not can:
                 self.btn_complete.setToolTip("Dispatcher or admin only.")
                 self.btn_cancel.setToolTip("Dispatcher or admin only.")
@@ -718,6 +727,15 @@ class DispatchPage(QWidget):
         self.refresh(select_id=self.order_id)
         if self.on_stock_changed:
             self.on_stock_changed()
+        # The whole order details print now: the slip was frozen in the same
+        # transaction as the completion, so this preview is the saved record.
+        try:
+            from factory.ui.label_preview import DispatchSlipDialog
+            DispatchSlipDialog(self, self.order_id,
+                               slip=(done.get("slip") if isinstance(done, dict) else None)).exec()
+        except Exception as e:
+            self.say(f"Order dispatched, but the slip would not open: {self._err(e)}",
+                     ok=False)
 
     def do_cancel(self):
         if not self._can_dispatch():
@@ -741,3 +759,17 @@ class DispatchPage(QWidget):
         self.refresh(select_id=self.order_id)
         if self.on_stock_changed:
             self.on_stock_changed()
+
+    def open_slip(self):
+        """Reprint the saved dispatch slip for the selected order."""
+        if not self._can_dispatch():
+            return self.say("Dispatcher or admin only.", ok=False)
+        if self.order_id is None:
+            return self.say("Create/select an order first.", ok=False, kind="warning")
+        try:
+            from factory.ui.label_preview import DispatchSlipDialog
+            DispatchSlipDialog(self, self.order_id).exec()
+        except (ValueError, PermissionError) as e:
+            return self.say(str(e), ok=False)
+        except Exception as e:
+            return self.say(f"Connection issue: {self._err(e)}", ok=False)

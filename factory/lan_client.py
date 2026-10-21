@@ -440,6 +440,16 @@ class LanClient:
         return self.call("complete_dispatch", {"order_id": order_id},
                          request_id=request_id)
 
+    def dispatch_slip(self, order_id: int,
+                      request_id: str | None = None) -> dict:
+        return self.call("dispatch_slip", {"order_id": order_id},
+                         request_id=request_id)
+
+    def mark_dispatch_slip_printed(self, order_id: int,
+                                   request_id: str | None = None) -> dict:
+        return self.call("mark_dispatch_slip_printed", {"order_id": order_id},
+                         request_id=request_id)
+
     def cancel_order(self, order_id: int,
                      request_id: str | None = None) -> dict:
         return self.call("cancel_order", {"order_id": order_id},

@@ -167,6 +167,15 @@ CREATE TABLE IF NOT EXISTS dispatch_items (
   scanned_at TEXT NOT NULL,
   UNIQUE(order_id, carton_id)
 );
+CREATE TABLE IF NOT EXISTS dispatch_slips (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  order_id INTEGER UNIQUE NOT NULL REFERENCES dispatch_orders(id) ON DELETE CASCADE,
+  order_no TEXT NOT NULL,
+  slip_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  print_count INTEGER NOT NULL DEFAULT 0,
+  last_printed_at TEXT
+);
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL DEFAULT '',
@@ -255,6 +264,24 @@ def _ensure_wide_label_columns(c) -> None:
         c.execute("UPDATE dispatch_items SET client_box_no=? WHERE id=?",
                   (nxt, r["id"]))
         starts[r["order_id"]] = nxt
+
+
+def _ensure_dispatch_slips(c) -> None:
+    """Frozen dispatch-slip records for pre-existing DBs.
+
+    Fresh DBs get dispatch_slips from SCHEMA. Orders completed before this
+    release have no frozen row — get_dispatch_slip() rebuilds their slip
+    live from dispatch_orders/dispatch_items/cartons instead.
+    """
+    c.execute("""CREATE TABLE IF NOT EXISTS dispatch_slips (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_id INTEGER UNIQUE NOT NULL REFERENCES dispatch_orders(id) ON DELETE CASCADE,
+      order_no TEXT NOT NULL,
+      slip_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      print_count INTEGER NOT NULL DEFAULT 0,
+      last_printed_at TEXT
+    )""")
 
 
 def _ensure_id_counters(c) -> None:
@@ -555,6 +582,7 @@ def init_db(path: str | None = None) -> str:
             _ensure_monthly_migration(c)
             _ensure_box_piece_columns(c)
             _ensure_wide_label_columns(c)
+            _ensure_dispatch_slips(c)
             _ensure_id_counters(c)
             bad = c.execute("PRAGMA foreign_key_check").fetchall()
             if bad:

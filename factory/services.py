@@ -6,6 +6,7 @@ Dispatch: Customer Order -> Scan Ready Cartons -> Load -> Dispatch
 from __future__ import annotations
 import base64
 import io
+import json
 import math
 import sqlite3
 from datetime import datetime
@@ -1462,6 +1463,166 @@ def order_progress(order_id: int, path: str | None = None) -> dict:
         c.close()
 
 
+def _dispatch_slip_rows(c: sqlite3.Connection, order_id: int,
+                        unit: str, wpr: int) -> list[dict]:
+    """One row per loaded box, in scan order, for the dispatch slip."""
+    rows = []
+    for i, it in enumerate(_order_items(c, order_id), 1):
+        box_no = it["client_box_no"]
+        if box_no is None:
+            box_no = i
+        n_reels = int(it["num_reels"] or 0)
+        if str(unit or "reel").lower() == "wrapper":
+            pieces = n_reels * int(wpr or 0)
+        else:
+            pieces = n_reels
+        rows.append({
+            "box_no": int(box_no),
+            "carton_no": bare_carton_no(it["carton_no"]),
+            "num_reels": n_reels,
+            "pieces": pieces,
+            "gross": round(float(it["total_gross"] or 0), 3),
+            "net": round(float(it["total_net"] or 0), 3),
+            "scanned_at": it["scanned_at"],
+        })
+    return rows
+
+
+def _build_dispatch_slip(c: sqlite3.Connection, o: dict) -> dict:
+    """Assemble the full dispatch-slip dict from one order row + its items."""
+    unit = str(o.get("piece_unit") or "reel")
+    wpr = int(o.get("wrappers_per_reel") or 0)
+    rows = _dispatch_slip_rows(c, o["id"], unit, wpr)
+    rp = o.get("required_pieces")
+    rp = int(rp) if rp is not None else None
+    return {
+        "order_id": o["id"],
+        "order_no": o["order_no"],
+        "customer": o["customer"],
+        "customer_po": o.get("customer_po") or "",
+        "batch_no": o.get("batch_no") or "",
+        "job_no": o.get("job_no"),
+        "job_name": o.get("job_name"),
+        "piece_unit": unit,
+        "pieces_word": _unit_word(unit),
+        "required_bundles": int(o.get("required_bundles") or 0),
+        "required_pieces": rp,
+        "loaded_boxes": len(rows),
+        "loaded_pieces": sum(r["pieces"] for r in rows),
+        "loaded_net": round(sum(r["net"] for r in rows), 3),
+        "loaded_gross": round(sum(r["gross"] for r in rows), 3),
+        "status": o.get("status"),
+        "order_date": o.get("order_date"),
+        "completed_at": o.get("completed_at"),
+        "rows": rows,
+    }
+
+
+def dispatch_slip_data(order_id: int, path: str | None = None) -> dict:
+    """Live-built dispatch-slip dict for one order (any status).
+
+    Used for pre-completion previews. The completed order's printed record
+    is the frozen copy — see get_dispatch_slip().
+    """
+    c = get_conn(path)
+    try:
+        o = c.execute(
+            "SELECT o.*, j.job_no, j.job_name, j.wrappers_per_reel"
+            " FROM dispatch_orders o JOIN jobs j ON j.id=o.job_id"
+            " WHERE o.id=?", (order_id,)).fetchone()
+        if not o:
+            raise ValueError("Order not found")
+        slip = _build_dispatch_slip(c, dict(o))
+        slip["frozen"] = False
+        return slip
+    finally:
+        c.close()
+
+
+def get_dispatch_slip(order_id: int, path: str | None = None) -> dict:
+    """The saved dispatch slip for one order.
+
+    Returns the frozen copy written at completion (identical bytes on every
+    reprint). Orders completed before this release have no frozen row — their
+    slip is rebuilt live from the still-linked dispatch tables instead.
+    """
+    c = get_conn(path)
+    try:
+        row = c.execute(
+            "SELECT * FROM dispatch_slips WHERE order_id=?", (order_id,)).fetchone()
+        if row is not None:
+            slip = json.loads(row["slip_json"])
+            slip["slip_id"] = row["id"]
+            slip["print_count"] = int(row["print_count"] or 0)
+            slip["last_printed_at"] = row["last_printed_at"]
+            slip["frozen"] = True
+            return slip
+        o = c.execute(
+            "SELECT o.*, j.job_no, j.job_name, j.wrappers_per_reel"
+            " FROM dispatch_orders o JOIN jobs j ON j.id=o.job_id"
+            " WHERE o.id=?", (order_id,)).fetchone()
+        if not o:
+            raise ValueError("Order not found")
+        slip = _build_dispatch_slip(c, dict(o))
+        slip["frozen"] = False
+        return slip
+    finally:
+        c.close()
+
+
+def mark_dispatch_slip_printed(order_id: int, path: str | None = None,
+                               actor: dict | None = None) -> dict:
+    """Persist print count/last state. Call ONLY when the printer accepted
+    the job (or the PDF was written). Errors must not call this: the record
+    stays reprintable.
+
+    Dispatcher role (dispatch.mutate) — the slip prints on the dispatch
+    station, whose role has no production.print.
+    """
+    _dispatch_actor(path)
+    c = get_conn(path)
+    try:
+        row = c.execute(
+            "SELECT id, print_count FROM dispatch_slips WHERE order_id=?",
+            (order_id,)).fetchone()
+        if not row:
+            raise ValueError("No saved dispatch slip for this order yet.")
+        c.execute("UPDATE dispatch_slips SET print_count=print_count+1,"
+                  " last_printed_at=? WHERE order_id=?", (now_iso(), order_id))
+        c.commit()
+        return {"ok": True, "order_id": order_id,
+                "print_count": int(row["print_count"] or 0) + 1}
+    finally:
+        c.close()
+
+
+def _freeze_dispatch_slip_locked(c: sqlite3.Connection, order_id: int) -> dict:
+    """Write the frozen slip row inside the completion transaction.
+
+    The caller must already have marked the order complete in the same
+    transaction, so the frozen record and the dispatched state commit
+    atomically — the saved slip can never disagree with what went out.
+    """
+    o = c.execute(
+        "SELECT o.*, j.job_no, j.job_name, j.wrappers_per_reel"
+        " FROM dispatch_orders o JOIN jobs j ON j.id=o.job_id"
+        " WHERE o.id=?", (order_id,)).fetchone()
+    if not o:
+        raise ValueError("Order not found")
+    slip = _build_dispatch_slip(c, dict(o))
+    c.execute("INSERT INTO dispatch_slips (order_id, order_no, slip_json, created_at)"
+              " VALUES (?,?,?,?)",
+              (order_id, slip["order_no"], json.dumps(slip, sort_keys=True),
+               now_iso()))
+    row = c.execute("SELECT id FROM dispatch_slips WHERE order_id=?",
+                    (order_id,)).fetchone()
+    slip["slip_id"] = row["id"]
+    slip["frozen"] = True
+    slip["print_count"] = 0
+    slip["last_printed_at"] = None
+    return slip
+
+
 def scan_into_order(order_id: int, scan_text: str, path: str | None = None,
                     actor: dict | None = None) -> dict:
     """Loading-bay scan. Validates product match + duplicates. Returns carton."""
@@ -1638,6 +1799,7 @@ def complete_dispatch(order_id: int, path: str | None = None,
                       (now_iso(), order_id))
             _audit(c, resolved, "complete_order", "order", order_id,
                    f"{o['order_no']} {done_note} dispatched")
+            slip = _freeze_dispatch_slip_locked(c, order_id)
             c.execute("COMMIT")
         except Exception:
             try:
@@ -1645,7 +1807,10 @@ def complete_dispatch(order_id: int, path: str | None = None,
             except sqlite3.Error:
                 pass
             raise
-        return order_progress(order_id, path)
+        done = order_progress(order_id, path)
+        done["slip"] = slip
+        done["slip_id"] = slip["slip_id"]
+        return done
     finally:
         c.close()
 

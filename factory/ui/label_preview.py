@@ -774,3 +774,232 @@ class PackingSlipDialog(QDialog):
             return QMessageBox.warning(self, "Save PDF", f"Could not save:\n{e}")
         from factory.ui.toast import toast
         toast(self, "Slip saved as PDF.")
+
+
+class DispatchSlipDialog(QDialog):
+    """Dispatch slip — the whole order details, printed at completion.
+
+    The record is frozen in the database when the order completes (same
+    transaction), so every reprint is byte-identical. Left: loaded-box
+    table. Right: print preview (the same HTML sent to the printer/PDF).
+    Print targets the office printer via the printer box; Save PDF writes
+    a file. A successful print marks the saved record printed.
+
+    Takes a prefetched slip (the completion response — LAN-safe) or fetches
+    the saved record for the order itself.
+    """
+
+    def __init__(self, parent, order_id: int, slip: dict | None = None):
+        super().__init__(parent)
+        self._order_id = order_id
+        if slip is not None:
+            self._slip = slip
+        else:
+            try:
+                # Saved slip through the facade: frozen copy locally or over
+                # LAN; never opens local SQLite itself.
+                self._slip = DA.dispatch_slip(order_id)
+            except ValueError as e:
+                QMessageBox.warning(self, "Dispatch slip", str(e))
+                self._slip = None
+                return
+            except Exception as e:
+                try:
+                    msg, _kind = DA.describe_error(e)
+                except Exception:
+                    msg = str(e)
+                QMessageBox.warning(self, "Dispatch slip", f"Connection issue: {msg}")
+                self._slip = None
+                return
+        self.setWindowTitle(f"Dispatch Slip — {self._slip['order_no']}")
+        self.setMinimumSize(1020, 640)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 16, 16, 16)
+        lay.setSpacing(10)
+        ht = QLabel(f"Dispatch slip — {self._slip['order_no']} → {self._slip['customer']}")
+        ht.setProperty("dialog", "title")
+        ht.setWordWrap(True)
+        lay.addWidget(ht)
+
+        if self._slip.get("frozen"):
+            self._cap = QLabel("Saved record — frozen at completion (this reprint is identical).")
+        else:
+            self._cap = QLabel("Live view — complete the order to freeze this record.")
+        self._cap.setProperty("field", "caption")
+        self._cap.setWordWrap(True)
+        lay.addWidget(self._cap)
+
+        from PySide6.QtWidgets import (QSplitter, QTableWidget, QTableWidgetItem,
+                                       QHeaderView, QAbstractItemView,
+                                       QComboBox, QFileDialog, QFrame,
+                                       QTextBrowser)
+        split = QSplitter(Qt.Horizontal)
+        split.setHandleWidth(8)
+        lay.addWidget(split, 1)
+
+        # ---- left: loaded boxes ----
+        left = QFrame()
+        left.setProperty("card", True)
+        ll = QVBoxLayout(left)
+        ll.setContentsMargins(12, 12, 12, 12)
+        ll.setSpacing(8)
+        cap = QLabel("Loaded boxes")
+        cap.setProperty("field", "caption")
+        ll.addWidget(cap)
+        unit = str(self._slip.get("piece_unit") or "reel")
+        coil_word = "Wrappers" if unit.lower() == "wrapper" else "Coils"
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(
+            ["Box No", "Box", coil_word, "Pieces", "Gross · kg", "Net · kg"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(36)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setShowGrid(False)
+        self.table.setAlternatingRowColors(True)
+        self.table.setFocusPolicy(Qt.NoFocus)
+        for r in self._slip.get("rows") or []:
+            i = self.table.rowCount()
+            self.table.insertRow(i)
+            self.table.setItem(i, 0, QTableWidgetItem(str(r.get("box_no"))))
+            self.table.setItem(i, 1, QTableWidgetItem(str(r.get("carton_no") or "")))
+            self.table.setItem(i, 2, QTableWidgetItem(str(int(r.get("num_reels") or 0))))
+            self.table.setItem(i, 3, QTableWidgetItem(f"{int(r.get('pieces') or 0):,}"))
+            self.table.setItem(i, 4, QTableWidgetItem(f"{float(r.get('gross') or 0):.3f}"))
+            self.table.setItem(i, 5, QTableWidgetItem(f"{float(r.get('net') or 0):.3f}"))
+        ll.addWidget(self.table, 1)
+        tot_text = (f"Boxes: {int(self._slip.get('loaded_boxes') or 0)}"
+                    f"  ·  Pieces: {int(self._slip.get('loaded_pieces') or 0):,}"
+                    f"  ·  Net {float(self._slip.get('loaded_net') or 0):.3f} Kg"
+                    f"  ·  Gross {float(self._slip.get('loaded_gross') or 0):.3f} Kg")
+        tot = QLabel(tot_text)
+        tot.setProperty("count", True)
+        tot.setWordWrap(True)
+        ll.addWidget(tot)
+        self._print_state = QLabel(self._print_line())
+        self._print_state.setProperty("field", "caption")
+        ll.addWidget(self._print_state)
+        split.addWidget(left)
+
+        # ---- right: preview (same HTML as printer/PDF) ----
+        right = QFrame()
+        right.setProperty("card", True)
+        rl = QVBoxLayout(right)
+        rl.setContentsMargins(12, 12, 12, 12)
+        rl.setSpacing(8)
+        cap2 = QLabel("Print preview")
+        cap2.setProperty("field", "caption")
+        rl.addWidget(cap2)
+        from factory.dispatch_slip_render import render_html
+        view = QTextBrowser()
+        view.setHtml(render_html(self._slip))
+        rl.addWidget(view, 1)
+        split.addWidget(right)
+        split.setSizes([420, 560])
+
+        # ---- bottom: printer + outputs ----
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(QLabel("Printer:"))
+        self.printer_combo = QComboBox()
+        self.printer_combo.setMinimumHeight(44)
+        self.printer_combo.setMinimumWidth(220)
+        try:
+            from PySide6.QtPrintSupport import QPrinterInfo
+            names = [p.printerName() for p in QPrinterInfo.availablePrinters()]
+        except Exception:
+            names = []
+        if names:
+            self.printer_combo.addItems(names)
+        else:
+            self.printer_combo.addItem("(no printer found — Save PDF instead)")
+            self.printer_combo.setEnabled(False)
+        row.addWidget(self.printer_combo, 1)
+        b_print = QPushButton("Print")
+        style_button(b_print, "primary")
+        b_pdf = QPushButton("Save PDF")
+        style_button(b_pdf, "secondary")
+        b_close = QPushButton("Close")
+        style_button(b_close, "secondary")
+        for b in (b_print, b_pdf, b_close):
+            b.setMinimumHeight(44)
+            row.addWidget(b)
+        lay.addLayout(row)
+        b_close.clicked.connect(self.accept)
+        b_print.clicked.connect(self.do_print)
+        b_pdf.clicked.connect(self.do_pdf)
+
+    def _print_line(self) -> str:
+        n = int((self._slip or {}).get("print_count") or 0)
+        if n <= 0:
+            return "Not printed yet."
+        return f"Printed ×{n}."
+
+    def _out_path(self, ext: str) -> str:
+        import os
+        safe = "".join(c for c in str(self._slip.get("order_no") or "order")
+                       if c.isalnum() or c in ("-", "_")) or "order"
+        try:
+            from factory.db import app_data_dir
+            return os.path.join(app_data_dir(), f"dispatch_slip_{safe}.{ext}")
+        except Exception:
+            base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            return os.path.join(base, "data", f"dispatch_slip_{safe}.{ext}")
+
+    def _document(self):
+        from PySide6.QtGui import QTextDocument
+        from factory.dispatch_slip_render import render_html
+        doc = QTextDocument()
+        doc.setHtml(render_html(self._slip))
+        return doc
+
+    def do_print(self):
+        from factory.ui.toast import toast
+        if not getattr(self, "_slip", None):
+            return QMessageBox.warning(
+                self, "Print", "Slip not loaded. Refresh and try again.")
+        if not self.printer_combo.isEnabled():
+            return QMessageBox.warning(self, "Print", "No printer found. Use Save PDF.")
+        name = self.printer_combo.currentText()
+        try:
+            from PySide6.QtPrintSupport import QPrinter, QPrinterInfo
+            pr = QPrinter(QPrinter.PrinterMode.HighResolution)
+            for info in QPrinterInfo.availablePrinters():
+                if info.printerName() == name:
+                    pr.setPrinterName(name)
+                    break
+            self._document().print_(pr)
+        except Exception as e:
+            return QMessageBox.warning(self, "Print", f"Could not print:\n{e}")
+        try:
+            # Only when the job went out: the saved record tracks reprints.
+            marked = DA.mark_dispatch_slip_printed(self._order_id)
+            self._slip["print_count"] = marked.get("print_count", 1)
+            self._print_state.setText(self._print_line())
+        except Exception as e:
+            return toast(self, f"Slip sent to the printer, but the print count was not saved: {e}")
+        toast(self, "Dispatch slip sent to the printer.")
+
+    def do_pdf(self):
+        from PySide6.QtWidgets import QFileDialog
+        from factory.ui.toast import toast
+        if not getattr(self, "_slip", None):
+            return QMessageBox.warning(self, "Save PDF", "Slip not loaded. Refresh and try again.")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save dispatch slip PDF", self._out_path("pdf"),
+            "PDF (*.pdf)")
+        if not path:
+            return
+        try:
+            import os
+            from PySide6.QtPrintSupport import QPrinter
+            pr = QPrinter(QPrinter.PrinterMode.HighResolution)
+            pr.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+            pr.setOutputFileName(path)
+            self._document().print_(pr)
+        except Exception as e:
+            return QMessageBox.warning(self, "Save PDF", f"Could not save:\n{e}")
+        if (not os.path.exists(path)) or os.path.getsize(path) == 0:
+            return QMessageBox.warning(self, "Save PDF", "PDF was not written (empty or missing file).")
+        toast(self, "Dispatch slip saved as PDF.")

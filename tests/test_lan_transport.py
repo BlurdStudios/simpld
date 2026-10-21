@@ -192,6 +192,40 @@ def test_two_clients_share_job_and_box(lan):
     assert slip2["totals"] == slip["totals"]
 
 
+def test_dispatch_slip_saved_printed_and_reprinted_over_lan(lan):
+    pack = _client(lan, "packager", "pack123")
+    disp = _client(lan, "dispatcher", "dispatch123")
+
+    prod = pack.create_product("LAN SLIP WIDGET BODY", 16500)
+    job = pack.create_job_for_product(prod["id"], core_wt=0.28)
+    reel = pack.create_reel(job["id"], gross=11.38, core=0.28, shift="DAY",
+                            supervisor="RAMESH")
+    box = pack.pack_carton(job["id"], [reel["id"]], shift="DAY")
+    order = disp.create_dispatch_order("PARLE AGRO HYD", job["id"],
+                                       required_bundles=1,
+                                       customer_po="PO-LAN")
+    disp.scan_into_order(order["id"], box["carton_no"])
+
+    # Completion freezes the slip server-side and returns it in-band.
+    done = disp.complete_dispatch(order["id"])
+    assert done["status"] == "complete"
+    assert done["slip"]["order_no"] == order["order_no"]
+    assert done["slip"]["customer_po"] == "PO-LAN"
+    assert len(done["slip"]["rows"]) == 1
+
+    # Reprint reads the frozen copy — identical bytes.
+    again = disp.dispatch_slip(order["id"])
+    assert again["frozen"] is True
+    assert again["rows"] == done["slip"]["rows"]
+
+    # Printing marks the saved record (dispatcher role, dispatch.mutate).
+    assert disp.mark_dispatch_slip_printed(order["id"])["print_count"] == 1
+
+    # Packager has no report.read: the saved slip stays dispatcher/admin.
+    with pytest.raises(LC.LanPermissionError):
+        pack.dispatch_slip(order["id"])
+
+
 def test_role_boundaries_enforced_server_side(lan):
     pack = _client(lan, "packager", "pack123")
     disp = _client(lan, "dispatcher", "dispatch123")

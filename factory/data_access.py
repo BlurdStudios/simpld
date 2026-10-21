@@ -603,6 +603,22 @@ def complete_dispatch(order_id: int) -> dict:
     return _svc.complete_dispatch(order_id)
 
 
+def dispatch_slip(order_id: int) -> dict:
+    """Saved dispatch slip for one order (frozen at completion; live
+    rebuild for older orders). Same dict locally and over LAN."""
+    if backend() == "lan":
+        return _lan_client().dispatch_slip(order_id)
+    from . import services as _svc
+    return _svc.get_dispatch_slip(order_id)
+
+
+def mark_dispatch_slip_printed(order_id: int) -> dict:
+    if backend() == "lan":
+        return _lan_client().mark_dispatch_slip_printed(order_id)
+    from . import services as _svc
+    return _svc.mark_dispatch_slip_printed(order_id)
+
+
 def client_label_detail(order_id: int, carton_id: int) -> dict:
     """One wide client sticker: order PO/batch + client box no + coil rows."""
     if backend() == "lan":
