@@ -6,11 +6,21 @@ publish a version tag whose `vX.Y.Z` does not match this constant and passes
 the same value to Inno Setup, so the release tag, the About dialog and the
 installer can never disagree.
 
-Release procedure: bump this value in the commit you tag.
+Release procedure: bump VERSION in the commit you tag.
 
-    VERSION = "1.0.3"   ->   git tag v1.0.3 && git push origin v1.0.3
+    VERSION = "1.1.0"   ->   git tag v1.1.0 && git push origin v1.1.0
 
 See UPDATES.md.
+
+Editions: prod builds ship with DEMO_ENABLED = False — the Demo switch,
+SIMPLD_DEMO and any stored demo_mode are ignored, so demo simulation can
+never run on the factory floor. Demo installers (training / no-hardware
+shows) are built from the SAME commit with this flipped to True by the CI
+demo job and are named Simpld-Setup-X.Y.Z-demo.exe. They are handed out on
+USB only and are never published to the update mirror, so the fleet can
+never auto-update into a demo build.
 """
 
-VERSION = "1.0.3"
+VERSION = "1.1.0"
+
+DEMO_ENABLED = False

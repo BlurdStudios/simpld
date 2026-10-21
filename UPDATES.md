@@ -53,6 +53,18 @@ That is the whole release process. Every internet-connected machine picks the
 update up on its next launch; machines on the isolated LAN need the next
 section.
 
+## Demo installers (USB handout, never auto-updated)
+
+Every tag build also produces `Simpld-Setup-X.Y.Z-demo.exe` (same commit,
+demo edition). It is a CI **artifact**, not a release: it is never published
+to the mirror, so neither the fleet nor the demo laptop ever auto-updates
+into or out of it. Download both `Simpld-Setup` and `Simpld-Setup-demo`
+artifacts from the tag's workflow run and hand them out on USB.
+
+Do not install a demo build on a factory floor PC: both editions share the
+install folder and per-user data dir, so a demo install replaces prod on
+that machine (and its simulated weights would land in the real database).
+
 ## Release mirror setup (one time)
 
 The source repo is **private**; GitHub does not serve releases from a private

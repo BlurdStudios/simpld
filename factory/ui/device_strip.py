@@ -18,6 +18,10 @@ checkable ghost button): it toggles the explicit `demo_mode` config setting
 that simulates the weigh machine and label printer for trainings/audience
 demos. It asks for confirmation once and off-loads nothing silently; see
 `factory/hardware/devices.py` (demo_mode()).
+
+Demo builds only: prod installers ship with DEMO_ENABLED = False, and the
+switch is then not created at all (even with `demo_switch=True`), so
+operators can never turn it on. Demo installers (*-demo.exe) are USB-only.
 """
 from __future__ import annotations
 
@@ -237,6 +241,7 @@ class DeviceStrip(QWidget):
         super().__init__(parent)
         self._station = station
         self._pills: list[DevicePill] = {}
+        self.btn_demo = None    # created below only in demo builds
 
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -255,7 +260,7 @@ class DeviceStrip(QWidget):
             self._pills[spec["key"]] = pill
             outer.addWidget(pill, 0)
 
-        if demo_switch:
+        if demo_switch and HWConfig.demo_build_enabled():
             self.btn_demo = QPushButton("Demo")
             self.btn_demo.setCheckable(True)
             self.btn_demo.setMinimumHeight(28)

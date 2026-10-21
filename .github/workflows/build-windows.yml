@@ -9,6 +9,12 @@ name: Build Windows
 # installer and its .sha256 — that release is what every installed copy of
 # Simpl'd auto-updates from (see UPDATES.md). The tag must match
 # factory/version.py, or the release job fails before anything is published.
+#
+# Editions: the build job runs twice per trigger — prod (the floor build,
+# no Demo switch) and demo (same commit with DEMO_ENABLED flipped to True,
+# installer renamed Simpld-Setup-X.Y.Z-demo.exe). Demo installers are
+# USB-handout only: they are uploaded as CI artifacts and NEVER published
+# to the release mirror, so the fleet can never auto-update into one.
 on:
   push:
     branches: [main, master]
@@ -95,6 +101,13 @@ jobs:
   build:
     needs: test
     runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - edition: prod
+            artifact_suffix: ''
+          - edition: demo
+            artifact_suffix: '-demo'
     permissions:
       contents: write   # create the GitHub Release on version tags
     steps:
@@ -110,6 +123,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -r build/windows/build_requirements.txt
+
+      # Demo installers come from the SAME commit as prod: flip the baked
+      # edition flag before building, so the frozen app has demo enabled.
+      # The exe version metadata stays numeric (VERSION is untouched).
+      - name: Enable the demo edition (demo installers only)
+        if: matrix.edition == 'demo'
+        run: |
+          python -c "from pathlib import Path; p = Path('factory/version.py'); s = p.read_text(); assert 'DEMO_ENABLED = False' in s, 'edition flag missing in factory/version.py'; p.write_text(s.replace('DEMO_ENABLED = False', 'DEMO_ENABLED = True'))"
+          python -c "from factory.version import VERSION, DEMO_ENABLED; assert DEMO_ENABLED is True; print('demo edition:', VERSION, DEMO_ENABLED)"
 
       - name: Resolve version (tag must match factory/version.py)
         shell: pwsh
@@ -163,16 +185,32 @@ jobs:
           "$hash  $($exe.Name)" | Out-File -NoNewline -Encoding ascii "$($exe.FullName).sha256"
           Get-Content "$($exe.FullName).sha256"
 
+      # Demo installers must be unmistakable on a USB stick: rename to
+      # Simpld-Setup-X.Y.Z-demo.exe (with a matching .sha256) and drop the
+      # prod-named files, so the artifact upload below picks up only these.
+      - name: Rename the demo installer (demo installers only)
+        if: matrix.edition == 'demo'
+        shell: pwsh
+        run: |
+          $exe = (Get-ChildItem dist/Simpld-Setup-*.exe | Select-Object -First 1).FullName
+          if (-not $exe) { throw "installer missing" }
+          $demo = $exe -replace '\.exe$', '-demo.exe'
+          Rename-Item $exe $demo
+          Remove-Item "$exe.sha256"
+          $hash = (Get-FileHash $demo -Algorithm SHA256).Hash.ToLower()
+          "$hash  $((Get-Item $demo).Name)" | Out-File -NoNewline -Encoding ascii "$demo.sha256"
+          Get-Content "$demo.sha256"
+
       - name: Upload app folder
         uses: actions/upload-artifact@v4
         with:
-          name: Simpld-windows
+          name: Simpld-windows${{ matrix.artifact_suffix }}
           path: dist/Simpld/
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: Simpld-Setup
+          name: Simpld-Setup${{ matrix.artifact_suffix }}
           path: |
             dist/Simpld-Setup-*.exe
             dist/Simpld-Setup-*.exe.sha256
@@ -181,8 +219,9 @@ jobs:
       # installed copy checking anonymously (the API 404s without a token).
       # Only the installer and its checksum go to the public mirror; the
       # updater reads that mirror with no credentials (see UPDATES.md).
+      # Prod only: demo installers stay USB-handouts, never auto-updates.
       - name: Publish to the public release mirror (version tags only)
-        if: github.ref_type == 'tag'
+        if: github.ref_type == 'tag' && matrix.edition == 'prod'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}

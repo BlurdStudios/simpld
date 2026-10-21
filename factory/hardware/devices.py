@@ -13,6 +13,12 @@ the demo runs on a machine with no scale or printer. It is never silent:
 the user turns it on, a confirmation is shown, and the pills read "demo".
 Without the switch, blank config stays fail-closed exactly as below.
 
+Demo exists ONLY in demo builds (factory/version.py DEMO_ENABLED, or any
+non-frozen source/dev run). Prod installers ship with it disabled: the
+switch is hidden and demo_mode() always returns False there, so a stored
+`demo_mode: true` or SIMPLD_DEMO=1 can never simulate hardware on the
+floor. Demo installers (*-demo.exe) are USB-only and never auto-update.
+
 Setting a port/name in the Devices dialog (or SIMPLD_SCALE_PORT /
 SIMPLD_PRINTER_NAME env, or data/hardware.json) selects the real driver
 after reload_hardware() — applied immediately, no restart. A real device
@@ -162,7 +168,12 @@ def demo_mode(cfg: dict | None = None) -> bool:
     purpose: the switched-on demo runs on a machine with no scale or
     printer. It is never silent — the user turns it on from the device
     strip, a confirmation is shown, and the pills read "demo".
+
+    Demo builds only: prod installers (DEMO_ENABLED = False) always
+    return False here, so demo simulation can never run on the floor.
     """
+    if not _config.demo_build_enabled():
+        return False
     cfg = cfg if cfg is not None else _config.load()
     return bool(cfg.get("demo_mode"))
 

@@ -68,10 +68,13 @@ def test_simpld_demo_env_forces_on(tmp_path, monkeypatch):
 
 
 def test_demo_mode_honored_even_when_frozen(monkeypatch):
-    """The demo switch is the one override that IS honored when frozen;
-    SIMPLD_ALLOW_MOCK stays dead (plan 004 must not regress)."""
+    """The demo switch is the one override that IS honored when frozen —
+    but only in DEMO builds; SIMPLD_ALLOW_MOCK stays dead (plan 004 must
+    not regress)."""
     from factory import db as _db
+    from factory import version as _ver
     from factory.hardware import devices, mock
+    monkeypatch.setattr(_ver, "DEMO_ENABLED", True)   # simulate a demo build
     monkeypatch.setattr(_db, "_is_frozen", lambda: True)
     cfg = {"demo_mode": True}
     assert isinstance(devices.build_scale(cfg), mock.MockEssaeDS215)
@@ -81,6 +84,53 @@ def test_demo_mode_honored_even_when_frozen(monkeypatch):
     monkeypatch.setenv("SIMPLD_ALLOW_MOCK", "1")
     assert devices.mock_allowed() is False, \
         "the test override stays dead when frozen"
+
+
+def test_demo_disabled_in_prod_frozen_build(monkeypatch, tmp_path):
+    """Prod installers (DEMO_ENABLED = False, frozen): the switch, the env
+    force and any stored demo_mode are all ignored — fail-closed."""
+    from factory import db as _db
+    from factory import version as _ver
+    from factory.hardware import devices
+    monkeypatch.setattr(_ver, "DEMO_ENABLED", False)
+    monkeypatch.setattr(_db, "_is_frozen", lambda: True)
+    assert HWC.demo_build_enabled() is False
+    assert devices.demo_mode({"demo_mode": True}) is False
+    with pytest.raises(RuntimeError):
+        devices.require_scale({"demo_mode": True})
+    with pytest.raises(RuntimeError):
+        devices.require_printer({"demo_mode": True})
+    monkeypatch.setenv("SIMPLD_DEMO", "1")
+    assert HWC.load(str(tmp_path / "hardware.json"))["demo_mode"] is False
+
+
+def test_demo_button_hidden_in_prod_build(monkeypatch):
+    """Prod builds don't even create the Demo switch in the strip."""
+    from PySide6.QtWidgets import QApplication
+    from factory import db as _db
+    from factory import version as _ver
+    from factory.ui.device_strip import DeviceStrip
+    monkeypatch.setattr(_ver, "DEMO_ENABLED", False)
+    monkeypatch.setattr(_db, "_is_frozen", lambda: True)
+    app = QApplication.instance() or QApplication([])
+    strip = DeviceStrip("packaging", demo_switch=True)
+    assert getattr(strip, "btn_demo", None) is None
+    strip.close()
+
+
+def test_demo_button_present_in_demo_build(monkeypatch):
+    """Demo builds (frozen) still get the switch."""
+    from PySide6.QtWidgets import QApplication
+    from factory import db as _db
+    from factory import version as _ver
+    from factory.ui.device_strip import DeviceStrip
+    monkeypatch.setattr(_ver, "DEMO_ENABLED", True)
+    monkeypatch.setattr(_db, "_is_frozen", lambda: True)
+    app = QApplication.instance() or QApplication([])
+    strip = DeviceStrip("packaging", demo_switch=True)
+    assert getattr(strip, "btn_demo", None) is not None
+    assert strip.btn_demo.text() == "Demo"
+    strip.close()
 
 
 def test_demo_mode_off_keeps_fail_closed(monkeypatch):

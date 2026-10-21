@@ -187,13 +187,17 @@ it never silently falls back to a mock scale. Full detail in
 - Weighing follows the selected workspace (Reel packing / Box packing) — the
   scale never auto-detects the object type from weight.
 - While the mock scale is active, Packaging shows small Mock rows — Reel/Box on scale (weigh simulation) and Test data (+3 test reels, Pack test box for dummy data). They hide themselves on real hardware.
-- **Demo mode (training / no-hardware demos)** — the Packaging device strip
-  has a **Demo** button: one click (plus a confirm) simulates the weigh
+- **Demo mode (training / no-hardware demos)** — demo installers
+  (`Simpld-Setup-X.Y.Z-demo.exe`, USB handout only) carry a **Demo** button
+  in the device strip: one click (plus a confirm) simulates the weigh
   machine and label printer on a PC with nothing plugged in. Weights are
   made up, labels land in the print log, the device pills read
-  `demo · simulated`, and it is off by default — leave it off for real
-  production. `SIMPLD_DEMO=1` forces it on at launch (per-machine setting in
-  `hardware.json`).
+  `demo · simulated`, and it is off by default. **Prod installers have no
+  Demo button at all** — simulation can never be switched on on the floor.
+  Demo builds are never published to the update mirror, so they never
+  auto-update (and the fleet never auto-updates into one). `SIMPLD_DEMO=1`
+  forces demo on at launch in demo builds / source runs only (per-machine
+  setting in `hardware.json`).
 - Fresh databases start **empty** (schema only — production bootstrap never
   creates jobs, reels, boxes, orders or logins; the first-run admin is set
   up in the login dialog). Test fixtures live in `seed_sample_data()`

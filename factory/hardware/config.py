@@ -53,6 +53,27 @@ DEFAULTS = {
 }
 
 
+def demo_build_enabled() -> bool:
+    """True when this build is allowed to run demo mode at all.
+
+    Prod (frozen) builds ship with factory/version.py DEMO_ENABLED = False,
+    so demo simulation can never run on the factory floor. Demo installers
+    are built with it flipped to True. Source/dev runs (not frozen) always
+    allow demo so tests and training checkouts keep working.
+    """
+    try:
+        from factory.version import DEMO_ENABLED
+        if bool(DEMO_ENABLED):
+            return True
+    except Exception:
+        pass
+    try:
+        from factory.db import _is_frozen
+        return not _is_frozen()
+    except Exception:
+        return True
+
+
 def load(path: str | None = None) -> dict:
     p = path or os.environ.get("SIMPLD_HW_JSON") or _default_path()
     cfg = dict(DEFAULTS)
@@ -67,7 +88,7 @@ def load(path: str | None = None) -> dict:
         cfg["scale_port"] = os.environ["SIMPLD_SCALE_PORT"]
     if os.environ.get("SIMPLD_PRINTER_NAME"):
         cfg["printer_name"] = os.environ["SIMPLD_PRINTER_NAME"]
-    if os.environ.get("SIMPLD_DEMO") == "1":
+    if os.environ.get("SIMPLD_DEMO") == "1" and demo_build_enabled():
         cfg["demo_mode"] = True
     if "SIMPLD_MOCK_QR" in os.environ:
         cfg["mock_qr"] = os.environ.get("SIMPLD_MOCK_QR") == "1"
