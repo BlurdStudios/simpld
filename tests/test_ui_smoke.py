@@ -127,7 +127,7 @@ def test_tables_are_quiet_readonly():
     assert pg.box_table.editTriggers() == QAbstractItemView.NoEditTriggers
     assert pg.box_table.selectionBehavior() == QAbstractItemView.SelectRows
     assert not pg.box_table.showGrid()
-    assert pg.box_table.columnCount() == 5
+    assert pg.box_table.columnCount() == 6  # Box/Reels/Gross/Tare/Net/Sticker
     assert not hasattr(pg, "btn_select_all") and not hasattr(pg, "btn_clear")
     # history keeps production/Reels/Boxes/Dispatch tabs + search
     hp = w.pages["history"]

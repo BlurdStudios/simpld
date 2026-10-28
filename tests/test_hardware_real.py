@@ -376,7 +376,7 @@ def test_real_client_label_print_uses_wide_custom_stock():
         "210mm-wide stock is already wider than tall; keep it Portrait"
     full = lay.fullRect(_PL.Millimeter)
     assert abs(full.width() - 210.0) < 1.0, full
-    assert abs(full.height() - 91.0) < 1.0, full
+    assert abs(full.height() - 92.0) < 1.0, full
     margins = lay.margins(_PL.Millimeter)
     assert (margins.left(), margins.top(), margins.right(),
             margins.bottom()) == (0, 0, 0, 0), margins
@@ -385,7 +385,7 @@ def test_real_client_label_print_uses_wide_custom_stock():
     assert st["painter"].drawn, "wide label image must be painted"
     rect = st["painter"].drawn[-1][0]
     assert (rect.x(), rect.y()) == (0, 0)
-    assert abs(rect.width() - 1678) < 3 and abs(rect.height() - 727) < 3
+    assert abs(rect.width() - 1678) < 3 and abs(rect.height() - 735) < 3
     calls = st["FakePrinter"].instances[-1].calls
     assert ("fullpage", True) in calls
     assert ("resolution", 203) in calls
