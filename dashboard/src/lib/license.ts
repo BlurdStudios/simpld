@@ -220,7 +220,7 @@ export interface IssueInput {
   max_stations?: number;
   features?: string[];
   issued?: string; // YYYY-MM-DD, defaults to today (UTC)
-  expires: string; // YYYY-MM-DD
+  expires?: string; // YYYY-MM-DD, defaults to issued + tier validity
   max_version?: string;
   trial_days?: number; // trial only: 1..365, overrides rule.validityDays
 }
