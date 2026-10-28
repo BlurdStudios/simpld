@@ -44,9 +44,18 @@ export async function handleIssueLicence(
     // NOTE: max_stations/features/issued/expires/serial/max_version from the
     // client are deliberately IGNORED — tier rules derive them. Forged tier
     // values (e.g. max_stations 99 on a simple licence) can never sign.
-    // Exception: trial_days (1..365) is honoured for trial licences only.
+    // Exceptions: validity_days (paid presets, vendor_admin only, 1..1095d)
+    // and trial_days (trial only, 1..365d) are honoured.
     const edition = str("edition") ?? "pro";
     const trialDays = edition === "trial" ? num("trial_days") : undefined;
+    let validityDays: number | undefined;
+    if (edition !== "trial" && caller.role === "vendor_admin") {
+      const v = num("validity_days");
+      if (v !== undefined) {
+        if (v < 1 || v > 1095) return json({ error: "validity_days must be 1..1095" }, 400);
+        validityDays = v;
+      }
+    }
     const lic = await issueLicence(
       {
         customer: str("customer") ?? "",
@@ -54,6 +63,7 @@ export async function handleIssueLicence(
         edition,
         packager_fp: str("packager_fp") ?? "",
         ...(trialDays !== undefined ? { trial_days: trialDays } : {}),
+        ...(validityDays !== undefined ? { validity_days: validityDays } : {}),
       },
       priv
     );

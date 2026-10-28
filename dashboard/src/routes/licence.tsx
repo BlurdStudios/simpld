@@ -16,6 +16,26 @@ export const Route = createFileRoute("/licence")({
   ),
 });
 
+const STATION_SUMMARY: Record<string, string> = {
+  simple: "1 station · no LAN",
+  pro: "3 stations · LAN",
+  premium: "5 stations · LAN + API",
+  trial: "1 station · demo",
+};
+
+const VALIDITY_PRESETS = [
+  { label: "6 months", days: 182 },
+  { label: "1 year", days: 365 },
+  { label: "2 years", days: 730 },
+  { label: "3 years", days: 1095 },
+];
+
+function expiryPreview(days: number): string {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
 export function Licence() {
   const { me } = useAuth();
   const [siteId, setSiteId] = useState("");
@@ -23,15 +43,17 @@ export function Licence() {
   const [packagerFp, setPackagerFp] = useState("");
   const [edition, setEdition] = useState("pro");
   const [trialDays, setTrialDays] = useState("14");
-  const [maxStations, setMaxStations] = useState("2");
-  const [expires, setExpires] = useState("");
-  const [maxVersion, setMaxVersion] = useState("2.x");
+  const [validityDays, setValidityDays] = useState(365);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [licence, setLicence] = useState<string | null>(null);
 
   const lockedSite = me?.role === "client" ? (me.site_id ?? "") : null;
   const effectiveSite = lockedSite || siteId.trim();
+  const fp = packagerFp.trim();
+  const fpOk = /^[0-9a-fA-F]{32}$/.test(fp);
+  const effTrialDays = Math.min(365, Math.max(1, Number(trialDays) || 14));
+  const effDays = edition === "trial" ? effTrialDays : validityDays;
 
   async function issue(e: React.FormEvent) {
     e.preventDefault();
@@ -45,17 +67,22 @@ export function Licence() {
         body: JSON.stringify({
           site_id: effectiveSite,
           customer,
-          packager_fp: packagerFp.trim(),
+          packager_fp: fp,
           edition,
-          max_stations: Number(maxStations),
-          expires,
-          max_version: maxVersion,
-          ...(edition === "trial" ? { trial_days: Number(trialDays) || 14 } : {}),
+          ...(edition === "trial" ? { trial_days: effTrialDays } : { validity_days: effDays }),
         }),
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error ?? `issuance failed (${res.status})`);
-      setLicence(JSON.stringify(data.licence));
+      const text = JSON.stringify(data.licence);
+      setLicence(text);
+      // Auto-download the .lic file — no extra click.
+      const blob = new Blob([text], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "license.lic";
+      a.click();
+      URL.revokeObjectURL(a.href);
     } catch (err) {
       setError(err instanceof Error ? err.message : "issuance failed");
     } finally {
@@ -87,8 +114,7 @@ export function Licence() {
           <CardDescription>
             1. Copy the Machine ID from the packager About screen. 2. Issue a licence here for that ID.
             3. On the packager, open Activate (or About → Import licence) and paste the key or import the file.
-            No internet needed on the factory PC — the key verifies offline. Trial = N-day demo key
-            (single station, app shows a countdown); simple/pro/premium = 1-year keys from the tier rules.
+            No internet needed on the factory PC — the key verifies offline. The file downloads automatically.
           </CardDescription>
         </CardHeader>
       </Card>
@@ -130,10 +156,15 @@ export function Licence() {
                 id="lic-fp"
                 placeholder="32-char board fingerprint"
                 value={packagerFp}
-                onChange={(e) => setPackagerFp(e.target.value)}
+                onChange={(e) => setPackagerFp(e.target.value.trim())}
               />
+              {fp.length > 0 && !fpOk && (
+                <p className="text-xs font-medium text-destructive">
+                  Machine ID must be exactly 32 hex characters — copy it whole from the About screen.
+                </p>
+              )}
             </div>
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="grid gap-4 sm:grid-cols-2">
               <div className="grid gap-2">
                 <Label>Edition</Label>
                 <select
@@ -146,54 +177,40 @@ export function Licence() {
                   <option value="premium">premium — 5 stations, LAN+API</option>
                   <option value="trial">trial — 1 station, N-day demo</option>
                 </select>
-                <p className="text-xs text-muted-foreground">
-                  Stations/features/expiry come from the tier — you only pick site, customer, Machine ID and edition.
-                </p>
               </div>
               {edition === "trial" ? (
                 <div className="grid gap-2">
-                  <Label htmlFor="lic-trialdays">Trial days (1–365)</Label>
+                  <Label htmlFor="lic-trialdays">Trial length (days, 1–365)</Label>
                   <Input
                     id="lic-trialdays"
                     inputMode="numeric"
                     value={trialDays}
-                    onChange={(e) => setTrialDays(e.target.value)}
+                    onChange={(e) => setTrialDays(e.target.value.replace(/[^0-9]/g, ""))}
                   />
-                  <p className="text-xs text-muted-foreground">App shows a countdown for these many days.</p>
                 </div>
               ) : (
                 <div className="grid gap-2">
-                  <Label htmlFor="lic-stations">Max stations</Label>
-                  <Input
-                    id="lic-stations"
-                    inputMode="numeric"
-                    value={maxStations}
-                    onChange={(e) => setMaxStations(e.target.value)}
-                  />
+                  <Label>Valid for</Label>
+                  <select
+                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm"
+                    value={validityDays}
+                    onChange={(e) => setValidityDays(Number(e.target.value))}
+                  >
+                    {VALIDITY_PRESETS.map((p) => (
+                      <option key={p.days} value={p.days}>{p.label}</option>
+                    ))}
+                  </select>
                 </div>
               )}
-              <div className="grid gap-2">
-                <Label htmlFor="lic-expires">Expires (YYYY-MM-DD)</Label>
-                <Input
-                  id="lic-expires"
-                  placeholder="2027-10-26"
-                  value={expires}
-                  onChange={(e) => setExpires(e.target.value)}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="lic-maxver">Max version</Label>
-                <Input
-                  id="lic-maxver"
-                  value={maxVersion}
-                  onChange={(e) => setMaxVersion(e.target.value)}
-                />
-              </div>
             </div>
+            <p className="text-sm text-muted-foreground">
+              {edition} · {STATION_SUMMARY[edition]} · starts today, {effDays} days → expires {expiryPreview(effDays)} (auto).
+              {edition === "trial" && " App shows a countdown."}
+            </p>
             {error && <p className="text-sm font-medium text-destructive">{error}</p>}
             <div>
-              <Button disabled={busy || !effectiveSite || !packagerFp.trim() || (edition !== "trial" && !expires) || !customer.trim()}>
-                Issue {edition === "trial" ? `trial (${trialDays || 14}d)` : "licence"}
+              <Button disabled={busy || !effectiveSite || !fpOk || !customer.trim()}>
+                Issue {edition === "trial" ? `trial (${effTrialDays}d)` : `licence (${effDays}d)`}
               </Button>
             </div>
           </form>

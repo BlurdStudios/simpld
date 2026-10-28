@@ -223,6 +223,7 @@ export interface IssueInput {
   expires?: string; // YYYY-MM-DD, defaults to issued + tier validity
   max_version?: string;
   trial_days?: number; // trial only: 1..365, overrides rule.validityDays
+  validity_days?: number; // paid editions: 1..1095, overrides rule.validityDays
 }
 
 function todayISO(): string {
@@ -247,12 +248,19 @@ export async function issueLicence(input: IssueInput, privkeyB64: string): Promi
   }
   const issued = ((input.issued ?? todayISO()).slice(0, 10));
   if (!/^\d{4}-\d{2}-\d{2}$/.test(issued)) throw new Error("issued must be YYYY-MM-DD");
+  // Validity: tier default, overridable per call (portal: vendor_admin picks
+  // a preset; trial uses trial_days). Hard cap keeps typos harmless.
   let validity = rule.validityDays;
   if (edition === "trial" && input.trial_days !== undefined) {
     if (!Number.isInteger(input.trial_days) || input.trial_days < 1 || input.trial_days > 365) {
       throw new Error("trial_days must be 1..365");
     }
     validity = input.trial_days;
+  } else if (input.validity_days !== undefined) {
+    if (!Number.isInteger(input.validity_days) || input.validity_days < 1 || input.validity_days > 1095) {
+      throw new Error("validity_days must be 1..1095");
+    }
+    validity = input.validity_days;
   }
   const expires = input.expires ? input.expires.slice(0, 10) : addDaysISO(issued, validity);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(expires)) throw new Error("expires must be YYYY-MM-DD");
