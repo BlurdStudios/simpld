@@ -21,7 +21,15 @@ export interface R2Object {
 export interface R2Like {
   get(key: string): Promise<R2Object | null>;
   put(key: string, data: Uint8Array | ArrayBuffer): Promise<void>;
+  list?(prefix?: string): Promise<{ objects: { key: string }[] }>;
+  delete?(key: string | string[]): Promise<void>;
 }
+
+// Retention: R2 keeps the newest N installers (current + rollback room).
+// latest.json / index.json are never deleted. The GitHub release mirror
+// keeps full history as the audit trail; the LAN folder's --prune flag
+// (tools/publish_update.py) is manual and keeps only the published file.
+export const RELEASES_KEEP = 3;
 
 const LATEST_KEY = "releases/latest.json";
 const INDEX_KEY = "releases/index.json";
@@ -104,5 +112,33 @@ export async function handleUploadRelease(req: Request, r2: R2Like | null): Prom
   const index = ((await readJson<ReleaseManifest[]>(r2, INDEX_KEY)) ?? []).filter((e) => e.file !== file.name);
   index.unshift(manifest);
   await r2.put(INDEX_KEY, new TextEncoder().encode(JSON.stringify(index)));
-  return json({ ok: true, release: manifest }, 201);
+  // Prune installers older than the newest RELEASES_KEEP: keeps R2 small
+  // while leaving rollback room. Manifest files are never pruned.
+  const pruned: string[] = [];
+  const pruneErrors: string[] = [];
+  try {
+    const sorted = [...index].sort((a, b) => cmpVersions(b.version, a.version));
+    const keep = new Set(sorted.slice(0, RELEASES_KEEP).map((e) => e.file));
+    const listed = typeof r2.list === "function"
+      ? (await r2.list("releases/")).objects.map((o) => o.key)
+      : index.map((e) => `releases/${e.file}`);
+    const stale = listed.filter(
+      (k) => k.startsWith("releases/Simpld-Setup-") && k.endsWith(".exe") &&
+        !keep.has(k.slice("releases/".length)) &&
+        !pruned.includes(k)
+    );
+    if (stale.length && typeof r2.delete === "function") {
+      await r2.delete(stale);
+      pruned.push(...stale.map((k) => k.slice("releases/".length)));
+    }
+    const keptIndex = index.filter((e) => keep.has(e.file));
+    if (keptIndex.length !== index.length) {
+      await r2.put(INDEX_KEY, new TextEncoder().encode(JSON.stringify(keptIndex)));
+    }
+    return json({ ok: true, release: manifest, pruned, pruneErrors }, 201);
+  } catch (e) {
+    // Cleanup must never fail an upload that already landed.
+    pruneErrors.push(e instanceof Error ? e.message : "prune failed");
+    return json({ ok: true, release: manifest, pruned, pruneErrors }, 201);
+  }
 }
