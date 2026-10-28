@@ -37,7 +37,6 @@ def test_toast_shows_and_replaces():
 def test_print_closes_dialog_with_toast():
     from unittest import mock as _mock
     from PySide6.QtWidgets import QDialog
-    from factory.ui import toast as T
     from factory.ui.label_preview import ReelLabelDialog
     app, host = _app()
     host.resize(800, 600)
@@ -49,12 +48,16 @@ def test_print_closes_dialog_with_toast():
     printer = _mock.Mock()
     printer.print_reel_label.return_value = True
     d = ReelLabelDialog(host, job, reel, printer)
-    d.do_print()
-    app.processEvents()
+    # Spy the toast call itself: whether a ToolTip window reports visible
+    # depends on the Qt platform (offscreen vs native), but the dialog must
+    # fire exactly one toast naming the roll. (Toast widget mechanics are
+    # covered by test_toast_shows_and_replaces.)
+    with _mock.patch("factory.ui.toast.toast") as tmock:
+        d.do_print()
+        app.processEvents()
     assert d.result() == QDialog.DialogCode.Accepted, "good print closes the dialog itself"
-    assert T._active is not None and T._active.isVisible()
-    assert "Roll #1" in T._active.text()
-    T.dismiss()
+    assert tmock.call_count == 1, "good print fires one toast"
+    assert "Roll #1" in str(tmock.call_args.args[1]), tmock.call_args
     host.close()
 
 

@@ -79,6 +79,30 @@ def _select_job(pg, job_id):
     raise AssertionError("job not in combo")
 
 
+def _blank_hw_config():
+    """Point SIMPLD_HW_JSON at a blank temp config.
+
+    Hardware gating tests must not depend on this machine's real
+    data/hardware.json (a dev PC may have demo_mode/mock_qr on, CI has no
+    file at all). Returns the previous env value for restoration.
+    """
+    import json as _json
+    tmp = os.path.join(tempfile.mkdtemp(prefix="simpld-hw-"), "hardware.json")
+    with open(tmp, "w") as f:
+        _json.dump({"scale_port": "", "printer_name": "",
+                    "demo_mode": False, "mock_qr": False}, f)
+    old = os.environ.get("SIMPLD_HW_JSON")
+    os.environ["SIMPLD_HW_JSON"] = tmp
+    return old
+
+
+def _restore_hw_config(old):
+    if old is None:
+        os.environ.pop("SIMPLD_HW_JSON", None)
+    else:
+        os.environ["SIMPLD_HW_JSON"] = old
+
+
 def _has_px(label) -> bool:
     p = label.pixmap()
     return p is not None and not p.isNull()
@@ -282,29 +306,33 @@ def test_nested_nav_modes_gate_controls_and_action():
 def test_stale_scale_read_resets_card():
     """Failed scale read must zero the card so a stale gross cannot be saved."""
     from factory import services as S
-    _fresh_db()
-    _login("packager")
-    app = _app()
-    pg = _page()
-    prod = S.create_product("STALE PROD", 16500)
-    job = S.create_job_for_product(prod["id"])
-    _select_job(pg, job["id"])
-    pg.show()
-    pg.set_mode("reel")
-    pg.gross.setValue(11.380)
-    app.processEvents()
-    assert pg.btn_action.isEnabled()
-    import os as _os
-    old = _os.environ.pop("SIMPLD_ALLOW_MOCK", None)
+    old_hw = _blank_hw_config()
     try:
-        pg.read_scale()
+        _fresh_db()
+        _login("packager")
+        app = _app()
+        pg = _page()
+        prod = S.create_product("STALE PROD", 16500)
+        job = S.create_job_for_product(prod["id"])
+        _select_job(pg, job["id"])
+        pg.show()
+        pg.set_mode("reel")
+        pg.gross.setValue(11.380)
+        app.processEvents()
+        assert pg.btn_action.isEnabled()
+        import os as _os
+        old = _os.environ.pop("SIMPLD_ALLOW_MOCK", None)
+        try:
+            pg.read_scale()
+        finally:
+            if old is not None:
+                _os.environ["SIMPLD_ALLOW_MOCK"] = old
+        assert pg.gross.value() == 0, "stale gross must be invalidated to 0"
+        assert not pg.btn_action.isEnabled()
+        assert "Scale not configured" in pg.msg or "Devices" in pg.msg, pg.msg
+        pg.close()
     finally:
-        if old is not None:
-            _os.environ["SIMPLD_ALLOW_MOCK"] = old
-    assert pg.gross.value() == 0, "stale gross must be invalidated to 0"
-    assert not pg.btn_action.isEnabled()
-    assert "Scale not configured" in pg.msg or "Devices" in pg.msg, pg.msg
-    pg.close()
+        _restore_hw_config(old_hw)
 
 
 # ---- 4. history: ALL reels, exact row, real Label state ----
@@ -608,38 +636,42 @@ def test_fresh_startup_empty_no_sample_and_hardware_labelled():
     from factory import services as S
     from factory.hardware import devices as DEV
     import os as _os
-    p = _fresh_db()
-    _login("admin")
-    _app()
-    assert S.list_jobs(path=p) == []
-    assert S.production_history(path=p) == []
-    from factory.ui.main_window import MainWindow
-    w = MainWindow()
-    assert w.pages["jobs"].empty.isVisible() or "No jobs" in w.pages["jobs"].empty.text()
-    assert "No reels yet" in w.pages["packaging"].sel_info.text()
-    assert set(w.pack_nav) == {"reel", "carton"}
-    w.pack_nav["carton"].click()
-    assert w.pages["packaging"].pack_mode == "carton"
-    from factory.hardware import status as HWStatus
-    states = {d["key"]: d["state"]
-              for d in HWStatus.station_status("packaging")}
-    assert states == {"scale": "setup", "printer": "setup"}, states
-    old = _os.environ.pop("SIMPLD_ALLOW_MOCK", None)
+    old_hw = _blank_hw_config()
     try:
+        p = _fresh_db()
+        _login("admin")
+        _app()
+        assert S.list_jobs(path=p) == []
+        assert S.production_history(path=p) == []
+        from factory.ui.main_window import MainWindow
+        w = MainWindow()
+        assert w.pages["jobs"].empty.isVisible() or "No jobs" in w.pages["jobs"].empty.text()
+        assert "No reels yet" in w.pages["packaging"].sel_info.text()
+        assert set(w.pack_nav) == {"reel", "carton"}
+        w.pack_nav["carton"].click()
+        assert w.pages["packaging"].pack_mode == "carton"
+        from factory.hardware import status as HWStatus
+        states = {d["key"]: d["state"]
+                  for d in HWStatus.station_status("packaging")}
+        assert states == {"scale": "setup", "printer": "setup"}, states
+        old = _os.environ.pop("SIMPLD_ALLOW_MOCK", None)
         try:
-            DEV.require_scale()
-            raise SystemExit("FAIL: blank scale allowed production weighing")
-        except RuntimeError as e:
-            assert "Devices" in str(e) or "Scale" in str(e)
-        try:
-            DEV.require_printer()
-            raise SystemExit("FAIL: blank printer allowed production printing")
-        except RuntimeError as e:
-            assert "Devices" in str(e) or "Printer" in str(e)
+            try:
+                DEV.require_scale()
+                raise SystemExit("FAIL: blank scale allowed production weighing")
+            except RuntimeError as e:
+                assert "Devices" in str(e) or "Scale" in str(e)
+            try:
+                DEV.require_printer()
+                raise SystemExit("FAIL: blank printer allowed production printing")
+            except RuntimeError as e:
+                assert "Devices" in str(e) or "Printer" in str(e)
+        finally:
+            if old is not None:
+                _os.environ["SIMPLD_ALLOW_MOCK"] = old
+        w.close()
     finally:
-        if old is not None:
-            _os.environ["SIMPLD_ALLOW_MOCK"] = old
-    w.close()
+        _restore_hw_config(old_hw)
 
 
 # ---- 9. history page: actual all-production + search ----

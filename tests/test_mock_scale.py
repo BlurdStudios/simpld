@@ -49,6 +49,30 @@ def _select_job(pg, job_id):
     raise AssertionError("job not in combo")
 
 
+def _blank_hw_config():
+    """Point SIMPLD_HW_JSON at a blank temp config.
+
+    Hardware gating tests must not depend on this machine's real
+    data/hardware.json (a dev PC may have demo_mode/mock_qr on, CI has no
+    file at all). Returns the previous env value for restoration.
+    """
+    import json as _json
+    tmp = os.path.join(tempfile.mkdtemp(prefix="simpld-hw-"), "hardware.json")
+    with open(tmp, "w") as f:
+        _json.dump({"scale_port": "", "printer_name": "",
+                    "demo_mode": False, "mock_qr": False}, f)
+    old = os.environ.get("SIMPLD_HW_JSON")
+    os.environ["SIMPLD_HW_JSON"] = tmp
+    return old
+
+
+def _restore_hw_config(old):
+    if old is None:
+        os.environ.pop("SIMPLD_HW_JSON", None)
+    else:
+        os.environ["SIMPLD_HW_JSON"] = old
+
+
 def test_no_mock_helpers_in_production_ui():
     _fresh_db()
     _, pg = _page()
@@ -60,22 +84,26 @@ def test_no_mock_helpers_in_production_ui():
 
 def test_blank_config_blocks_weighing_not_mock_records():
     from factory.hardware import mock as HW
-    p = _fresh_db()
-    job = S.create_job("GATE JOB", core_wt=0.280, path=p)
-    _, pg = _page()
-    _select_job(pg, job["id"])
-    old = os.environ.pop("SIMPLD_ALLOW_MOCK", None)
+    old_hw = _blank_hw_config()
     try:
-        pg.gross.setValue(5.0)
-        pg.read_scale()
-        assert "not configured" in pg.msg.casefold(), pg.msg
-        assert pg.gross.value() == 0
-        assert S.loose_reels(job["id"], path=p) == [], "blocked read must write nothing"
-        assert S.ready_stock(job["id"], path=p) == []
+        p = _fresh_db()
+        job = S.create_job("GATE JOB", core_wt=0.280, path=p)
+        _, pg = _page()
+        _select_job(pg, job["id"])
+        old = os.environ.pop("SIMPLD_ALLOW_MOCK", None)
+        try:
+            pg.gross.setValue(5.0)
+            pg.read_scale()
+            assert "not configured" in pg.msg.casefold(), pg.msg
+            assert pg.gross.value() == 0
+            assert S.loose_reels(job["id"], path=p) == [], "blocked read must write nothing"
+            assert S.ready_stock(job["id"], path=p) == []
+        finally:
+            if old is not None:
+                os.environ["SIMPLD_ALLOW_MOCK"] = old
+        pg.close()
     finally:
-        if old is not None:
-            os.environ["SIMPLD_ALLOW_MOCK"] = old
-    pg.close()
+        _restore_hw_config(old_hw)
 
 
 def test_mock_allowed_read_writes_nothing_by_itself():

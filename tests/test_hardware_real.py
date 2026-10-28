@@ -425,36 +425,64 @@ def test_real_print_failures_never_report_success():
 
 
 # ----- UI: mock toggle, Read/Stop errors, mode indication -----
+def _blank_hw_config():
+    """Point SIMPLD_HW_JSON at a blank temp config.
+
+    Hardware gating tests must not depend on this machine's real
+    data/hardware.json (a dev PC may have demo_mode/mock_qr on, CI has no
+    file at all). Returns the previous env value for restoration.
+    """
+    import json as _json
+    tmp = os.path.join(tempfile.mkdtemp(prefix="simpld-hw-"), "hardware.json")
+    with open(tmp, "w") as f:
+        _json.dump({"scale_port": "", "printer_name": "",
+                    "demo_mode": False, "mock_qr": False}, f)
+    old = os.environ.get("SIMPLD_HW_JSON")
+    os.environ["SIMPLD_HW_JSON"] = tmp
+    return old
+
+
+def _restore_hw_config(old):
+    if old is None:
+        os.environ.pop("SIMPLD_HW_JSON", None)
+    else:
+        os.environ["SIMPLD_HW_JSON"] = old
+
+
 def test_no_mock_helpers_blank_config_blocks_weighing():
     """Production has no fake-weight/test-data helpers; blank hardware
     config blocks weighing/printing instead of fabricating records."""
-    p = _fresh_db()
-    job = S.create_job("NOHELP JOB", core_wt=0.280, path=p)
-    _, pg = _page()
-    _select_job(pg, job["id"])
-    for attr in ("btn_mock_reel", "btn_mock_box", "btn_dbg_reels",
-                 "mock_weigh", "debug_add_reels", "debug_pack_carton"):
-        assert not hasattr(pg, attr), f"production UI must not keep {attr}"
-    # Device strip is the live hardware surface now (no hw_mode label).
-    from factory.ui.device_strip import DeviceStrip
-    from factory.hardware import status as HWStatus
-    strip = pg.findChild(DeviceStrip)
-    assert strip is not None, "packaging page must show a device strip"
-    states = {d["key"]: d["state"] for d in HWStatus.station_status("packaging")}
-    assert set(states) == {"scale", "printer"}, states
-    assert all(s == "setup" for s in states.values()), states
-    # Blank config (mock not test-enabled) blocks weighing with guidance.
-    old = os.environ.pop("SIMPLD_ALLOW_MOCK", None)
+    old_hw = _blank_hw_config()
     try:
-        pg.job_id = pg.job_id  # keep selection state
-        pg.gross.setValue(5.0)
-        pg.read_scale()
-        assert "not configured" in pg.msg.casefold(), pg.msg
-        assert pg.gross.value() == 0, "blocked read must invalidate the card"
+        p = _fresh_db()
+        job = S.create_job("NOHELP JOB", core_wt=0.280, path=p)
+        _, pg = _page()
+        _select_job(pg, job["id"])
+        for attr in ("btn_mock_reel", "btn_mock_box", "btn_dbg_reels",
+                     "mock_weigh", "debug_add_reels", "debug_pack_carton"):
+            assert not hasattr(pg, attr), f"production UI must not keep {attr}"
+        # Device strip is the live hardware surface now (no hw_mode label).
+        from factory.ui.device_strip import DeviceStrip
+        from factory.hardware import status as HWStatus
+        strip = pg.findChild(DeviceStrip)
+        assert strip is not None, "packaging page must show a device strip"
+        states = {d["key"]: d["state"] for d in HWStatus.station_status("packaging")}
+        assert set(states) == {"scale", "printer"}, states
+        assert all(s == "setup" for s in states.values()), states
+        # Blank config (mock not test-enabled) blocks weighing with guidance.
+        old = os.environ.pop("SIMPLD_ALLOW_MOCK", None)
+        try:
+            pg.job_id = pg.job_id  # keep selection state
+            pg.gross.setValue(5.0)
+            pg.read_scale()
+            assert "not configured" in pg.msg.casefold(), pg.msg
+            assert pg.gross.value() == 0, "blocked read must invalidate the card"
+        finally:
+            if old is not None:
+                os.environ["SIMPLD_ALLOW_MOCK"] = old
+        pg.close()
     finally:
-        if old is not None:
-            os.environ["SIMPLD_ALLOW_MOCK"] = old
-    pg.close()
+        _restore_hw_config(old_hw)
 
 
 def test_read_scale_real_error_invalidates_weight_and_action():
