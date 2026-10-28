@@ -141,14 +141,14 @@ class NewJobDialogMixin:
     @staticmethod
     def ask_new_job(parent):
         """New packaging job from the products master. Retains the selected
-        product and typed targets across validation failures. No Size/Core
+        product and typed target across validation failures. No Size/Core
         fields (legacy size/core rows stay in the DB, core default unchanged).
-        Targets are optional and set here at creation (blank = none)."""
+        The single optional target is the product's own unit."""
         from PySide6.QtWidgets import (QDialog, QFormLayout, QComboBox, QPushButton,
                                        QDialogButtonBox, QHBoxLayout, QWidget, QLabel,
                                        QLineEdit)
         select_id = None
-        t_reels_val, t_boxes_val, t_unit_val = "", "", ""
+        t_unit_val = ""
         while True:
             d = QDialog(parent)
             d.setWindowTitle("New job")
@@ -206,14 +206,9 @@ class NewJobDialogMixin:
             hl.addWidget(add_btn)
             hl.addWidget(wrap_btn)
             f.addRow("Product:", row)
-            # Optional targets at creation (blank = none). Only the product's
-            # own unit is offered alongside reels/boxes.
-            t_reels = QLineEdit()
-            t_reels.setPlaceholderText("e.g. 100")
-            t_reels.setText(t_reels_val)
-            t_boxes = QLineEdit()
-            t_boxes.setPlaceholderText("e.g. 50")
-            t_boxes.setText(t_boxes_val)
+            # One target at creation: the product's own unit (pieces or kg).
+            # Reels/boxes needed are derived from it (pieces ÷ wrappers,
+            # kg ÷ typical reel net) — never typed.
             t_unit = QLineEdit()
             t_unit.setText(t_unit_val)
             unit_lab = QLabel("Target:")
@@ -224,17 +219,15 @@ class NewJobDialogMixin:
                     prods = {}
                 prod = prods.get(combo.currentData())
                 if prod and prod.get("wrappers_per_reel"):
-                    unit_lab.setText("Target pieces (wrappers):")
+                    unit_lab.setText("Target pieces (wrappers, optional):")
                     if not t_unit.text():
                         t_unit.setPlaceholderText("e.g. 165000")
                 else:
-                    unit_lab.setText("Target net kg:")
+                    unit_lab.setText("Target net kg (optional):")
                     if not t_unit.text():
                         t_unit.setPlaceholderText("e.g. 500")
             combo.currentIndexChanged.connect(lambda _i: _unit_update())
             _unit_update()
-            f.addRow("Target reels (optional):", t_reels)
-            f.addRow("Target boxes (optional):", t_boxes)
             f.addRow(unit_lab, t_unit)
             hint = QLabel("Jobs run continuously across months; reel/box numbers restart at 1"
                           " each month for each product.")
@@ -252,8 +245,8 @@ class NewJobDialogMixin:
                 QMessageBox.warning(parent, "Cannot save job",
                                     "Select a product first (or add it once, then reuse it).")
                 continue
-            # Retain typed targets across validation failures.
-            t_reels_val, t_boxes_val, t_unit_val = t_reels.text(), t_boxes.text(), t_unit.text()
+            # Retain typed target across validation failures.
+            t_unit_val = t_unit.text()
             try:
                 prods = {p["id"]: p for p in DA.list_products()}
             except Exception:
@@ -273,11 +266,10 @@ class NewJobDialogMixin:
                 if not whole and not (n > 0):
                     return "bad"
                 return n
-            tr, tb = _opt_num(t_reels_val), _opt_num(t_boxes_val)
             tu = _opt_num(t_unit_val, whole=is_piece)
-            if tr == "bad" or tb == "bad" or tu == "bad":
+            if tu == "bad":
                 QMessageBox.warning(parent, "Cannot save job",
-                                    "Targets must be blank or positive numbers.")
+                                    "Target must be blank or a positive number.")
                 continue
             try:
                 job = DA.create_job_for_product(pid)
@@ -294,21 +286,19 @@ class NewJobDialogMixin:
                     msg = str(e)
                 QMessageBox.warning(parent, "Cannot save job", msg)
                 return None
-            if tr is not None or tb is not None or tu is not None:
+            if tu is not None:
                 try:
                     if is_piece:
-                        DA.set_job_targets(job["id"], target_reels=tr,
-                                           target_boxes=tb, target_pieces=tu)
+                        DA.set_job_targets(job["id"], target_pieces=tu)
                     else:
-                        DA.set_job_targets(job["id"], target_reels=tr,
-                                           target_boxes=tb, target_weight_kg=tu)
+                        DA.set_job_targets(job["id"], target_weight_kg=tu)
                 except Exception as e:
                     try:
                         msg, _k = DA.describe_error(e)
                     except Exception:
                         msg = str(e)
-                    QMessageBox.warning(parent, "Targets not saved",
-                                        f"Job J:{job['job_no']} created, but targets failed:\n{msg}")
+                    QMessageBox.warning(parent, "Target not saved",
+                                        f"Job J:{job['job_no']} created, but target failed:\n{msg}")
             return job
 
 
@@ -910,7 +900,8 @@ class PackagingPage(QWidget, NewJobDialogMixin):
             self.say(f"Product '{p['name']}' added — pick it in New job.", ok=True)
 
     def edit_targets(self):
-        """Set packaging targets (reels / boxes / kg / pieces) for the job."""
+        """Set the job's target: pieces for piece products, net kg for kg
+        products. Reels/boxes needed are derived — never typed."""
         from PySide6.QtWidgets import (QDialog, QFormLayout, QLineEdit,
                                        QDialogButtonBox, QLabel)
         if self.job_id is None:
@@ -919,21 +910,14 @@ class PackagingPage(QWidget, NewJobDialogMixin):
         if not job:
             return self.say("Job not found — refresh first.", ok=False)
         d = QDialog(self)
-        d.setWindowTitle(f"Targets — J:{job['job_no']}")
+        d.setWindowTitle(f"Target — J:{job['job_no']}")
         f = QFormLayout(d)
         info = QLabel("Blank = no target. Targets never block packing; they only"
-                      " drive the green FULFILLED state.")
+                      " drive the green FULFILLED state. Reels/boxes needed are"
+                      " calculated from this.")
         info.setWordWrap(True)
         info.setProperty("hint", True)
         f.addRow(info)
-        e_reels = QLineEdit(str(job.get("target_reels") or ""))
-        e_reels.setPlaceholderText("e.g. 100")
-        e_boxes = QLineEdit(str(job.get("target_boxes") or ""))
-        e_boxes.setPlaceholderText("e.g. 50")
-        f.addRow("Target reels:", e_reels)
-        f.addRow("Target boxes:", e_boxes)
-        # Only the product's own unit is offered: pieces for piece products,
-        # net kg for kg products. Reels/boxes apply to both.
         is_piece = bool(job.get("wrappers_per_reel"))
         e_unit = QLineEdit()
         if is_piece:
@@ -955,22 +939,14 @@ class PackagingPage(QWidget, NewJobDialogMixin):
             return t or None
         try:
             if is_piece:
-                upd = DA.set_job_targets(self.job_id,
-                                         target_reels=_opt(e_reels.text()),
-                                         target_boxes=_opt(e_boxes.text()),
-                                         target_weight_kg=None,
-                                         target_pieces=_opt(e_unit.text()))
+                upd = DA.set_job_targets(self.job_id, target_pieces=_opt(e_unit.text()))
             else:
-                upd = DA.set_job_targets(self.job_id,
-                                         target_reels=_opt(e_reels.text()),
-                                         target_boxes=_opt(e_boxes.text()),
-                                         target_weight_kg=_opt(e_unit.text()),
-                                         target_pieces=None)
+                upd = DA.set_job_targets(self.job_id, target_weight_kg=_opt(e_unit.text()))
         except (ValueError, PermissionError) as e:
             return self.say(str(e), ok=False)
         except Exception as e:
             return self.say(f"Connection issue: {self._backend_error(e)}", ok=False)
-        self.say("Targets saved.", ok=True)
+        self.say("Target saved.", ok=True)
         self._refresh_job_info()
         self._refresh_state()
 
@@ -1009,23 +985,45 @@ class PackagingPage(QWidget, NewJobDialogMixin):
         wtxt = f"{w}/reel" if w else "kg product"
         base = (f"J:{job['job_no']} {job['job_name']} ({wtxt})  ·  "
                 f"Loose {st.get('loose', 0)}  ·  Ready {st.get('ready_cartons', 0)}")
-        # Packaging targets (any combo). Vivid fulfilled state: green banner
-        # text when any target is met so the floor sees it at a glance.
-        tgt_bits: list[str] = []
+        # Target = the product's own unit only; reels/boxes needed are
+        # derived (pieces ÷ wrappers, kg ÷ typical reel net). Vivid
+        # fulfilled state so the floor sees it at a glance.
+        import math as _math
         try:
-            if job.get("target_reels"):
-                tgt_bits.append(f"{st.get('reels', 0)}/{job['target_reels']} reels")
-            if job.get("target_boxes"):
-                tgt_bits.append(f"{st.get('boxes', st.get('ready_cartons', 0))}/{job['target_boxes']} boxes")
-            if job.get("target_weight_kg"):
-                tgt_bits.append(f"{st.get('reel_wt', 0):.1f}/{float(job['target_weight_kg']):.1f} kg")
-            if job.get("target_pieces"):
-                _pcs = st.get("pieces")
-                tgt_bits.append(f"{(_pcs if _pcs is not None else 0):,}/{int(job['target_pieces']):,} pcs")
+            rpb = max(1, self._reels_per_box())
         except Exception:
-            pass
-        if tgt_bits:
-            base += "  ·  Target " + " · ".join(tgt_bits)
+            rpb = 2
+        tgt = ""
+        try:
+            if w and job.get("target_pieces"):
+                tp = int(job["target_pieces"])
+                made = int(st.get("pieces") or 0)
+                need_r = max(0, _math.ceil(max(0, tp - made) / int(w)))
+                need_b = max(0, _math.ceil(need_r / rpb)) if need_r else 0
+                tgt = (f"Target {made:,}/{tp:,} pcs"
+                       + (f" · needs {need_r} reels ({need_b} boxes)" if need_r else ""))
+            elif not w and job.get("target_weight_kg"):
+                tw = float(job["target_weight_kg"])
+                made_w = float(st.get("reel_wt") or 0)
+                try:
+                    med = self._median_gross(self._loose())
+                    avg = (float(med) - float(job.get("core_wt") or 0.28)) if med else 0
+                except Exception:
+                    avg = 0.0
+                if not avg or avg <= 0:
+                    try:
+                        n = int(st.get("reels") or 0)
+                        avg = (made_w / n) if n else 10.0
+                    except Exception:
+                        avg = 10.0
+                need_r = max(0, _math.ceil(max(0.0, tw - made_w) / avg)) if avg > 0 else 0
+                need_b = max(0, _math.ceil(need_r / rpb)) if need_r else 0
+                tgt = (f"Target {made_w:.1f}/{tw:.1f} kg"
+                       + (f" · needs ~{need_r} reels ({need_b} boxes)" if need_r else ""))
+        except Exception:
+            tgt = ""
+        if tgt:
+            base += "  ·  " + tgt
             if st.get("any_target_met"):
                 base += "  ✓ FULFILLED"
         self.job_info.setText(base)
