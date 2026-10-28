@@ -329,6 +329,7 @@ class SummaryPage(QWidget):
         self.date_edit.setCalendarPopup(True)
         self.date_edit.setDisplayFormat("yyyy-MM-dd")
         self.date_edit.setMinimumHeight(40)
+        self.date_edit.setMinimumWidth(150)
         self.btn_report = QPushButton("Daily report")
         self.btn_report.setMinimumHeight(40)
         style_button(self.btn_report, "primary")

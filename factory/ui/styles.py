@@ -139,11 +139,11 @@ QLabel[step="true"] { font-size: 15px; font-weight: 700; color: #18181B; }
 QLabel[hint="true"] { color: #52525B; font-size: 12px; }
 QLabel[jobinfo="true"] { color: #52525B; font-size: 12px; }
 /* ---- inputs (input/select: bordered, compact, focus ring) ---- */
-QLineEdit, QComboBox, QDoubleSpinBox, QTextEdit, QSpinBox { background: white; border: 1px solid #D4D4D8;
+QLineEdit, QComboBox, QDoubleSpinBox, QDateEdit, QTextEdit, QSpinBox { background: white; border: 1px solid #D4D4D8;
     border-radius: 8px; padding: 7px 10px; min-height: 24px; font-size: 13px; color: #18181B; }
-QLineEdit:hover, QComboBox:hover, QDoubleSpinBox:hover, QTextEdit:hover { border-color: #A1A1AA; }
-QLineEdit:focus, QComboBox:focus, QDoubleSpinBox:focus, QTextEdit:focus { border: 2px solid __ACCENT__; }
-QLineEdit:disabled, QComboBox:disabled, QDoubleSpinBox:disabled, QTextEdit:disabled { background: #F4F4F5; color: #A1A1AA; border-color: #E4E4E7; }
+QLineEdit:hover, QComboBox:hover, QDoubleSpinBox:hover, QDateEdit:hover, QTextEdit:hover { border-color: #A1A1AA; }
+QLineEdit:focus, QComboBox:focus, QDoubleSpinBox:focus, QDateEdit:focus, QTextEdit:focus { border: 2px solid __ACCENT__; }
+QLineEdit:disabled, QComboBox:disabled, QDoubleSpinBox:disabled, QDateEdit:disabled, QTextEdit:disabled { background: #F4F4F5; color: #A1A1AA; border-color: #E4E4E7; }
 QLineEdit[scan="true"] { font-size: 16px; font-weight: 600; }
 QDoubleSpinBox[big="true"] { font-size: 30px; font-weight: 700; }
 QComboBox { padding-right: 32px; combobox-popup: 0; }
@@ -154,6 +154,12 @@ QDoubleSpinBox { padding-right: 34px; }
 QDoubleSpinBox::up-button, QDoubleSpinBox::down-button { width: 28px; border-left: 1px solid #E4E4E7; background: #F4F4F5; }
 QDoubleSpinBox::up-arrow { image: url("__CHEV_UP__"); width: 12px; height: 12px; }
 QDoubleSpinBox::down-arrow { image: url("__CHEV_DOWN__"); width: 12px; height: 12px; }
+QDateEdit { padding-right: 34px; }
+QDateEdit::drop-down { width: 28px; border: none; border-left: 1px solid #E4E4E7; background: #F4F4F5;
+    border-top-right-radius: 8px; border-bottom-right-radius: 8px; }
+QDateEdit::down-arrow { image: url("__CHEV_DOWN__"); width: 12px; height: 12px; }
+QDateEdit QAbstractItemView, QDateEdit QCalendarWidget QAbstractItemView { background: white; color: #202124;
+    selection-background-color: #F4F4F5; selection-color: #27272A; }
 QTextEdit[label="true"] { background: #FAFAFA; font-family: monospace; font-size: 12px; }
 /* ---- quiet read-only tables (typography table: bordered header, muted) ---- */
 QTableWidget { background: white; border: 1px solid #E4E4E7; border-radius: 8px; font-size: 13px;
