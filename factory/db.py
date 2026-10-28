@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS products (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT UNIQUE NOT NULL,
   wrappers_per_reel INTEGER CHECK(wrappers_per_reel IS NULL OR wrappers_per_reel > 0),
+  unit TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS jobs (
@@ -74,6 +75,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   product_id INTEGER REFERENCES products(id),
   product_name TEXT DEFAULT '',
   wrappers_per_reel INTEGER CHECK(wrappers_per_reel IS NULL OR wrappers_per_reel > 0),
+  unit TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'open',
   created_at TEXT NOT NULL,
   closed_at TEXT,
@@ -467,6 +469,36 @@ def _ensure_dispatch_po_weight(c) -> None:
             c.execute("ALTER TABLE dispatch_orders ADD COLUMN required_weight_kg REAL")
 
 
+def _ensure_product_unit(c) -> None:
+    """First-class product unit: 'pieces' | 'kg' | '' (legacy unknown).
+
+    Bailey-style kg products lock pieces out (Set pieces blocked, dispatch
+    and targets kg-only). Legacy NULL rows stay '' (unknown, convertible via
+    Set pieces); rows with a count become 'pieces'. Jobs snapshot the unit
+    so history never rewrites. Additive + idempotent.
+    """
+    cols_p = {r["name"] for r in c.execute("PRAGMA table_info(products)").fetchall()}
+    if cols_p and "unit" not in cols_p:
+        c.execute("ALTER TABLE products ADD COLUMN unit TEXT NOT NULL DEFAULT ''")
+    cols_j = {r["name"] for r in c.execute("PRAGMA table_info(jobs)").fetchall()}
+    if cols_j and "unit" not in cols_j:
+        c.execute("ALTER TABLE jobs ADD COLUMN unit TEXT NOT NULL DEFAULT ''")
+    # Backfill products: counted -> pieces, uncounted legacy -> unknown.
+    try:
+        c.execute("UPDATE products SET unit='pieces' WHERE unit='' AND wrappers_per_reel IS NOT NULL")
+    except Exception:
+        pass
+    # Snapshot legacy jobs lacking a unit from their product (or wrappers).
+    try:
+        c.execute("""UPDATE jobs SET unit=(SELECT p.unit FROM products p WHERE p.id=jobs.product_id)
+          WHERE (unit IS NULL OR unit='') AND product_id IS NOT NULL
+          AND EXISTS(SELECT 1 FROM products p WHERE p.id=jobs.product_id AND p.unit != '')""")
+        c.execute("UPDATE jobs SET unit='pieces' WHERE (unit IS NULL OR unit='')"
+                  " AND wrappers_per_reel IS NOT NULL")
+    except Exception:
+        pass
+
+
 def _ensure_id_counters(c) -> None:
     """Global issued-number high-water marks for jobs and dispatch orders.
 
@@ -771,6 +803,7 @@ def init_db(path: str | None = None) -> str:
             _ensure_per_product_counters(c)
             _ensure_job_targets(c)
             _ensure_dispatch_po_weight(c)
+            _ensure_product_unit(c)
             bad = c.execute("PRAGMA foreign_key_check").fetchall()
             if bad:
                 raise RuntimeError(f"DB FK integrity failed: {len(bad)} violation(s)")

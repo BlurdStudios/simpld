@@ -115,7 +115,16 @@ class JobsPage(QWidget):
             self.table.setItem(i, 0, QTableWidgetItem(str(j["job_no"])))
             self.table.setItem(i, 1, QTableWidgetItem(j["job_name"]))
             w = j.get("wrappers_per_reel")
-            self.table.setItem(i, 2, QTableWidgetItem(str(w) if w else "kg"))
+            u = str(j.get("unit") or "").strip().lower()
+            if u == "kg":
+                txt, tip = "kg only", "Weighed in kg — no piece count"
+            elif w:
+                txt, tip = str(w), f"{w}/reel"
+            else:
+                txt, tip = "set…", "Legacy product without a count — click Set pieces"
+            item = QTableWidgetItem(txt)
+            item.setToolTip(tip)
+            self.table.setItem(i, 2, item)
             from PySide6.QtGui import QColor as _QColor
             _st = QTableWidgetItem(j["status"])
             try:

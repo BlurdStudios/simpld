@@ -269,18 +269,33 @@ def _parse_wrappers_optional(value) -> int | None:
 
 
 def create_product(name: str, wrappers_per_reel: int | None = None, path: str | None = None,
-                   actor: dict | None = None) -> dict:
+                   actor: dict | None = None, unit: str | None = None) -> dict:
+    """Add-once product with an explicit unit: 'pieces' (Appy Fizz: counted)
+    or 'kg' (Bailey: weighed only, pieces never apply).
+
+    unit None infers from wrappers (set -> pieces, blank -> kg). Explicit
+    unit='kg' with a count, or unit='pieces' without one, is rejected.
+    """
     _product_actor(path)
     name = (name or "").strip().upper()
     if not name:
         raise ValueError("Product name required (e.g. APPY FIZZ-160ML (SEP.28) BODY)")
+    u = str(unit or "").strip().lower() or None
+    if u is not None and u not in ("pieces", "kg"):
+        raise ValueError("Unit must be 'pieces' or 'kg'")
     w = _parse_wrappers_optional(wrappers_per_reel)
+    if u is None:
+        u = "pieces" if w is not None else "kg"
+    elif u == "kg" and w is not None:
+        raise ValueError("Kg products take no pieces/reel count — leave it blank")
+    elif u == "pieces" and w is None:
+        raise ValueError("Pieces products need a pieces/reel count (e.g. 16500)")
     c = get_conn(path)
     try:
         try:
             cur = c.execute(
-                "INSERT INTO products(name, wrappers_per_reel, created_at) VALUES(?,?,?)",
-                (name, w, now_iso()))
+                "INSERT INTO products(name, wrappers_per_reel, unit, created_at) VALUES(?,?,?,?)",
+                (name, w, u, now_iso()))
         except sqlite3.IntegrityError:
             raise ValueError(f"Product '{name}' already exists — pick it from the list.")
         c.commit()
@@ -311,7 +326,8 @@ def get_product(product_id: int, path: str | None = None) -> dict | None:
 def set_product_wrappers(product_id: int, wrappers_per_reel, path: str | None = None,
                          actor: dict | None = None) -> dict:
     """Set pieces for a migrated-unknown product. Catalog only: historical
-    job snapshots keep their NULL and are never rewritten."""
+    job snapshots keep their NULL and are never rewritten. Kg products
+    (Bailey-style) refuse — pieces never apply to them."""
     resolved = _product_actor(path)
     w = _parse_wrappers(wrappers_per_reel)
     c = get_conn(path)
@@ -319,7 +335,9 @@ def set_product_wrappers(product_id: int, wrappers_per_reel, path: str | None = 
         r = c.execute("SELECT * FROM products WHERE id=?", (product_id,)).fetchone()
         if not r:
             raise ValueError("Product not found")
-        c.execute("UPDATE products SET wrappers_per_reel=? WHERE id=?", (w, product_id))
+        if str(r["unit"] or "") == "kg":
+            raise ValueError(f"'{r['name']}' is a kg product — pieces do not apply to it.")
+        c.execute("UPDATE products SET wrappers_per_reel=?, unit='pieces' WHERE id=?", (w, product_id))
         c.commit()
         return dict(c.execute("SELECT * FROM products WHERE id=?", (product_id,)).fetchone())
     finally:
@@ -374,13 +392,14 @@ def create_job(job_name: str, size_mm: float = 0, core_wt: float = 0.5,
             jn = _alloc_job_no(c)
             nm = job_name.strip().upper()
             pid = _ensure_product_for_name(nm, c)
-            w = c.execute("SELECT wrappers_per_reel FROM products WHERE id=?", (pid,)).fetchone()
+            w = c.execute("SELECT wrappers_per_reel, unit FROM products WHERE id=?", (pid,)).fetchone()
             wv = w["wrappers_per_reel"] if w else None
+            uv = (w["unit"] if w and w["unit"] else ("pieces" if wv is not None else "")) or ""
             cur = c.execute(
                 "INSERT INTO jobs(job_no, job_name, size_mm, core_wt, product_id,"
-                " product_name, wrappers_per_reel, status, created_at)"
-                " VALUES(?,?,?,?,?,?,?, 'open', ?)",
-                (jn, nm, float(sm), float(cw), pid, nm, wv, now_iso()),
+                " product_name, wrappers_per_reel, unit, status, created_at)"
+                " VALUES(?,?,?,?,?,?,?,?, 'open', ?)",
+                (jn, nm, float(sm), float(cw), pid, nm, wv, uv, now_iso()),
             )
             jid = cur.lastrowid
             _audit(c, resolved, "create_job", "job", jid, f"J:{jn} {nm}")
@@ -416,10 +435,10 @@ def create_job_for_product(product_id: int, core_wt: float = 0.5,
             jn = _alloc_job_no(c)
             cur = c.execute(
                 "INSERT INTO jobs(job_no, job_name, size_mm, core_wt, product_id,"
-                " product_name, wrappers_per_reel, status, created_at)"
-                " VALUES(?,?, 0, ?,?,?,?, 'open', ?)",
+                " product_name, wrappers_per_reel, unit, status, created_at)"
+                " VALUES(?,?, 0, ?,?,?,?,?, 'open', ?)",
                 (jn, p["name"], float(cw), p["id"], p["name"],
-                 p["wrappers_per_reel"], now_iso()),
+                 p["wrappers_per_reel"], p.get("unit") or "", now_iso()),
             )
             jid = cur.lastrowid
             _audit(c, resolved, "create_job", "job", jid, f"J:{jn} {p['name']}")

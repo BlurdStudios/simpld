@@ -47,16 +47,47 @@ def _toast(parent, text: str, ok: bool = True, kind: str | None = None):
         pass
 
 
+def _unit_of(obj: dict) -> str:
+    """Product/job unit: 'pieces' | 'kg' | '' (legacy unknown, convertible).
+
+    Explicit unit wins; otherwise inferred from the wrappers count so old
+    rows keep their meaning (counted -> pieces, blank -> unknown).
+    """
+    try:
+        u = str((obj or {}).get("unit") or "").strip().lower()
+    except Exception:
+        u = ""
+    if u in ("pieces", "kg"):
+        return u
+    try:
+        return "pieces" if (obj or {}).get("wrappers_per_reel") else ""
+    except Exception:
+        return ""
+
+
+def _unit_label(obj: dict) -> str:
+    """Short floor label: '16500/reel' | 'kg only' | 'pieces unknown'."""
+    u = _unit_of(obj)
+    if u == "kg":
+        return "kg only"
+    try:
+        w = (obj or {}).get("wrappers_per_reel")
+        if w:
+            return f"{int(w)}/reel"
+    except (TypeError, ValueError):
+        pass
+    return "pieces unknown" if u == "" else "kg only"
+
+
 class NewJobDialogMixin:
     @staticmethod
-    def ask_new_product(parent, initial_name: str = "", initial_wrappers: str = ""):
-        """Add-once product entry. Retains typed values across validation
-        failures (fields are prefilled from the previous attempt, not reset).
-        Pieces is OPTIONAL: blank means a kg-based product (NULL, never
-        invented); a number means pieces/reel."""
-        from PySide6.QtWidgets import (QDialog, QFormLayout, QLineEdit,
+    def ask_new_product(parent, initial_name: str = "", initial_wrappers: str = "",
+                        initial_unit: str = "pieces"):
+        """Add-once product entry with explicit unit (Appy Fizz = pieces,
+        Bailey = kg). Retains typed values across validation failures."""
+        from PySide6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QComboBox,
                                        QDialogButtonBox, QLabel)
-        name_val, wrap_val = initial_name, initial_wrappers
+        name_val, wrap_val, unit_val = initial_name, initial_wrappers, initial_unit
         while True:
             d = QDialog(parent)
             d.setWindowTitle("New product")
@@ -65,24 +96,41 @@ class NewJobDialogMixin:
             name.setPlaceholderText("e.g. APPY FIZZ-160ML (SEP.28) BODY")
             name.setMinimumWidth(340)
             name.setText(name_val)
+            unit = QComboBox()
+            unit.addItem("Counted in pieces (e.g. Appy Fizz)", userData="pieces")
+            unit.addItem("Weighed in kg only (e.g. Bailey)", userData="kg")
+            unit.setCurrentIndex(0 if unit_val != "kg" else 1)
             wrappers = QLineEdit()
-            wrappers.setPlaceholderText("e.g. 16500 — blank = kg product")
+            wrappers.setPlaceholderText("e.g. 16500")
             wrappers.setText(wrap_val)
             f.addRow("Product Name:", name)
-            f.addRow("Pieces / reel (optional):", wrappers)
-            hint = QLabel("Blank pieces = weighed in kg (no piece count).")
+            f.addRow("Calculated via:", unit)
+            f.addRow("Pieces / reel:", wrappers)
+            hint = QLabel("Kg products never use piece counts — dispatch, targets"
+                          " and labels stay in kg.")
             hint.setWordWrap(True)
             hint.setProperty("hint", True)
             f.addRow("", hint)
+            def _sync_unit():
+                is_kg = unit.currentData() == "kg"
+                wrappers.setEnabled(not is_kg)
+                if is_kg:
+                    wrappers.setPlaceholderText("kg product — no count")
+                else:
+                    wrappers.setPlaceholderText("e.g. 16500")
+            unit.currentIndexChanged.connect(lambda _i: _sync_unit())
+            _sync_unit()
             bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
             f.addRow(bb)
             bb.accepted.connect(d.accept)
             bb.rejected.connect(d.reject)
             if d.exec() != QDialog.Accepted:
                 return None
-            name_val, wrap_val = name.text(), wrappers.text()
+            name_val = name.text()
+            unit_val = unit.currentData() or "pieces"
+            wrap_val = "" if unit_val == "kg" else wrappers.text()
             try:
-                return DA.create_product(name_val, wrap_val)
+                return DA.create_product(name_val, wrap_val or None, unit=unit_val)
             except PermissionError as e:
                 QMessageBox.warning(parent, "Cannot save product", str(e))
                 return None
@@ -164,9 +212,7 @@ class NewJobDialogMixin:
                 except Exception:
                     prods = []
                 for p in prods:
-                    w = p["wrappers_per_reel"]
-                    label = f"{p['name']} — {w}/reel" if w else f"{p['name']} — kg product"
-                    combo.addItem(label, userData=p["id"])
+                    combo.addItem(f"{p['name']} — {_unit_label(p)}", userData=p["id"])
                     if sel and p["id"] == sel:
                         combo.setCurrentIndex(combo.count() - 1)
                 combo.blockSignals(False)
@@ -188,6 +234,10 @@ class NewJobDialogMixin:
                 prod = prods.get(pid)
                 if not prod:
                     QMessageBox.warning(d, "Pieces", "Select a product first.")
+                    return
+                if _unit_of(prod) == "kg":
+                    QMessageBox.warning(d, "Pieces",
+                                        f"'{prod['name']}' is a kg product — pieces do not apply.")
                     return
                 if prod.get("wrappers_per_reel"):
                     QMessageBox.warning(d, "Pieces",
@@ -218,14 +268,14 @@ class NewJobDialogMixin:
                 except Exception:
                     prods = {}
                 prod = prods.get(combo.currentData())
-                if prod and prod.get("wrappers_per_reel"):
-                    unit_lab.setText("Target pieces (wrappers, optional):")
-                    if not t_unit.text():
-                        t_unit.setPlaceholderText("e.g. 165000")
-                else:
+                if prod and _unit_of(prod) == "kg":
                     unit_lab.setText("Target net kg (optional):")
                     if not t_unit.text():
                         t_unit.setPlaceholderText("e.g. 500")
+                else:
+                    unit_lab.setText("Target pieces (wrappers, optional):")
+                    if not t_unit.text():
+                        t_unit.setPlaceholderText("e.g. 165000")
             combo.currentIndexChanged.connect(lambda _i: _unit_update())
             _unit_update()
             f.addRow(unit_lab, t_unit)
@@ -252,7 +302,7 @@ class NewJobDialogMixin:
             except Exception:
                 prods = {}
             prod = prods.get(pid)
-            is_piece = bool(prod and prod.get("wrappers_per_reel"))
+            is_piece = _unit_of(prod) != "kg"
             def _opt_num(v, whole=True):
                 t = (v or "").strip()
                 if not t:
@@ -918,7 +968,7 @@ class PackagingPage(QWidget, NewJobDialogMixin):
         info.setWordWrap(True)
         info.setProperty("hint", True)
         f.addRow(info)
-        is_piece = bool(job.get("wrappers_per_reel"))
+        is_piece = _unit_of(job) != "kg"
         e_unit = QLineEdit()
         if is_piece:
             e_unit.setText(str(job.get("target_pieces") or ""))
@@ -982,7 +1032,7 @@ class PackagingPage(QWidget, NewJobDialogMixin):
                 f"J:{job['job_no']} {job['job_name']} — connection issue.")
             return
         w = job.get("wrappers_per_reel")
-        wtxt = f"{w}/reel" if w else "kg product"
+        wtxt = _unit_label(job)
         base = (f"J:{job['job_no']} {job['job_name']} ({wtxt})  ·  "
                 f"Loose {st.get('loose', 0)}  ·  Ready {st.get('ready_cartons', 0)}")
         # Target = the product's own unit only; reels/boxes needed are
@@ -995,14 +1045,14 @@ class PackagingPage(QWidget, NewJobDialogMixin):
             rpb = 2
         tgt = ""
         try:
-            if w and job.get("target_pieces"):
+            if _unit_of(job) != "kg" and job.get("target_pieces"):
                 tp = int(job["target_pieces"])
                 made = int(st.get("pieces") or 0)
                 need_r = max(0, _math.ceil(max(0, tp - made) / int(w)))
                 need_b = max(0, _math.ceil(need_r / rpb)) if need_r else 0
                 tgt = (f"Target {made:,}/{tp:,} pcs"
                        + (f" · needs {need_r} reels ({need_b} boxes)" if need_r else ""))
-            elif not w and job.get("target_weight_kg"):
+            elif _unit_of(job) == "kg" and job.get("target_weight_kg"):
                 tw = float(job["target_weight_kg"])
                 made_w = float(st.get("reel_wt") or 0)
                 try:

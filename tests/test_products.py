@@ -94,6 +94,26 @@ def test_product_validation_and_reuse():
     assert kg["wrappers_per_reel"] is None
     kg2 = S.create_product("KG PRODUCT 2", "", path=p)
     assert kg2["wrappers_per_reel"] is None
+    assert kg["unit"] == "kg" and kg2["unit"] == "kg"
+    # Explicit unit: pieces needs a count, kg refuses one.
+    for bad_args in ({"wrappers_per_reel": None, "unit": "pieces"},
+                     {"wrappers_per_reel": 100, "unit": "kg"},
+                     {"wrappers_per_reel": 100, "unit": "litres"}):
+        try:
+            S.create_product("UNIT JOB", path=p, **bad_args)
+            raise SystemExit(f"FAIL: unit args {bad_args} accepted")
+        except ValueError:
+            pass
+    exp = S.create_product("KG EXPLICIT", None, path=p, unit="kg")
+    assert exp["unit"] == "kg" and exp["wrappers_per_reel"] is None
+    # Kg products refuse Set pieces; snapshot carries the unit.
+    try:
+        S.set_product_wrappers(kg["id"], 16500, path=p)
+        raise SystemExit("FAIL: Set pieces accepted on kg product")
+    except ValueError:
+        pass
+    jk = S.create_job_for_product(kg["id"], path=p)
+    assert jk["unit"] == "kg" and jk["wrappers_per_reel"] is None
     prod = S.create_product("appy fizz-160ml (sep.28) body", 16500, path=p)
     assert prod["name"] == "APPY FIZZ-160ML (SEP.28) BODY" and prod["wrappers_per_reel"] == 16500
     try:

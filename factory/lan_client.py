@@ -311,11 +311,13 @@ class LanClient:
         return self.call("get_slip", {"job_id": job_id})
 
     # -- writes (single attempt; see uncertain-outcome rule above) --------
-    def create_product(self, name: str, wrappers_per_reel: int,
+    def create_product(self, name: str, wrappers_per_reel: int | None,
+                       unit: str | None = None,
                        request_id: str | None = None) -> dict:
-        return self.call("create_product",
-                         {"name": name, "wrappers_per_reel": wrappers_per_reel},
-                         request_id=request_id)
+        args: dict = {"name": name, "wrappers_per_reel": wrappers_per_reel}
+        if unit is not None:
+            args["unit"] = unit
+        return self.call("create_product", args, request_id=request_id)
 
     def set_product_wrappers(self, product_id: int, wrappers_per_reel: int,
                              request_id: str | None = None) -> dict:

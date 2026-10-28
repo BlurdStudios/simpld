@@ -296,12 +296,15 @@ def get_product(product_id: int) -> dict | None:
     return _svc.get_product(product_id)
 
 
-def create_product(name: str, wrappers_per_reel: Any) -> dict:
+def create_product(name: str, wrappers_per_reel: Any = None, unit: str | None = None) -> dict:
     w = _wrappers_int(wrappers_per_reel)
+    u = str(unit or "").strip().lower() or None
+    if u is not None and u not in ("pieces", "kg"):
+        raise ValueError("Unit must be 'pieces' or 'kg'")
     if backend() == "lan":
-        return _lan_client().create_product(name, w)
+        return _lan_client().create_product(name, w, unit=u)
     from . import services as _svc
-    return _svc.create_product(name, w)
+    return _svc.create_product(name, w, unit=u)
 
 
 def set_product_wrappers(product_id: int, wrappers_per_reel: Any) -> dict:

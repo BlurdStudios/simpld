@@ -412,17 +412,20 @@ def _h_get_product(args: dict, actor: dict, dbp: str) -> dict | None:
     return _svc.get_product(_v_int(args, "product_id", minimum=1), dbp)  # type: ignore[arg-type]
 
 
-@_op("create_product", "product.manage", ("name", "wrappers_per_reel"))
+@_op("create_product", "product.manage", ("name", "wrappers_per_reel", "unit"))
 def _h_create_product(args: dict, actor: dict, dbp: str) -> dict:
-    _need(args, "create_product", frozenset({"name", "wrappers_per_reel"}))
+    _need(args, "create_product", frozenset({"name", "wrappers_per_reel", "unit"}))
     name = _v_str(args, "name", max_len=256)
     w_raw = args.get("wrappers_per_reel", None)
     if w_raw is None or (isinstance(w_raw, str) and not w_raw.strip()):
         w = None
     else:
         w = _v_int(args, "wrappers_per_reel", minimum=1, maximum=10_000_000)
+    unit = _v_opt_str(args, "unit", default="")
+    if unit and unit.lower() not in ("pieces", "kg"):
+        raise _ValidationError("Argument 'unit' must be pieces/kg.")
     assert name is not None
-    return _svc.create_product(name, w, dbp)
+    return _svc.create_product(name, w, dbp, unit=unit or None)
 
 
 @_op("set_product_wrappers", "product.manage",
