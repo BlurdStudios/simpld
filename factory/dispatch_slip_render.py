@@ -19,11 +19,17 @@ def render_html(slip: dict) -> str:
     """Full dispatch-slip document as printable HTML."""
     rows = slip.get("rows") or []
     unit = str(slip.get("piece_unit") or "reel")
-    coil_word = "Wrappers" if unit.lower() == "wrapper" else "Coils"
+    coil_word = "Wrappers" if unit.lower() == "wrapper" else ("Kg" if unit.lower() == "kg" else "Coils")
     rp = slip.get("required_pieces")
+    rq = slip.get("required_weight_kg")
     if rp is not None:
         target = (f"{int(rp):,} {slip.get('pieces_word') or 'pcs'}"
                   f" in {int(slip.get('required_bundles') or 0)} boxes")
+    elif rq is not None:
+        try:
+            target = f"{float(rq):.3f} kg in {int(slip.get('loaded_boxes') or 0)} boxes"
+        except (TypeError, ValueError):
+            target = f"{rq} kg"
     else:
         target = f"{int(slip.get('required_bundles') or 0)} boxes"
     body = []
@@ -49,6 +55,7 @@ def render_html(slip: dict) -> str:
 <table border="1" cellspacing="0" cellpadding="4">
 <tr><td><b>Customer</b></td><td>{_esc(slip.get('customer'))}</td></tr>
 <tr><td><b>Customer PO</b></td><td>{_esc(slip.get('customer_po'))}</td></tr>
+<tr><td><b>PO date</b></td><td>{_esc(slip.get('po_date') or '—')}</td></tr>
 <tr><td><b>Batch</b></td><td>{_esc(slip.get('batch_no'))}</td></tr>
 <tr><td><b>Job</b></td><td>J:{_esc(slip.get('job_no'))} {_esc(slip.get('job_name'))}</td></tr>
 <tr><td><b>Order date</b></td><td>{_esc(slip.get('order_date'))}</td></tr>

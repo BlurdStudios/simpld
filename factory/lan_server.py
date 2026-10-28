@@ -319,11 +319,50 @@ def _h_login(args: dict, _actor: dict, db_path: str, ip: str = "") -> dict:
     assert username is not None
     if not _login_allowed(ip):
         raise _RateLimited("Too many login attempts; try again later.")
+    # Optional station identity (new clients send it; old clients omit it
+    # and skip the station-limit check). Never trust client fp blindly for
+    # licensing identity beyond counting — the packager_fp binding is
+    # server-side.
+    sid = args.get("station_id")
+    if sid is not None and (not isinstance(sid, str) or len(sid) > 128):
+        raise _ValidationError("Argument 'station_id' is too long.")
+    sfp = args.get("station_fp")
+    if sfp is not None and (not isinstance(sfp, str) or len(sfp) > 128):
+        raise _ValidationError("Argument 'station_fp' is too long.")
     rec = _auth.authenticate(username, password, db_path)
     if rec is None:
         _record_login_failure(ip)
         raise _AuthRequired("Invalid username or password.")
     _clear_login_failures(ip)
+    # Plan 009 Phase 2: per-login station-limit enforcement (packager-side).
+    # Missing licence file = warn-only (dev/test/migration); present-but-bad
+    # or over-limit = 403 license_invalid so the dispatcher shows
+    # "contact admin" and makes no local writes.
+    try:
+        from . import license as _LIC
+        if not _LIC.is_demo_bypass():
+            _lic = _LIC.load_license()
+            if _lic is not None:
+                _st = _LIC.license_status(_lic)
+                if _st.get("state") in ("invalid", "blocked"):
+                    raise PermissionError(
+                        f"license_invalid: {_st.get('reason')}")
+                if sid:
+                    _max = int(_lic.get("max_stations") or 1)
+                    _allowed, _why = _LIC.station_allowed(
+                        _max, db_path, sid=str(sid),
+                        fp=str(sfp or ""))
+                    if not _allowed:
+                        raise PermissionError(f"license_invalid: {_why}")
+                    try:
+                        _LIC.record_station(
+                            db_path, sid=str(sid), fp=str(sfp or ""))
+                    except Exception:
+                        pass
+    except PermissionError:
+        raise
+    except Exception:
+        pass  # licensing must never break auth on unexpected errors
     return {"username": rec["username"], "role": rec["role"],
             "session_token": rec["session_token"]}
 
@@ -343,7 +382,7 @@ def _op(name: str, perm: str | None, allowed: tuple[str, ...]):
     return deco
 
 
-@_op("login", None, ("username", "password"))
+@_op("login", None, ("username", "password", "station_id", "station_fp"))
 def _op_login(args: dict, actor: dict, dbp: str) -> dict:
     raise AssertionError("login is handled inline (needs client IP)")
 
@@ -377,8 +416,12 @@ def _h_get_product(args: dict, actor: dict, dbp: str) -> dict | None:
 def _h_create_product(args: dict, actor: dict, dbp: str) -> dict:
     _need(args, "create_product", frozenset({"name", "wrappers_per_reel"}))
     name = _v_str(args, "name", max_len=256)
-    w = _v_int(args, "wrappers_per_reel", minimum=1, maximum=10_000_000)
-    assert name is not None and w is not None
+    w_raw = args.get("wrappers_per_reel", None)
+    if w_raw is None or (isinstance(w_raw, str) and not w_raw.strip()):
+        w = None
+    else:
+        w = _v_int(args, "wrappers_per_reel", minimum=1, maximum=10_000_000)
+    assert name is not None
     return _svc.create_product(name, w, dbp)
 
 
@@ -439,6 +482,21 @@ def _h_set_job_status(args: dict, actor: dict, dbp: str) -> dict:
     assert jid is not None and status is not None
     _svc.set_job_status(jid, status.lower(), dbp)
     return {"ok": True}
+
+
+@_op("set_job_targets", "job.manage",
+     ("job_id", "target_reels", "target_boxes", "target_weight_kg", "target_pieces"))
+def _h_set_job_targets(args: dict, actor: dict, dbp: str) -> dict:
+    _need(args, "set_job_targets", frozenset(
+        {"job_id", "target_reels", "target_boxes", "target_weight_kg", "target_pieces"}))
+    jid = _v_int(args, "job_id", minimum=1)
+    tr = _v_int(args, "target_reels", required=False, minimum=1, maximum=10_000_000)
+    tb = _v_int(args, "target_boxes", required=False, minimum=1, maximum=100_000)
+    tw = _v_float(args, "target_weight_kg", required=False, minimum=0.001, maximum=100_000_000)
+    tp = _v_int(args, "target_pieces", required=False, minimum=1, maximum=100_000_000)
+    assert jid is not None
+    return _svc.set_job_targets(jid, target_reels=tr, target_boxes=tb,
+                                target_weight_kg=tw, target_pieces=tp, path=dbp)
 
 
 @_op("delete_job", "delete", ("job_id",))
@@ -627,16 +685,20 @@ def _h_carton_verify(args: dict, actor: dict, dbp: str) -> dict | None:
     return _svc.carton_verify(_v_str(args, "scan_text", max_len=128), dbp)
 
 
-@_op("predict_next_reel_seq", "read", ())
+@_op("predict_next_reel_seq", "read", ("product_id", "job_id"))
 def _h_pred_reel(args: dict, actor: dict, dbp: str) -> dict:
-    _need(args, "predict_next_reel_seq", frozenset())
-    return {"next_seq": _svc.predict_next_reel_seq(path=dbp)}
+    _need(args, "predict_next_reel_seq", frozenset({"product_id", "job_id"}))
+    pid = _v_int(args, "product_id", required=False, minimum=1)
+    jid = _v_int(args, "job_id", required=False, minimum=1)
+    return {"next_seq": _svc.predict_next_reel_seq(path=dbp, product_id=pid, job_id=jid)}
 
 
-@_op("predict_next_box_seq", "read", ())
+@_op("predict_next_box_seq", "read", ("product_id", "job_id"))
 def _h_pred_box(args: dict, actor: dict, dbp: str) -> dict:
-    _need(args, "predict_next_box_seq", frozenset())
-    return {"next_seq": _svc.predict_next_box_seq(path=dbp)}
+    _need(args, "predict_next_box_seq", frozenset({"product_id", "job_id"}))
+    pid = _v_int(args, "product_id", required=False, minimum=1)
+    jid = _v_int(args, "job_id", required=False, minimum=1)
+    return {"next_seq": _svc.predict_next_box_seq(path=dbp, product_id=pid, job_id=jid)}
 
 
 @_op("todays_reels", "read", ())
@@ -666,21 +728,23 @@ def _h_audit(args: dict, actor: dict, dbp: str) -> list:
 
 
 @_op("create_dispatch_order", "dispatch.mutate",
-     ("customer", "job_id", "required_bundles", "required_pieces", "order_date",
-      "customer_po", "batch_no", "piece_unit"))
+     ("customer", "job_id", "required_bundles", "required_pieces", "required_weight_kg",
+      "order_date", "customer_po", "po_date", "batch_no", "piece_unit"))
 def _h_create_order(args: dict, actor: dict, dbp: str) -> dict:
     _need(args, "create_dispatch_order", frozenset(
-        {"customer", "job_id", "required_bundles", "required_pieces", "order_date",
-         "customer_po", "batch_no", "piece_unit"}))
+        {"customer", "job_id", "required_bundles", "required_pieces", "required_weight_kg",
+         "order_date", "customer_po", "po_date", "batch_no", "piece_unit"}))
     cust = _v_str(args, "customer", max_len=256)
     jid = _v_int(args, "job_id", minimum=1)
     n = _v_int(args, "required_bundles", required=False, minimum=1,
                maximum=100_000)
     p = _v_int(args, "required_pieces", required=False, minimum=1,
                maximum=100_000_000)
-    if n is None and p is None:
+    w = _v_float(args, "required_weight_kg", required=False, minimum=0.001,
+                 maximum=100_000_000)
+    if n is None and p is None and w is None:
         raise _ValidationError(
-            "Missing argument 'required_pieces' (or legacy 'required_bundles').")
+            "Missing argument 'required_pieces' (or 'required_weight_kg' / legacy 'required_bundles').")
     date = _v_opt_str(args, "order_date", default="")
     if date:
         import re as _re
@@ -688,15 +752,22 @@ def _h_create_order(args: dict, actor: dict, dbp: str) -> dict:
             raise _ValidationError(
                 "Argument 'order_date' must be YYYY-MM-DD.")
     po = _v_opt_str(args, "customer_po", max_len=64, default="")
+    pod = _v_opt_str(args, "po_date", max_len=32, default="")
+    if pod:
+        import re as _re2
+        if not _re2.fullmatch(r"\d{4}-\d{2}-\d{2}", pod):
+            raise _ValidationError("Argument 'po_date' must be YYYY-MM-DD.")
     batch = _v_opt_str(args, "batch_no", max_len=64, default="", upper=True)
     unit = _v_opt_str(args, "piece_unit", default="reel").lower()
-    if unit not in ("wrapper", "reel"):
-        raise _ValidationError("Argument 'piece_unit' must be wrapper/reel.")
+    if unit not in ("wrapper", "reel", "kg"):
+        raise _ValidationError("Argument 'piece_unit' must be wrapper/reel/kg.")
     assert cust is not None and jid is not None
     return _svc.create_dispatch_order(cust, jid, n,
                                       order_date=date or None, path=dbp,
                                       required_pieces=p, customer_po=po,
-                                      batch_no=batch, piece_unit=unit)
+                                      po_date=pod or None,
+                                      batch_no=batch, piece_unit=unit,
+                                      required_weight_kg=w)
 
 
 @_op("list_orders", "report.read", ("status",))
@@ -794,6 +865,17 @@ def _h_summary(args: dict, actor: dict, dbp: str) -> dict:
         if not _re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
             raise _ValidationError("Argument 'day' must be YYYY-MM-DD.")
     return _svc.daily_summary(day or None, dbp)
+
+
+@_op("day_report", "history.read", ("day",))
+def _h_day_report(args: dict, actor: dict, dbp: str) -> dict:
+    _need(args, "day_report", frozenset({"day"}))
+    day = _v_opt_str(args, "day", default="")
+    if day:
+        import re as _re
+        if not _re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+            raise _ValidationError("Argument 'day' must be YYYY-MM-DD.")
+    return _svc.day_report(day or None, dbp)
 
 
 @_op("get_slip", "read", ("job_id",))
@@ -951,7 +1033,9 @@ class _Handler(BaseHTTPRequestHandler):
                     self._fail(422, "validation", "Unknown operation.")
                     return
                 _reject_forbidden(args)
-                _check_exact(args, frozenset({"username", "password"}), op)
+                _check_exact(args, frozenset(
+                    {"username", "password", "station_id", "station_fp"}),
+                    op)
                 if "password" in args and args["password"] in (None,):
                     self._fail(401, "auth_required",
                                "Invalid username or password.")
@@ -987,6 +1071,15 @@ class _Handler(BaseHTTPRequestHandler):
                             raise _AuthRequired("Authentication required.")
                     else:
                         actor = _auth.require_permission(perm, self.db_path)
+                    # Plan 009 Phase 2: write-block when the packager licence
+                    # is expired+30d or invalid. Reads stay available
+                    # (backup/export path). Missing licence file = warn-only
+                    # (dev/test/migration); an explicit bad file fails closed.
+                    if _is_write_op(op) and _license_blocks_writes():
+                        self._fail(403, "forbidden",
+                                   "license_invalid: writes blocked — "
+                                   "contact admin (backup/export still work).")
+                        return
                     data = _fn(dict(args), dict(actor), self.db_path)
                 except Exception as exc:
                     status, code, message = _service_error(exc)
@@ -1007,6 +1100,65 @@ class _Handler(BaseHTTPRequestHandler):
                 self._fail(500, "server", "Internal error.")
             except Exception:
                 pass
+
+
+def _is_write_op(op: str) -> bool:
+    """Mutating ops gated by the licence write-block. Reads never block."""
+    if op in ("login", "logout", "whoami"):
+        return False
+    return op.startswith((
+        "create_", "set_", "delete_", "pack_", "reweigh", "mark_",
+        "scan_", "remove_", "complete_", "cancel_"))
+
+
+def _license_blocks_writes() -> bool:
+    """True only when a present licence explicitly blocks writes."""
+    try:
+        from . import license as _LIC
+        if _LIC.is_demo_bypass():
+            return False
+        lic = _LIC.load_license()
+        if lic is None:
+            return False  # missing file = warn-only (migration/dev/test)
+        st = _LIC.license_status(lic)
+        return st.get("state") in ("blocked", "invalid")
+    except Exception:
+        return False
+
+
+def check_license_for_serve() -> None:
+    """Refuse LAN serve on a present-but-bad licence (fail closed).
+
+    - Demo builds bypass (training/show PCs).
+    - No licence file: warn-only (lets dev/test + migration run; run.py
+      already banners the operator).
+    - simple edition: refuse (lan:false by design).
+    - invalid/blocked (bad sig, cloned board, expired+30d): refuse.
+    - expiring/grace: allow with a log line.
+    """
+    try:
+        from . import license as _LIC
+        if _LIC.is_demo_bypass():
+            return
+        lic = _LIC.load_license()
+        if lic is None:
+            print("[license] no licence file — serving LAN with a warning"
+                  " (install license.lic on the packager)", file=sys.stderr)
+            return
+        st = _LIC.license_status(lic)
+        state = st.get("state")
+        print(f"[license] {_LIC.license_display(st)}", file=sys.stderr)
+        if str(lic.get("edition") or "") == "simple":
+            raise RuntimeError(
+                "simple edition has no LAN (lan:false) — upgrade the licence"
+                " to serve the LAN.")
+        if state in ("invalid", "blocked"):
+            raise RuntimeError(
+                f"LAN serve refused: {st.get('reason')}")
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        print(f"[license] check skipped: {exc}", file=sys.stderr)
 
 
 def check_db_ready(db_path: str) -> None:
@@ -1057,6 +1209,7 @@ def create_server(db_path: str, bind: str, port: int,
                 "and publish at least one installer with "
                 "tools/publish_update.py, or drop --updates-dir.")
     check_db_ready(db_path)
+    check_license_for_serve()
 
     class _Bound(_Handler):
         pass

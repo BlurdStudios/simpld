@@ -76,7 +76,11 @@ CREATE TABLE IF NOT EXISTS jobs (
   wrappers_per_reel INTEGER CHECK(wrappers_per_reel IS NULL OR wrappers_per_reel > 0),
   status TEXT NOT NULL DEFAULT 'open',
   created_at TEXT NOT NULL,
-  closed_at TEXT
+  closed_at TEXT,
+  target_reels INTEGER,
+  target_boxes INTEGER,
+  target_weight_kg REAL,
+  target_pieces INTEGER
 );
 CREATE TABLE IF NOT EXISTS reels (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -84,6 +88,7 @@ CREATE TABLE IF NOT EXISTS reels (
   roll_no INTEGER NOT NULL,
   roll_period TEXT,
   roll_code TEXT UNIQUE,
+  prod_seq INTEGER,
   gross REAL NOT NULL,
   core REAL NOT NULL,
   net REAL NOT NULL,
@@ -104,6 +109,7 @@ CREATE TABLE IF NOT EXISTS cartons (
   job_id INTEGER NOT NULL REFERENCES jobs(id),
   bundle_no INTEGER NOT NULL,
   box_period TEXT,
+  prod_seq INTEGER,
   num_reels INTEGER NOT NULL,
   box_wt REAL NOT NULL DEFAULT 0,
   total_gross REAL NOT NULL,
@@ -125,6 +131,13 @@ CREATE TABLE IF NOT EXISTS monthly_counters (
   kind TEXT NOT NULL,
   last_no INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (period, kind)
+);
+CREATE TABLE IF NOT EXISTS monthly_product_counters (
+  period TEXT NOT NULL,
+  product_id INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  last_no INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (period, product_id, kind)
 );
 CREATE TABLE IF NOT EXISTS id_counters (
   kind TEXT PRIMARY KEY,
@@ -149,10 +162,12 @@ CREATE TABLE IF NOT EXISTS dispatch_orders (
   order_no TEXT UNIQUE NOT NULL,
   customer TEXT NOT NULL,
   customer_po TEXT NOT NULL DEFAULT '',
+  po_date TEXT NOT NULL DEFAULT '',
   batch_no TEXT NOT NULL DEFAULT '',
   job_id INTEGER NOT NULL REFERENCES jobs(id),
   required_bundles INTEGER NOT NULL,
   required_pieces INTEGER,
+  required_weight_kg REAL,
   piece_unit TEXT NOT NULL DEFAULT 'reel',
   status TEXT NOT NULL DEFAULT 'loading',
   order_date TEXT NOT NULL,
@@ -187,6 +202,13 @@ CREATE TABLE IF NOT EXISTS users (
   pass_hash TEXT NOT NULL,
   role TEXT NOT NULL DEFAULT 'packager',
   created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS license_clients (
+  station_id TEXT PRIMARY KEY,
+  fp TEXT NOT NULL DEFAULT '',
+  first_seen TEXT NOT NULL DEFAULT '',
+  last_seen TEXT NOT NULL DEFAULT '',
+  overdraft_until TEXT NOT NULL DEFAULT ''
 );
 """
 
@@ -282,6 +304,167 @@ def _ensure_dispatch_slips(c) -> None:
       print_count INTEGER NOT NULL DEFAULT 0,
       last_printed_at TEXT
     )""")
+
+
+def _ensure_license_clients(c) -> None:
+    """Packager-side station registry for licensing (additive, no rewrites).
+
+    One row per station_id (packager + dispatchers). last_seen drives the
+    30-day distinct count vs max_stations; overdraft_until holds the +1/72h
+    grace once. Fresh DBs get the table from SCHEMA.
+    """
+    c.execute("""CREATE TABLE IF NOT EXISTS license_clients (
+      station_id TEXT PRIMARY KEY, fp TEXT NOT NULL DEFAULT '',
+      first_seen TEXT NOT NULL DEFAULT '', last_seen TEXT NOT NULL DEFAULT '',
+      overdraft_until TEXT NOT NULL DEFAULT '')""")
+    cols = {r["name"] for r in c.execute(
+        "PRAGMA table_info(license_clients)").fetchall()}
+    if cols:
+        for col in ("fp", "first_seen", "last_seen", "overdraft_until"):
+            if col not in cols:
+                c.execute(
+                    f"ALTER TABLE license_clients ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+
+
+def _ensure_per_product_counters(c) -> None:
+    """P0 per-product monthly counting: each product restarts at 1 each month.
+
+    Keeps the GLOBAL monthly counters + roll_code/carton_no (QR identity,
+    UNIQUE) untouched. Adds:
+    - monthly_product_counters(period, product_id, kind, last_no)
+    - reels.prod_seq / cartons.prod_seq (per-product 1..N display numbers)
+
+    Backfill: for every (product, period) in row-id order, assign 1..N and
+    seed counters at the MAX so new numbers never collide or reuse deleted
+    numbers. Idempotent reruns only fill NULLs and raise counters, never
+    renumber existing rows.
+    """
+    c.execute("""CREATE TABLE IF NOT EXISTS monthly_product_counters (
+      period TEXT NOT NULL, product_id INTEGER NOT NULL, kind TEXT NOT NULL,
+      last_no INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (period, product_id, kind))""")
+    cols_r = {r["name"] for r in c.execute("PRAGMA table_info(reels)").fetchall()}
+    if cols_r and "prod_seq" not in cols_r:
+        c.execute("ALTER TABLE reels ADD COLUMN prod_seq INTEGER")
+    cols_t = {r["name"] for r in c.execute("PRAGMA table_info(cartons)").fetchall()}
+    if cols_t and "prod_seq" not in cols_t:
+        c.execute("ALTER TABLE cartons ADD COLUMN prod_seq INTEGER")
+    # Backfill reels: per (product via job, period) in creation order.
+    try:
+        rows = c.execute(
+            "SELECT r.id, r.roll_period, j.product_id FROM reels r"
+            " JOIN jobs j ON j.id=r.job_id"
+            " WHERE r.prod_seq IS NULL ORDER BY r.id").fetchall()
+    except Exception:
+        rows = []
+    from collections import defaultdict
+    counters: dict[tuple, int] = {}
+    # Seed counters from existing MAX prod_seq per (period, product).
+    try:
+        for r in c.execute(
+                "SELECT r.roll_period per, j.product_id pid, MAX(r.prod_seq) mx"
+                " FROM reels r JOIN jobs j ON j.id=r.job_id"
+                " WHERE r.prod_seq IS NOT NULL GROUP BY per, pid").fetchall():
+            if r["per"] and r["pid"] is not None and r["mx"]:
+                counters[(str(r["per"]), int(r["pid"]), "reel")] = int(r["mx"])
+    except Exception:
+        pass
+    for r in rows:
+        per = str(r["roll_period"] or "") or None
+        pid = r["product_id"]
+        if not per or pid is None:
+            continue
+        key = (per, int(pid), "reel")
+        # Start from existing MAX for this key (including rows already numbered).
+        if key not in counters:
+            mx = c.execute(
+                "SELECT MAX(r.prod_seq) m FROM reels r JOIN jobs j ON j.id=r.job_id"
+                " WHERE r.roll_period=? AND j.product_id=?",
+                (per, int(pid))).fetchone()
+            counters[key] = int(mx["m"] or 0) if mx and mx["m"] else 0
+        counters[key] += 1
+        c.execute("UPDATE reels SET prod_seq=? WHERE id=?", (counters[key], r["id"]))
+    # Seed monthly_product_counters from MAX prod_seq (never lower on rerun).
+    for (per, pid, kind), mx in counters.items():
+        cur = c.execute("SELECT last_no FROM monthly_product_counters"
+                        " WHERE period=? AND product_id=? AND kind=?",
+                        (per, pid, kind)).fetchone()
+        if cur is None:
+            c.execute("INSERT INTO monthly_product_counters(period, product_id, kind, last_no)"
+                      " VALUES(?,?,?,?)", (per, pid, kind, mx))
+        elif int(cur["last_no"] or 0) < mx:
+            c.execute("UPDATE monthly_product_counters SET last_no=? WHERE period=? AND product_id=? AND kind=?",
+                      (mx, per, pid, kind))
+    # Backfill cartons similarly.
+    counters_b: dict[tuple, int] = {}
+    try:
+        for r in c.execute(
+                "SELECT ct.box_period per, j.product_id pid, MAX(ct.prod_seq) mx"
+                " FROM cartons ct JOIN jobs j ON j.id=ct.job_id"
+                " WHERE ct.prod_seq IS NOT NULL GROUP BY per, pid").fetchall():
+            if r["per"] and r["pid"] is not None and r["mx"]:
+                counters_b[(str(r["per"]), int(r["pid"]), "box")] = int(r["mx"])
+    except Exception:
+        pass
+    try:
+        brows = c.execute(
+            "SELECT ct.id, ct.box_period, j.product_id FROM cartons ct"
+            " JOIN jobs j ON j.id=ct.job_id"
+            " WHERE ct.prod_seq IS NULL ORDER BY ct.id").fetchall()
+    except Exception:
+        brows = []
+    for r in brows:
+        per = str(r["box_period"] or "") or None
+        pid = r["product_id"]
+        if not per or pid is None:
+            continue
+        key = (per, int(pid), "box")
+        if key not in counters_b:
+            mx = c.execute(
+                "SELECT MAX(ct.prod_seq) m FROM cartons ct JOIN jobs j ON j.id=ct.job_id"
+                " WHERE ct.box_period=? AND j.product_id=?",
+                (per, int(pid))).fetchone()
+            counters_b[key] = int(mx["m"] or 0) if mx and mx["m"] else 0
+        counters_b[key] += 1
+        c.execute("UPDATE cartons SET prod_seq=? WHERE id=?", (counters_b[key], r["id"]))
+    for (per, pid, kind), mx in counters_b.items():
+        cur = c.execute("SELECT last_no FROM monthly_product_counters"
+                        " WHERE period=? AND product_id=? AND kind=?",
+                        (per, pid, kind)).fetchone()
+        if cur is None:
+            c.execute("INSERT INTO monthly_product_counters(period, product_id, kind, last_no)"
+                      " VALUES(?,?,?,?)", (per, pid, kind, mx))
+        elif int(cur["last_no"] or 0) < mx:
+            c.execute("UPDATE monthly_product_counters SET last_no=? WHERE period=? AND product_id=? AND kind=?",
+                      (mx, per, pid, kind))
+
+
+def _ensure_job_targets(c) -> None:
+    """Packaging targets per job: reels / boxes / net-kg / pieces.
+
+    Additive only; existing jobs keep NULL (no target). Fresh DBs get the
+    columns from SCHEMA.
+    """
+    cols = {r["name"] for r in c.execute("PRAGMA table_info(jobs)").fetchall()}
+    if cols:
+        for col, ddl in (
+            ("target_reels", "ALTER TABLE jobs ADD COLUMN target_reels INTEGER"),
+            ("target_boxes", "ALTER TABLE jobs ADD COLUMN target_boxes INTEGER"),
+            ("target_weight_kg", "ALTER TABLE jobs ADD COLUMN target_weight_kg REAL"),
+            ("target_pieces", "ALTER TABLE jobs ADD COLUMN target_pieces INTEGER"),
+        ):
+            if col not in cols:
+                c.execute(ddl)
+
+
+def _ensure_dispatch_po_weight(c) -> None:
+    """Dispatch PO date + kg target. Additive; old orders keep ''/NULL."""
+    cols = {r["name"] for r in c.execute("PRAGMA table_info(dispatch_orders)").fetchall()}
+    if cols:
+        if "po_date" not in cols:
+            c.execute("ALTER TABLE dispatch_orders ADD COLUMN po_date TEXT NOT NULL DEFAULT ''")
+        if "required_weight_kg" not in cols:
+            c.execute("ALTER TABLE dispatch_orders ADD COLUMN required_weight_kg REAL")
 
 
 def _ensure_id_counters(c) -> None:
@@ -584,6 +767,10 @@ def init_db(path: str | None = None) -> str:
             _ensure_wide_label_columns(c)
             _ensure_dispatch_slips(c)
             _ensure_id_counters(c)
+            _ensure_license_clients(c)
+            _ensure_per_product_counters(c)
+            _ensure_job_targets(c)
+            _ensure_dispatch_po_weight(c)
             bad = c.execute("PRAGMA foreign_key_check").fetchall()
             if bad:
                 raise RuntimeError(f"DB FK integrity failed: {len(bad)} violation(s)")

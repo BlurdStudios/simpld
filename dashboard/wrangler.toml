@@ -1,0 +1,32 @@
+# simpld-dashboard — vendor-hosted, outbound-push only.
+# Factory never opens inbound ports. This Worker only serves cached pushes.
+name = "simpld-dashboard"
+main = "src/worker.ts"
+compatibility_date = "2026-10-26"
+
+[vars]
+# Placeholder site used for smoke tests / landing default. Real tenants are
+# keyed by site_id in KV/D1; no per-site Worker needed.
+SITE = "demo-site"
+
+# Pick ONE backing store for push snapshots in production. KV is simplest for
+# cached pushes; D1 fits if you later need SQL retention queries (2yr detail
+# pruning). Accounts/sessions/api_keys/licence-log/reporter-history REQUIRE
+# the DB (D1) binding — without it the portal falls back to in-memory (dev only).
+[[kv_namespaces]]
+binding = "PUSHES"
+id = "PUT_KV_NAMESPACE_ID_HERE"
+preview_id = "PUT_KV_PREVIEW_ID_HERE"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "simpld-dashboard"
+database_id = "PUT_D1_DATABASE_ID_HERE"
+
+[[r2_buckets]]
+binding = "RELEASES"
+bucket_name = "simpld-releases"
+
+[assets]
+directory = "./dist"
+not_found_handling = "single-page-application"

@@ -1,6 +1,7 @@
 """Label previews. Type-1 = single reel (NO QR, matches old photo).
 Type-2 = carton/bundle (WITH QR). Packing slip matches old A4 format."""
 from __future__ import annotations
+import contextlib
 import io
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QLabel, QPushButton,
                                QHBoxLayout, QTextEdit, QMessageBox, QSizePolicy)
@@ -210,11 +211,87 @@ def _pieces_txt(job: dict) -> str:
         return "No of Pieces:unknown"
 
 
+def _queue_name_of(printer) -> str:
+    """CUPS queue backing a label-printer driver ('' for mock/demo).
+
+    The real Qt driver carries `printer_name`; the mock file-log printer
+    has none, so queue features (pre-flight, Queue dialog) stay off in
+    demo mode and tests instead of failing.
+    """
+    try:
+        return str(getattr(printer, "printer_name", "") or "").strip()
+    except Exception:
+        return ""
+
+
+@contextlib.contextmanager
+def _printing_state(btn):
+    """Loading state for a print button around the blocking spool call.
+
+    Disables the button and shows "Printing…" (with an event pump so it
+    paints before Qt blocks in the spooler), then restores text + enabled
+    state. Synchronous by design: dialog tests call do_print() directly
+    and assert the outcome immediately after.
+    """
+    try:
+        orig = btn.text()
+    except Exception:
+        orig = ""
+    try:
+        btn.setEnabled(False)
+        btn.setText("Printing…")
+        from PySide6.QtWidgets import QApplication
+        QApplication.processEvents()
+    except Exception:
+        pass
+    try:
+        yield
+    finally:
+        try:
+            btn.setText(orig)
+        except Exception:
+            pass
+        try:
+            btn.setEnabled(True)
+        except Exception:
+            pass
+
+
+def _preflight(queue_name: str, parent) -> bool:
+    """Block printing when CUPS reports a stopped or stuck queue.
+
+    Returns True when printing may proceed. Skipped (True) for mock/demo
+    printers and PCs without CUPS. On a real problem shows the CUPS reason
+    with a pointer to the Queue viewer instead of spooling into a stuck
+    queue and toasting a false success.
+    """
+    try:
+        from factory.ui.printer_queue import describe_problem
+        problem = describe_problem(queue_name)
+    except Exception:
+        problem = None
+    if not problem:
+        return True
+    QMessageBox.warning(parent, "Printer queue", problem)
+    return False
+
+
+def _open_queue(parent, queue_name: str) -> None:
+    """Show pending jobs + printer state for one queue (Queue button)."""
+    try:
+        from factory.ui.printer_queue import PrinterQueueDialog
+        PrinterQueueDialog(parent, queue_name or "").exec()
+    except Exception as e:
+        QMessageBox.warning(parent, "Print queue",
+                            f"Could not open the queue:\n{e}")
+
+
 def reel_label_text(job: dict, reel: dict) -> str:
-    # Visual identity is the bare reel number (the floor's "24"); the
-    # month-qualified roll_code stays in the DB and only appears on evidence
-    # surfaces (slip / History "Full ID"), never on this sticker.
-    ident = str(reel["roll_no"])
+    # Visual identity is the per-product bare number when present (P0
+    # per-product monthly counting); the month-qualified roll_code stays in
+    # the DB and only appears on evidence surfaces (slip / History "Full ID"),
+    # never on this sticker. Date prints once only (DD-MM-YY).
+    ident = str(reel.get("prod_seq") or reel["roll_no"])
     return (
         f"{COMPANY}   J:{job['job_no']}\n"
         f"Job Name:{job['job_name']}\n"
@@ -228,27 +305,37 @@ def reel_label_text(job: dict, reel: dict) -> str:
 
 
 def carton_label_text(detail: dict) -> str:
+    # No Bundle line (not required on the sticker). Reel-linked boxes show
+    # the session tare so the floor can verify it stays constant.
+    try:
+        _bw = f"{float(detail.get('box_wt') or 0):.3f}"
+    except (TypeError, ValueError):
+        _bw = "—"
+    try:
+        _box_no = str(int(detail.get("prod_seq"))) if detail.get("prod_seq") is not None else bare_carton_no(detail['carton_no'])
+    except (TypeError, ValueError):
+        _box_no = bare_carton_no(detail['carton_no'])
     if int(detail.get("num_reels") or 0) == 0:
         return (
             f"{COMPANY}   J:{detail['job_no']}\n"
             f"Job Name:{detail['job_name']}\n"
-            f"Bundle:{detail['bundle_no']}\n"
+            f"Rolls:—\n"
             f"Date:{fmt_date_ddmmyy(detail['packed_at'])}\n"
             f"Box Wt:  {detail['total_gross']:.3f} Kg\n"
             f"QR:{detail['qr']}\n"
-            f"Box No:{bare_carton_no(detail['carton_no'])}"
+            f"Box No:{_box_no}"
         )
-    rolls = ",".join(str(r["roll_no"]) for r in detail["reels"])
+    rolls = ",".join(str(r.get("prod_seq") or r["roll_no"]) for r in detail["reels"])
     return (
         f"{COMPANY}   J:{detail['job_no']}\n"
         f"Job Name:{detail['job_name']}\n"
-        f"Bundle:{detail['bundle_no']}  Rolls:{rolls}\n"
+        f"Tare:{_bw} Kg  Rolls:{rolls}\n"
         f"Date:{fmt_date_ddmmyy(detail['packed_at'])}  |  No of Reels:{detail['num_reels']}\n"
         f"Total Gross: {detail['total_gross']:.3f} Kg\n"
         f"Total Core:  {detail['total_core']:.3f} Kg\n"
         f"Total Net:   {detail['total_net']:.3f} Kg\n"
         f"QR:{detail['qr']}\n"
-        f"Box No:{bare_carton_no(detail['carton_no'])}"
+        f"Box No:{_box_no}"
     )
 
 
@@ -279,26 +366,37 @@ class ReelLabelDialog(QDialog):
         self.btn_print = QPushButton("PRINT REEL STICKER")
         self.btn_print.setMinimumHeight(56)
         style_button(self.btn_print, "success")
+        self.btn_queue = QPushButton("Queue")
+        self.btn_queue.setMinimumHeight(56)
+        style_button(self.btn_queue, "secondary")
+        self.btn_queue.setToolTip("Show pending print jobs for this printer.")
         self.btn_close = QPushButton("Close")
         self.btn_close.setMinimumHeight(56)
         style_button(self.btn_close, "secondary")
         row.addWidget(self.btn_print, 2)
+        row.addWidget(self.btn_queue, 1)
         row.addWidget(self.btn_close, 1)
         lay.addLayout(row)
         self.btn_close.clicked.connect(self.accept)
         self.btn_print.clicked.connect(self.do_print)
+        self.btn_queue.clicked.connect(
+            lambda: _open_queue(self, _queue_name_of(self._printer)))
         self._job, self._reel, self._printer = job, reel, printer
 
     def do_print(self):
         # Complete rendering inputs — the real Qt driver renders the full
         # sticker from job+reel; the mock only file-logs the dict.
+        queue = _queue_name_of(self._printer)
+        if not _preflight(queue, self):
+            return
         payload = {"job": dict(self._job), "reel": dict(self._reel)}
-        try:
-            ok = bool(self._printer.print_reel_label(payload))
-        except Exception as e:
-            return QMessageBox.warning(
-                self, "Could not print", str(e).strip() or
-                "Could not print. Check the printer and try again.")
+        with _printing_state(self.btn_print):
+            try:
+                ok = bool(self._printer.print_reel_label(payload))
+            except Exception as e:
+                return QMessageBox.warning(
+                    self, "Could not print", str(e).strip() or
+                    "Could not print. Check the printer and try again.")
         if not ok:
             return QMessageBox.warning(
                 self, "Could not print", "Could not print. Check the printer and try again.")
@@ -352,26 +450,37 @@ class CartonLabelDialog(QDialog):
         self.btn_print = QPushButton("PRINT BOX STICKER")
         self.btn_print.setMinimumHeight(56)
         style_button(self.btn_print, "primary")
+        self.btn_queue = QPushButton("Queue")
+        self.btn_queue.setMinimumHeight(56)
+        style_button(self.btn_queue, "secondary")
+        self.btn_queue.setToolTip("Show pending print jobs for this printer.")
         self.btn_close = QPushButton("Close")
         self.btn_close.setMinimumHeight(56)
         style_button(self.btn_close, "secondary")
         row.addWidget(self.btn_print, 2)
+        row.addWidget(self.btn_queue, 1)
         row.addWidget(self.btn_close, 1)
         lay.addLayout(row)
         self.btn_close.clicked.connect(self.accept)
         self.btn_print.clicked.connect(self.do_print)
+        self.btn_queue.clicked.connect(
+            lambda: _open_queue(self, _queue_name_of(self._printer)))
         self._detail, self._printer = detail, printer
 
     def do_print(self):
         # Complete rendering inputs — the real Qt driver renders the full
         # sticker from the carton detail; the mock only file-logs the dict.
+        queue = _queue_name_of(self._printer)
+        if not _preflight(queue, self):
+            return
         payload = {"detail": dict(self._detail)}
-        try:
-            ok = bool(self._printer.print_carton_label(payload))
-        except Exception as e:
-            return QMessageBox.warning(
-                self, "Could not print", str(e).strip() or
-                "Could not print. Check the printer and try again.")
+        with _printing_state(self.btn_print):
+            try:
+                ok = bool(self._printer.print_carton_label(payload))
+            except Exception as e:
+                return QMessageBox.warning(
+                    self, "Could not print", str(e).strip() or
+                    "Could not print. Check the printer and try again.")
         if not ok:
             return QMessageBox.warning(
                 self, "Could not print", "Could not print. Check the printer and try again.")
@@ -393,7 +502,7 @@ class ClientLabelDialog(QDialog):
     The customer PO and batch come from the dispatch order, the box number is
     the client-facing 1..N sequence (never the scanned carton code), and the
     rows are the coils inside the box. The sticker is printed on the dispatch
-    station's wide label printer; the 4x3 Citizen stays on packaging.
+    station's wide label printer; the 100x50 Citizen stays on packaging.
     """
 
     def __init__(self, parent, detail: dict, printer):
@@ -437,16 +546,23 @@ class ClientLabelDialog(QDialog):
         self.btn_png = QPushButton("Save PNG")
         self.btn_png.setMinimumHeight(56)
         style_button(self.btn_png, "secondary")
+        self.btn_queue = QPushButton("Queue")
+        self.btn_queue.setMinimumHeight(56)
+        style_button(self.btn_queue, "secondary")
+        self.btn_queue.setToolTip("Show pending print jobs for this printer.")
         self.btn_close = QPushButton("Close")
         self.btn_close.setMinimumHeight(56)
         style_button(self.btn_close, "secondary")
         row.addWidget(self.btn_print, 2)
         row.addWidget(self.btn_png, 1)
+        row.addWidget(self.btn_queue, 1)
         row.addWidget(self.btn_close, 1)
         lay.addLayout(row)
         self.btn_close.clicked.connect(self.accept)
         self.btn_print.clicked.connect(self.do_print)
         self.btn_png.clicked.connect(self.save_png)
+        self.btn_queue.clicked.connect(
+            lambda: _open_queue(self, _queue_name_of(self._printer)))
 
     def save_png(self):
         from PySide6.QtWidgets import QFileDialog
@@ -464,13 +580,17 @@ class ClientLabelDialog(QDialog):
         toast(self, f"Sticker saved to {path}")
 
     def do_print(self):
+        queue = _queue_name_of(self._printer)
+        if not _preflight(queue, self):
+            return
         payload = {"detail": dict(self._detail)}
-        try:
-            ok = bool(self._printer.print_client_label(payload))
-        except Exception as e:
-            return QMessageBox.warning(
-                self, "Could not print", str(e).strip() or
-                "Could not print. Check the printer and try again.")
+        with _printing_state(self.btn_print):
+            try:
+                ok = bool(self._printer.print_client_label(payload))
+            except Exception as e:
+                return QMessageBox.warning(
+                    self, "Could not print", str(e).strip() or
+                    "Could not print. Check the printer and try again.")
         if not ok:
             return QMessageBox.warning(
                 self, "Could not print",
@@ -713,17 +833,30 @@ class PackingSlipDialog(QDialog):
         row.addWidget(self.printer_combo, 1)
         b_print = QPushButton("Print")
         style_button(b_print, "primary")
+        b_queue = QPushButton("Queue")
+        style_button(b_queue, "secondary")
+        b_queue.setToolTip("Show pending print jobs for this printer.")
         b_pdf = QPushButton("Save PDF")
         style_button(b_pdf, "secondary")
         b_close = QPushButton("Close")
         style_button(b_close, "secondary")
-        for b in (b_print, b_pdf, b_close):
+        for b in (b_print, b_queue, b_pdf, b_close):
             b.setMinimumHeight(44)
             row.addWidget(b)
+        self._btn_print = b_print
         lay.addLayout(row)
         b_close.clicked.connect(self.accept)
         b_print.clicked.connect(self.do_print)
+        b_queue.clicked.connect(lambda: _open_queue(self, self._queue_name()))
         b_pdf.clicked.connect(self.do_pdf)
+
+    def _queue_name(self) -> str:
+        try:
+            if not self.printer_combo.isEnabled():
+                return ""
+            return str(self.printer_combo.currentText() or "").strip()
+        except Exception:
+            return ""
 
     def _out_path(self, ext: str) -> str:
         import os
@@ -742,12 +875,15 @@ class PackingSlipDialog(QDialog):
         name = self.printer_combo.currentText()
         if not self.printer_combo.isEnabled():
             return QMessageBox.warning(self, "Print", "No printer found. Use Save PDF.")
+        if not _preflight(self._queue_name(), self):
+            return
         try:
             # Local office hardware prints the prefetched authoritative
             # slip (local DB or LAN get_slip op); never re-reads SQLite.
             # Real printer errors raise and are shown — never false success.
-            ok = SP.print_slip(self, self._job_id, printer_name=name,
-                               slip=self._slip)
+            with _printing_state(self._btn_print):
+                ok = SP.print_slip(self, self._job_id, printer_name=name,
+                                   slip=self._slip)
         except Exception as e:
             return QMessageBox.warning(self, "Print", f"Could not print:\n{e}")
         if not ok:
@@ -918,17 +1054,30 @@ class DispatchSlipDialog(QDialog):
         row.addWidget(self.printer_combo, 1)
         b_print = QPushButton("Print")
         style_button(b_print, "primary")
+        b_queue = QPushButton("Queue")
+        style_button(b_queue, "secondary")
+        b_queue.setToolTip("Show pending print jobs for this printer.")
         b_pdf = QPushButton("Save PDF")
         style_button(b_pdf, "secondary")
         b_close = QPushButton("Close")
         style_button(b_close, "secondary")
-        for b in (b_print, b_pdf, b_close):
+        for b in (b_print, b_queue, b_pdf, b_close):
             b.setMinimumHeight(44)
             row.addWidget(b)
+        self._btn_print = b_print
         lay.addLayout(row)
         b_close.clicked.connect(self.accept)
         b_print.clicked.connect(self.do_print)
+        b_queue.clicked.connect(lambda: _open_queue(self, self._queue_name()))
         b_pdf.clicked.connect(self.do_pdf)
+
+    def _queue_name(self) -> str:
+        try:
+            if not self.printer_combo.isEnabled():
+                return ""
+            return str(self.printer_combo.currentText() or "").strip()
+        except Exception:
+            return ""
 
     def _print_line(self) -> str:
         n = int((self._slip or {}).get("print_count") or 0)
@@ -961,6 +1110,8 @@ class DispatchSlipDialog(QDialog):
                 self, "Print", "Slip not loaded. Refresh and try again.")
         if not self.printer_combo.isEnabled():
             return QMessageBox.warning(self, "Print", "No printer found. Use Save PDF.")
+        if not _preflight(self._queue_name(), self):
+            return
         name = self.printer_combo.currentText()
         try:
             from PySide6.QtPrintSupport import QPrinter, QPrinterInfo
@@ -969,7 +1120,8 @@ class DispatchSlipDialog(QDialog):
                 if info.printerName() == name:
                     pr.setPrinterName(name)
                     break
-            self._document().print_(pr)
+            with _printing_state(self._btn_print):
+                self._document().print_(pr)
         except Exception as e:
             return QMessageBox.warning(self, "Print", f"Could not print:\n{e}")
         try:

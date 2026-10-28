@@ -47,8 +47,8 @@ DEFAULTS = {
                                # next Ready box as if its QR was scanned. Off on
                                # the floor; enable from About (admin) or
                                # SIMPLD_MOCK_QR=1. Does not change printer mode.
-    "label_width_mm": 100,     # 4-inch media default; dialog-adjustable
-    "label_height_mm": 100,
+    "label_width_mm": 100,     # 100mm media width; dialog-adjustable legacy
+    "label_height_mm": 50,
     "label_dpi": 203,          # CL-S621 = 203dpi
 }
 

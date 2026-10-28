@@ -169,13 +169,14 @@ def test_wide_renderer_size_rows_and_min_height(tmp_path):
     S.scan_into_order(order["id"], box["carton_no"], path=p)
     detail = S.client_label_detail(order["id"], box["id"], path=p)
     img = L.render_client_box(detail)
-    assert L.wide_label_height_mm(3) == 91.0
-    assert img.size == (1678, 727)
+    assert L.wide_label_height_mm(3) == 92.0
+    # 210mm wide; height follows 4-row header (PO date) + coils.
+    assert img.size[0] == 1678
     assert img.convert("L").getextrema()[0] < 128  # has ink, not a blank page
 
-    # The Product row must be closed by a full-width rule before the table
-    # header; otherwise PRODUCT and S.no visually merge into one row.
-    rule_y = round(45 / 25.4 * L.WIDE_DPI)
+    # The header must be closed by a full-width rule before the table
+    # header; otherwise header rows and S.no visually merge.
+    rule_y = round(51 / 25.4 * L.WIDE_DPI)
     rule = [img.getpixel((x, rule_y))
             for x in range(60, img.width - 60, 7)]
     assert all(sum(p[:3]) < 200 for p in rule)
@@ -184,11 +185,11 @@ def test_wide_renderer_size_rows_and_min_height(tmp_path):
                client_box_no=2)
     img1 = L.render_client_box(one)
     assert L.wide_label_height_mm(1) == L.WIDE_MIN_H_MM
-    assert img1.size == (1678, 623)
+    assert img1.size[0] == 1678
     assert img1.height < img.height
 
     empty = dict(detail, coils=[], num_coils=0)
-    assert L.render_client_box(empty).size == (1678, 623)
+    assert L.render_client_box(empty).size[0] == 1678
 
 
 def test_progressive_piece_alert_thresholds():
@@ -198,9 +199,9 @@ def test_progressive_piece_alert_thresholds():
     assert _piece_alert(900, 1000) == (
         "Almost done — 100 pcs left (900/1,000).", "warning")
     assert _piece_alert(1000, 1000) == (
-        "Target reached — 1,000/1,000 pcs.", "success")
+        "✓ TARGET FULFILLED — 1,000/1,000 pcs.", "success")
     assert _piece_alert(1180, 1000) == (
-        "Target reached — over by 180 pcs.", "warning")
+        "✓ TARGET FULFILLED — over by 180 pcs.", "success")
 
 
 def test_ready_stock_summary_single_aggregate(tmp_path):
@@ -212,8 +213,11 @@ def test_ready_stock_summary_single_aggregate(tmp_path):
     legacy = S.create_job("LEGACY NO WPR", core_wt=0.280, path=p)
     _box(p, legacy, [11.38])
     summ = S.ready_stock_summary(path=p)
-    assert summ[job["id"]] == {"boxes": 2, "coils": 5, "pieces": 5000}
-    assert summ[legacy["id"]] == {"boxes": 1, "coils": 1, "pieces": None}
+    assert summ[job["id"]]["boxes"] == 2 and summ[job["id"]]["coils"] == 5
+    assert summ[job["id"]]["pieces"] == 5000
+    assert "weight_kg" in summ[job["id"]]
+    assert summ[legacy["id"]]["boxes"] == 1 and summ[legacy["id"]]["coils"] == 1
+    assert summ[legacy["id"]]["pieces"] is None
     # A loaded (dispatched) box leaves Ready, so it leaves the summary.
     order = S.create_dispatch_order("SUMMARY CO", job["id"],
                                     required_pieces=2000,

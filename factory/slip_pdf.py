@@ -631,3 +631,335 @@ def preview_images(job_id: int, db_path: str | None = None, dpi: int = 100,
             p.end()
         out.append(img)
     return slip, out
+
+
+# ---------------------------------------------------------------------------
+# Daily report (day-scoped line items). Reuses the slip's geometry constants
+# (column fractions, row/section heights, `_font`) and the QPainter/PDF path
+# of save_pdf, but paints a day header + separate reel/box totals. The
+# sticker/slip layouts above are untouched.
+# ---------------------------------------------------------------------------
+
+DAY_TOTALS_LINES = 2  # reel line + box line on the last page
+
+
+def day_report_to_csv_rows(report: dict) -> list[list[str]]:
+    """Flat CSV: one header row + one row per reel + one row per box.
+
+    Columns mirror the slip evidence table (plus Job), so a day's line items
+    export to the same shape the operator already reads. Read-only.
+    """
+    header = ["Type", "Job", "Roll / Box No.", "Gross / Box Wt",
+              "Core Wt", "Net Wt", "Packed In / Note"]
+    rows: list[list[str]] = [header]
+    for r in report.get("reel_rows") or []:
+        rows.append([
+            "Reel",
+            f"J:{r.get('job_no', '')}",
+            str(r.get("roll_label") or f"Roll #{r.get('roll_no')}"),
+            f"{float(r.get('gross', 0.0) or 0.0):.3f}",
+            f"{float(r.get('core', 0.0) or 0.0):.2f}",
+            f"{float(r.get('net', 0.0) or 0.0):.3f}",
+            bare_carton_no(r.get("carton_no")) or "loose",
+        ])
+    for b in report.get("box_rows") or []:
+        note = f"Bundle {b.get('bundle_no', '')} · {b.get('note', '')}"
+        if b.get("linked"):
+            note += f" · rolls {b.get('rolls', '')}"
+        rows.append([
+            "Box",
+            f"J:{b.get('job_no', '')}",
+            bare_carton_no(b.get("carton_no", "")),
+            f"{float(b.get('gross', 0.0) or 0.0):.3f}",
+            "—",
+            "—",
+            note,
+        ])
+    return rows
+
+
+def _day_report_rows(report: dict) -> list[dict]:
+    return list(report.get("rows") or []) or (
+        list(report.get("reel_rows") or []) + list(report.get("box_rows") or []))
+
+
+def _day_report_totals_height_mm() -> float:
+    return TOTALS_GAP_MM + DAY_TOTALS_LINES * TOTALS_LINE_MM
+
+
+def _day_report_paginate(report: dict) -> list[list[dict]]:
+    """Split day rows into pages that physically fit (same geometry math as
+    paginate, with a two-line day-totals block on the last page)."""
+    rows = _day_report_rows(report)
+    if not rows:
+        return [[]]
+    totals_h = _day_report_totals_height_mm()
+    pages: list[list[dict]] = []
+    i, n = 0, len(rows)
+    while i < n:
+        rest_h = _body_height_mm(rows[i:], None)
+        if rest_h + totals_h <= _BODY_USABLE_MM:
+            pages.append(rows[i:])
+            break
+        cur: list[dict] = []
+        used = 0.0
+        cur_sec: str | None = None
+        while i < n:
+            kind = _row_kind(rows[i])
+            need = RH_MM + (SECTION_H_MM if kind != cur_sec else 0.0)
+            if cur and used + need > _BODY_USABLE_MM + 1e-9:
+                break
+            cur.append(rows[i])
+            used += need
+            cur_sec = kind
+            i += 1
+        if not cur:
+            cur.append(rows[i])
+            i += 1
+        pages.append(cur)
+    return pages
+
+
+def _paint_day_report_page(p, area, dpi: int, report: dict,
+                           page_rows: list[dict], page_no: int,
+                           page_count: int):
+    """Draw one A4 day-report page (same device-pixel/geometry model as
+    paint_page, self-contained so the slip layout is never touched)."""
+    from PySide6.QtCore import Qt, QRectF
+    from PySide6.QtGui import QFontMetrics
+    mm = dpi / 25.4
+    x, y, W, H = area.x(), area.y(), area.width(), area.height()
+    right = x + W - 1
+
+    def text(r, s, font, align=Qt.AlignLeft | Qt.AlignVCenter):
+        p.setFont(font)
+        s = "" if s is None else str(s)
+        try:
+            fm = QFontMetrics(font)
+            avail = int(r.width() - 2)
+            if avail > 10 and fm.horizontalAdvance(s) > avail:
+                s = fm.elidedText(s, Qt.ElideRight, avail)
+        except Exception:
+            pass
+        p.save()
+        try:
+            p.setClipRect(r)
+            p.drawText(r, align | Qt.TextSingleLine, s)
+        finally:
+            p.restore()
+
+    # title + day header
+    text(QRectF(x, y, W, 10 * mm), "DAILY REPORT", _font(dpi, 15, True),
+         Qt.AlignHCenter | Qt.AlignVCenter)
+    y += 12 * mm
+    f_head, f_row, f_bold = _font(dpi, 10), _font(dpi, 9), _font(dpi, 9, True)
+    t = report.get("totals") or {}
+    text(QRectF(x, y, W, 6 * mm),
+         f"Date: {report.get('day', '')}     Reels: {t.get('reels', 0)}"
+         f"     Boxes: {t.get('boxes', 0)}", f_head)
+    y += 6 * mm
+    text(QRectF(x, y, W, 6 * mm),
+         f"Reel Net: {float(t.get('reel_net', 0.0) or 0.0):.3f}Kgs"
+         f"     Box Wt: {float(t.get('box_gross', 0.0) or 0.0):.3f}Kgs"
+         f"     (kept separate)", f_head)
+    y += 8 * mm
+
+    fr = list(COL_FR)
+    xs = [x]
+    for w_ in fr[:-1]:
+        xs.append(xs[-1] + W * w_)
+    xs.append(x + W)
+    rh = RH_MM * mm
+    f_sec = _font(dpi, 9, True)
+
+    def hline(y0, x0=None, x1=None):
+        p.drawLine(int(x0 if x0 is not None else x), int(y0),
+                   int(x1 if x1 is not None else right), int(y0))
+
+    def vline(x0, y0, y1):
+        p.drawLine(int(x0), int(y0), int(x0), int(y1))
+
+    def section_bar(title: str):
+        nonlocal y
+        text(QRectF(x, y, W, rh), title, f_sec,
+             Qt.AlignLeft | Qt.AlignVCenter)
+        y += rh
+        hline(y)
+
+    def col_header(cells):
+        nonlocal y
+        top = y
+        for j, h in enumerate(cells):
+            text(QRectF(xs[j] + 1, y, xs[j + 1] - xs[j] - 2, rh), h, f_bold,
+                 Qt.AlignHCenter | Qt.AlignVCenter)
+        y += rh
+        hline(top)
+        hline(y)
+        return top
+
+    REEL_HEAD = ("Roll identity", "GROSS WT", "CORE WT", "NET WT", "Job / In Box")
+    BOX_HEAD = ("Box No.", "Bundle", "BOX WT", "Type", "Job / Rolls")
+    top = y
+    cur_sec: str | None = None
+    segments: list[tuple[float, float]] = []
+    seg_top: float | None = None
+
+    def open_section(kind: str):
+        nonlocal y, top, cur_sec, seg_top
+        if cur_sec == kind:
+            return
+        if cur_sec is not None and seg_top is not None:
+            segments.append((seg_top, y))
+        cur_sec = kind
+        if kind == "Reel":
+            section_bar("Reels")
+            top = col_header(list(REEL_HEAD))
+        else:
+            section_bar("Boxes")
+            top = col_header(list(BOX_HEAD))
+        seg_top = top
+
+    if not page_rows:
+        text(QRectF(x, y, W, 8 * mm),
+             "No reels or boxes recorded for this day.", f_row)
+        y += 8 * mm
+        hline(y)
+
+    for r in page_rows:
+        kind = _row_kind(r)
+        open_section(kind)
+        if kind == "Reel":
+            in_box = bare_carton_no(r.get("carton_no")) or "loose"
+            cells = [str(r.get("roll_label") or r.get("roll_no")),
+                     f"{float(r.get('gross', 0.0) or 0.0):.3f}",
+                     f"{float(r.get('core', 0.0) or 0.0):.2f}",
+                     f"{float(r.get('net', 0.0) or 0.0):.3f}",
+                     f"J:{r.get('job_no', '')} {in_box}"]
+        else:
+            refs = r.get("roll_refs") or r.get("rolls") or ""
+            cells = [bare_carton_no(r.get("carton_no", "")),
+                     str(r.get("bundle_no", "")),
+                     f"{float(r.get('gross', 0.0) or 0.0):.3f}",
+                     "legacy" if r.get("linked") else "indep.",
+                     f"J:{r.get('job_no', '')} " + (
+                         refs if r.get("linked") else "weighed box")]
+        for j, val in enumerate(cells):
+            a = Qt.AlignHCenter | Qt.AlignVCenter if j in (0, 1, 3, 4) \
+                else Qt.AlignRight | Qt.AlignVCenter
+            text(QRectF(xs[j] + 1, y, xs[j + 1] - xs[j] - 2, rh), val, f_row, a)
+        y += rh
+        hline(y)
+    if page_rows:
+        if seg_top is not None:
+            segments.append((seg_top, y))
+        for (y0, y1) in segments:
+            for j in range(1, 5):
+                vline(xs[j], y0, y1)
+            vline(x, y0, y1)
+            vline(right, y0, y1)
+
+    if page_no == page_count:
+        t = report.get("totals") or {}
+        y += TOTALS_GAP_MM * mm
+        lines = [
+            f"Reels: {t.get('reels', 0)}  ·  Gross "
+            f"{float(t.get('reel_gross', 0.0) or 0.0):.3f}Kgs  ·  Core "
+            f"{float(t.get('reel_core', 0.0) or 0.0):.3f}Kgs  ·  Net "
+            f"{float(t.get('reel_net', 0.0) or 0.0):.3f}Kgs",
+            f"Boxes: {t.get('boxes', 0)}  ·  Box Wt "
+            f"{float(t.get('box_gross', 0.0) or 0.0):.3f}Kgs"
+            "  (kept separate, not added)",
+        ]
+        for line in lines:
+            text(QRectF(x, y, W, TOTALS_LINE_MM * mm), line, f_bold)
+            y += TOTALS_LINE_MM * mm
+
+    text(QRectF(x, area.y() + H - 8 * mm, W, 6 * mm),
+         f"Page Nos.: {page_no} \\{page_count}", _font(dpi, 9, True),
+         Qt.AlignRight | Qt.AlignVCenter)
+
+
+def save_day_report_pdf(report: dict, path: str) -> str:
+    """Render a day report to an A4 PDF (same QPainter/PDF path as save_pdf).
+
+    Takes the already-assembled report dict (local or LAN); never opens
+    SQLite. Raises RuntimeError when the painter/printer fails.
+    """
+    from PySide6.QtPrintSupport import QPrinter
+    from PySide6.QtGui import QPainter
+    from PySide6.QtCore import QRectF
+    pages = _day_report_paginate(report)
+    pr = _printer()
+    pr.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+    pr.setOutputFileName(path)
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    p = QPainter(pr)
+    try:
+        if not p.isActive():
+            raise RuntimeError("Could not start PDF painter (QPainter not active).")
+        dpi = pr.resolution()
+        raw = pr.pageRect(QPrinter.Unit.DevicePixel)
+        area = QRectF(0, 0, raw.width(), raw.height())
+        for i, rows in enumerate(pages):
+            if i and not pr.newPage():
+                raise RuntimeError("Printer rejected a new PDF page.")
+            _paint_day_report_page(p, area, dpi, report, rows, i + 1, len(pages))
+        if getattr(p, "hasError", None) is not None:
+            try:
+                if p.hasError():
+                    raise RuntimeError("PDF paint device reported an error.")
+            except RuntimeError:
+                raise
+            except Exception:
+                pass
+    finally:
+        p.end()
+    if (not os.path.exists(path)) or os.path.getsize(path) == 0:
+        raise RuntimeError("PDF was not written (empty or missing file).")
+    return path
+
+
+def print_day_report(parent, report: dict, printer_name: str | None = None) -> bool:
+    """Print a day report on a normal office printer (same QPainter path as
+    print_slip). Returns True when a job was sent; raises on painter/printer
+    failure instead of claiming a false success."""
+    from PySide6.QtPrintSupport import QPrinterInfo
+    from PySide6.QtGui import QPainter
+    from PySide6.QtCore import QRectF
+    pages = _day_report_paginate(report)
+    pr = _printer()
+    if printer_name:
+        for info in QPrinterInfo.availablePrinters():
+            if info.printerName() == printer_name:
+                pr.setPrinterName(printer_name)
+                break
+    p = QPainter(pr)
+    try:
+        if not p.isActive():
+            raise RuntimeError("Could not start the print job (QPainter not active).")
+        dpi = pr.resolution()
+        raw = pr.pageRect(QPrinter.Unit.DevicePixel)
+        area = QRectF(0, 0, raw.width(), raw.height())
+        for i, rows in enumerate(pages):
+            if i and not pr.newPage():
+                raise RuntimeError("Printer rejected a new page.")
+            _paint_day_report_page(p, area, dpi, report, rows, i + 1, len(pages))
+        if getattr(p, "hasError", None) is not None:
+            try:
+                if p.hasError():
+                    raise RuntimeError("Print device reported an error.")
+            except RuntimeError:
+                raise
+            except Exception:
+                pass
+    finally:
+        p.end()
+    try:
+        from PySide6.QtPrintSupport import QPrinter as _QP
+        if pr.printerState() == _QP.PrinterState.Error:
+            raise RuntimeError("Printer reports an error state.")
+    except RuntimeError:
+        raise
+    except Exception:
+        pass
+    return True

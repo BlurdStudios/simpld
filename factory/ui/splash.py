@@ -6,6 +6,8 @@ as soon as the real window comes up.
 """
 from __future__ import annotations
 
+import os
+
 from PySide6.QtCore import Qt, QRect, QRectF
 from PySide6.QtGui import (QPixmap, QPainter, QColor, QFont, QLinearGradient,
                            QGuiApplication, QTextDocument)
@@ -129,6 +131,114 @@ class AboutDialog(QDialog):
             row.addWidget(b, 1)
             cl.addLayout(row)
         outer.addWidget(card)
+
+        # ---- licensing card (Plan 009 Phase 2; offline, fail-closed) ----
+        try:
+            from factory import license as _LIC
+            _st = _LIC.license_status()
+            _disp = _LIC.license_display(_st)
+            _mid = _LIC.machine_fingerprint()
+        except Exception as _e:
+            _LIC, _st, _disp, _mid = None, {}, f"Licence check failed: {_e}", "?"
+        lic_card = QFrame()
+        lic_card.setProperty("card", True)
+        lc2 = QVBoxLayout(lic_card)
+        lc2.setContentsMargins(16, 14, 16, 14)
+        lc2.setSpacing(7)
+        lt2 = QLabel("LICENCE")
+        lt2.setProperty("field", "caption")
+        lc2.addWidget(lt2)
+        lic_lbl = QLabel(_disp)
+        lic_lbl.setProperty("hint", True)
+        lic_lbl.setWordWrap(True)
+        lc2.addWidget(lic_lbl)
+        # Trial countdown (vivid): days-left banner inside About.
+        try:
+            _lic_d = (_st or {}).get("lic") or {}
+            if str(_lic_d.get("edition") or "") == "trial" and _LIC is not None:
+                _left = _LIC.license_days_left(_lic_d)
+                from factory.ui.styles import set_banner as _setb
+                _trial_lbl = QLabel("")
+                _trial_lbl.setWordWrap(True)
+                if _left is None:
+                    pass
+                elif _left < 0:
+                    _trial_lbl.setText(f"Trial expired {-_left}d ago — contact your vendor for a full key.")
+                    _setb(_trial_lbl, "err")
+                    lc2.addWidget(_trial_lbl)
+                elif _left == 0:
+                    _trial_lbl.setText("Trial expires TODAY — back up your data and contact your vendor.")
+                    _setb(_trial_lbl, "warn")
+                    lc2.addWidget(_trial_lbl)
+                else:
+                    _trial_lbl.setText(f"Trial: {_left} day{'s' if _left != 1 else ''} left"
+                                       f" (expires {_lic_d.get('expires')}).")
+                    _setb(_trial_lbl, "warn" if _left <= 3 else "info")
+                    lc2.addWidget(_trial_lbl)
+        except Exception:
+            pass
+        mid_lbl = QLabel(f"Machine ID: {_mid}")
+        mid_lbl.setProperty("hint", True)
+        mid_lbl.setWordWrap(True)
+        mid_lbl.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
+        lc2.addWidget(mid_lbl)
+        try:
+            from factory import data_access as _DA2
+            _me2 = _DA2.current_user() or {}
+            _is_lan = _DA2.is_lan()
+        except Exception:
+            _me2, _is_lan = {}, False
+        if _LIC is not None and not _is_lan:
+            lr2 = QHBoxLayout()
+            lr2.setSpacing(8)
+            imp_btn = QPushButton("Import licence…")
+            imp_btn.setMinimumHeight(36)
+            from factory.ui.styles import style_button as _sb
+            _sb(imp_btn, "outline")
+            lc2.addLayout(lr2)
+            lr2.addWidget(imp_btn, 1)
+            if str(_me2.get("role") or "") == "admin":
+                try:
+                    _stations = _LIC.list_stations()
+                    _s_lbl = QLabel(
+                        f"Stations seen (30d): {len(_stations)}"
+                        + (" — " + ", ".join(
+                            str(s.get('station_id') or '')[:8]
+                            for s in _stations[:6]) if _stations else ""))
+                    _s_lbl.setProperty("hint", True)
+                    _s_lbl.setWordWrap(True)
+                    lc2.addWidget(_s_lbl)
+                except Exception:
+                    pass
+
+            def _do_import():
+                import shutil
+                p, _ = QFileDialog.getOpenFileName(
+                    imp_btn, "Import licence file", "",
+                    "Licence (*.lic);;All (*)")
+                if not p:
+                    return
+                try:
+                    dest = _LIC.license_path()
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    shutil.copyfile(p, dest)
+                    st2 = _LIC.license_status()
+                    lic_lbl.setText(_LIC.license_display(st2))
+                    QMessageBox.information(
+                        imp_btn, "Licence",
+                        f"Imported.\n{_LIC.license_display(st2)}")
+                except Exception as e:
+                    QMessageBox.warning(imp_btn, "Licence",
+                                        f"Could not import:\n{e}")
+            imp_btn.clicked.connect(_do_import)
+        elif _is_lan:
+            _h = QLabel("Licence is enforced on the packager — "
+                        "contact admin if this PC is rejected.")
+            _h.setProperty("hint", True)
+            _h.setWordWrap(True)
+            lc2.addWidget(_h)
+        outer.addWidget(lic_card)
 
         note = QLabel("The company name prints where the old paper did — "
                       "stickers and packing slips. The app itself is Simpl'd.")

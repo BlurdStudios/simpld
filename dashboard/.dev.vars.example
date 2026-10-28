@@ -1,0 +1,14 @@
+# Local dev vars — NEVER commit real secrets. Copy to `.dev.vars` for
+# `wrangler dev` (wrangler reads `.dev.vars` automatically; it is gitignored).
+#
+#   cp .dev.vars.example .dev.vars
+#
+# --- licence signing (dev placeholder; real key NEVER lives in the repo) ---
+# Generate a throwaway dev keypair with:  python3 -c "from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey; import base64; k=Ed25519PrivateKey.generate(); print(base64.b64encode(k.private_bytes_raw()).decode())"
+LICENSE_PRIVKEY_B64 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
+# --- first-admin bootstrap token (long random string; rotate after seeding) ---
+ADMIN_SEED_TOKEN = "change-me-to-a-long-random-string"
+
+# --- legacy push-key map (fallback only; prefer the api_keys table) ---
+# SITE_KEYS = {"demo-site": "dev-key"}

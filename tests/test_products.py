@@ -83,12 +83,17 @@ def test_migration_preserves_ids_and_values():
 def test_product_validation_and_reuse():
     from factory import services as S
     p = _fresh_db()
-    for bad in (0, -5, "abc", "16.5", None, 16.5, True):
+    for bad in (0, -5, "abc", "16.5", 16.5, True):
         try:
             S.create_product("W JOB", bad, path=p)
             raise SystemExit(f"FAIL: wrappers {bad!r} accepted")
         except ValueError:
             pass
+    # Blank pieces = kg product (NULL, never invented).
+    kg = S.create_product("KG PRODUCT", None, path=p)
+    assert kg["wrappers_per_reel"] is None
+    kg2 = S.create_product("KG PRODUCT 2", "", path=p)
+    assert kg2["wrappers_per_reel"] is None
     prod = S.create_product("appy fizz-160ml (sep.28) body", 16500, path=p)
     assert prod["name"] == "APPY FIZZ-160ML (SEP.28) BODY" and prod["wrappers_per_reel"] == 16500
     try:

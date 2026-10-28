@@ -300,6 +300,11 @@ class MainWindow(QMainWindow):
         side.addWidget(self.btn_logout)
         self.btn_logout.clicked.connect(self._do_logout)
         side.addSpacing(4)
+        # Licence / trial timer (always visible so the floor sees expiry).
+        self.lic_label = QLabel("")
+        self.lic_label.setWordWrap(True)
+        self.lic_label.hide()
+        side.addWidget(self.lic_label)
         self.db_label = QLabel(self._backend_text())
         self.db_label.setObjectName("dbPath")
         self.db_label.setWordWrap(True)
@@ -325,6 +330,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"F1–F{shortcut_n}: switch pages."
             + (" Shared packager DB — auto-refresh every 15s." if DA.is_lan() else ""))
+        self._refresh_license_banner()
         if DA.is_lan():
             self._lan_timer = QTimer(self)
             self._lan_timer.timeout.connect(self._lan_refresh)
@@ -398,6 +404,43 @@ class MainWindow(QMainWindow):
     def show_about(self):
         from factory.ui.splash import AboutDialog
         AboutDialog(self).exec()
+
+    def _refresh_license_banner(self):
+        """Persistent licence/trial timer in the sidebar (vivid when expiring)."""
+        try:
+            from factory import license as _LIC
+            from factory.ui.styles import set_banner
+            st = _LIC.license_status()
+            lic = st.get("lic") or {}
+            ed = str(lic.get("edition") or "")
+            state = str(st.get("state") or "")
+            left = _LIC.license_days_left(lic if lic else None)
+            if state in ("none", "invalid", "blocked"):
+                self.lic_label.setText(f"⚠ {st.get('reason') or state}")
+                set_banner(self.lic_label, "err")
+                self.lic_label.show()
+            elif ed == "trial" and left is not None:
+                if left < 0:
+                    self.lic_label.setText(f"Trial expired {-left}d ago — contact vendor")
+                    set_banner(self.lic_label, "err")
+                elif left == 0:
+                    self.lic_label.setText("Trial expires TODAY — contact vendor")
+                    set_banner(self.lic_label, "warn")
+                elif left <= 3:
+                    self.lic_label.setText(f"Trial: {left}d left — contact vendor soon")
+                    set_banner(self.lic_label, "warn")
+                else:
+                    self.lic_label.setText(f"Trial: {left}d left")
+                    set_banner(self.lic_label, "info")
+                self.lic_label.show()
+            elif state in ("expiring", "grace"):
+                self.lic_label.setText(f"{_LIC.license_display(st)}")
+                set_banner(self.lic_label, "warn")
+                self.lic_label.show()
+            else:
+                self.lic_label.hide()
+        except Exception:
+            pass
 
     @staticmethod
     def _backend_text() -> str:

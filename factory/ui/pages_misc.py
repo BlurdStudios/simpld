@@ -4,8 +4,9 @@ import csv
 import os
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
                                QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox,
-                               QFrame, QGridLayout, QAbstractItemView, QFileDialog, QLineEdit, QTabBar)
-from PySide6.QtCore import Qt
+                               QFrame, QGridLayout, QAbstractItemView, QFileDialog, QLineEdit,
+                               QTabBar, QDialog, QComboBox, QDateEdit)
+from PySide6.QtCore import Qt, QDate
 from factory import data_access as DA
 from factory.db import bare_carton_no
 from factory.ui.styles import style_button, status_color
@@ -114,7 +115,7 @@ class JobsPage(QWidget):
             self.table.setItem(i, 0, QTableWidgetItem(str(j["job_no"])))
             self.table.setItem(i, 1, QTableWidgetItem(j["job_name"]))
             w = j.get("wrappers_per_reel")
-            self.table.setItem(i, 2, QTableWidgetItem(str(w) if w else "unknown"))
+            self.table.setItem(i, 2, QTableWidgetItem(str(w) if w else "kg"))
             from PySide6.QtGui import QColor as _QColor
             _st = QTableWidgetItem(j["status"])
             try:
@@ -324,9 +325,26 @@ class SummaryPage(QWidget):
         style_button(self.btn_backup, "secondary")
         self.btn_backup.setToolTip("Copy today's database to a timestamped file — "
                                    "do this before closing the computer.")
+        self.date_edit = QDateEdit(QDate.currentDate())
+        self.date_edit.setCalendarPopup(True)
+        self.date_edit.setDisplayFormat("yyyy-MM-dd")
+        self.date_edit.setMinimumHeight(40)
+        self.btn_report = QPushButton("Daily report")
+        self.btn_report.setMinimumHeight(40)
+        style_button(self.btn_report, "primary")
+        self.btn_report.setToolTip("All reels weighed + boxes packed on the selected day,"
+                                   " across all jobs — print / save PDF / export CSV.")
         bar.addWidget(self.btn_refresh)
         bar.addWidget(self.btn_export)
         bar.addWidget(self.btn_backup)
+        bar.addWidget(self.date_edit)
+        bar.addWidget(self.btn_report)
+        self.btn_sync = QPushButton("Sync now")
+        self.btn_sync.setMinimumHeight(40)
+        style_button(self.btn_sync, "secondary")
+        self.btn_sync.setToolTip("Push today's report + orders to the vendor "
+                                 "dashboard (outbound only; offline-safe).")
+        bar.addWidget(self.btn_sync)
         bar.addStretch(1)
         lay.addLayout(bar)
         grid = QGridLayout()
@@ -361,10 +379,16 @@ class SummaryPage(QWidget):
         self.detail.setProperty("hint", True)
         self.detail.setWordWrap(True)
         lay.addWidget(self.detail)
+        self.sync_label = QLabel("")
+        self.sync_label.setProperty("hint", True)
+        self.sync_label.setWordWrap(True)
+        lay.addWidget(self.sync_label)
         lay.addStretch(1)
         self.btn_refresh.clicked.connect(self.refresh)
         self.btn_export.clicked.connect(self.export)
         self.btn_backup.clicked.connect(self.backup)
+        self.btn_report.clicked.connect(self.day_report)
+        self.btn_sync.clicked.connect(self.sync_now)
         self.refresh()
 
     def refresh(self):
@@ -381,6 +405,20 @@ class SummaryPage(QWidget):
         self.cards["dispatched_wt"].setText(f"{s['dispatched_wt']:.3f}")
         self.detail.setText(
             f"Day: {s['day']}  |  Reel net today: {s['reel_net']:.3f} Kg")
+        try:
+            from factory import sync as _SYNC
+            _ls = _SYNC.last_sync()
+            if _ls.get("at"):
+                _ok = "ok" if _ls.get("ok") else "failed"
+                self.sync_label.setText(
+                    f"Last sync: {_ls['at']} ({_ok}"
+                    f"{f' — {_ls.get('detail')}' if _ls.get('detail') else ''})")
+            elif not _SYNC.configured():
+                self.sync_label.setText("Sync: disabled (set SIMPLD_SYNC_URL/_SITE_ID/_KEY)")
+            else:
+                self.sync_label.setText("Sync: not yet pushed")
+        except Exception:
+            pass
 
     def export(self):
         try:
@@ -424,3 +462,225 @@ class SummaryPage(QWidget):
             return QMessageBox.warning(self, "Backup", f"Could not write backup:\n{e}")
         from factory.ui.toast import toast
         toast(self, "Backup done — safe to close the computer.")
+
+    def day_report(self):
+        """Open the day-scoped line-item report for the selected date."""
+        day = self.date_edit.date().toString("yyyy-MM-dd")
+        DayReportDialog(self, day).exec()
+
+    def sync_now(self):
+        """Manual outbound push after the Evening backup (offline-safe)."""
+        from factory import sync as _SYNC
+        from factory.ui.toast import toast
+        if not _SYNC.configured():
+            return QMessageBox.information(
+                self, "Sync",
+                "Sync is disabled.\nSet SIMPLD_SYNC_URL, SIMPLD_SYNC_SITE_ID "
+                "and SIMPLD_SYNC_KEY to enable the vendor dashboard push.\n"
+                "The factory works fully offline.")
+        day = self.date_edit.date().toString("yyyy-MM-dd")
+        try:
+            res = _SYNC.push_now(day if day else None)
+        except Exception as e:
+            return QMessageBox.warning(self, "Sync", f"Sync failed:\n{e}")
+        self.refresh()
+        if res.get("ok"):
+            toast(self, "Sync done.")
+        elif res.get("queued"):
+            QMessageBox.information(
+                self, "Sync",
+                f"Dashboard unreachable — queued ({res.get('detail')}).\n"
+                "The floor is unaffected; it retries next window.")
+        else:
+            QMessageBox.warning(self, "Sync",
+                                f"Sync failed:\n{res.get('detail')}")
+
+
+class DayReportDialog(QDialog):
+    """Daily report: every reel weighed + every box packed on one day.
+
+    Fetches the authoritative report through the facade only (local DB or
+    LAN `day_report` op), then prints/saves it locally — never opens SQLite
+    itself, so it works identically over LAN.
+    """
+
+    def __init__(self, parent, day: str):
+        super().__init__(parent)
+        self._day = day
+        try:
+            self._report = DA.day_report(day)
+        except Exception as e:
+            QMessageBox.warning(self, "Daily report", f"Connection issue: {_err_text(e)}")
+            self._report = None
+            return
+        self.setWindowTitle(f"Daily report — {day}")
+        self.setMinimumSize(980, 640)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 16, 16, 16)
+        lay.setSpacing(10)
+        ht = QLabel(f"Daily report — {day}")
+        ht.setProperty("dialog", "title")
+        ht.setWordWrap(True)
+        lay.addWidget(ht)
+        hd = QLabel("Every reel weighed and every box packed on this day, across all jobs.")
+        hd.setProperty("dialog", "desc")
+        hd.setWordWrap(True)
+        lay.addWidget(hd)
+
+        self.table = QTableWidget(0, 7)
+        self.table.setHorizontalHeaderLabels(
+            ["Job", "Type", "Roll / Box No.", "Gross / Box Wt", "Core Wt", "Net Wt",
+             "Packed In / Note"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(36)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setShowGrid(False)
+        self.table.setAlternatingRowColors(True)
+        self.table.setFocusPolicy(Qt.NoFocus)
+        for r in self._report.get("rows") or []:
+            i = self.table.rowCount()
+            self.table.insertRow(i)
+            job = f"J:{r.get('job_no', '')}"
+            kind = r.get("kind", "Box" if r.get("weight_only") else "Reel")
+            if kind == "Reel":
+                self.table.setItem(i, 0, QTableWidgetItem(job))
+                self.table.setItem(i, 1, QTableWidgetItem("Reel"))
+                self.table.setItem(
+                    i, 2,
+                    QTableWidgetItem(str(r.get("roll_label") or f"Roll #{r.get('roll_no')}")))
+                self.table.setItem(i, 3, QTableWidgetItem(f"{float(r.get('gross') or 0):.3f}"))
+                self.table.setItem(i, 4, QTableWidgetItem(f"{float(r.get('core') or 0):.2f}"))
+                self.table.setItem(i, 5, QTableWidgetItem(f"{float(r.get('net') or 0):.3f}"))
+                self.table.setItem(i, 6, QTableWidgetItem(
+                    bare_carton_no(r.get("carton_no")) or "loose"))
+            else:
+                note = f"Bundle {r.get('bundle_no', '')} · {r.get('note', '')}"
+                if r.get("linked"):
+                    note += f" · rolls {r.get('rolls', '')}"
+                self.table.setItem(i, 0, QTableWidgetItem(job))
+                self.table.setItem(i, 1, QTableWidgetItem("Box"))
+                self.table.setItem(i, 2, QTableWidgetItem(
+                    bare_carton_no(r.get("carton_no", ""))))
+                self.table.setItem(i, 3, QTableWidgetItem(f"{float(r.get('gross') or 0):.3f}"))
+                self.table.setItem(i, 4, QTableWidgetItem("—"))
+                self.table.setItem(i, 5, QTableWidgetItem("—"))
+                self.table.setItem(i, 6, QTableWidgetItem(note))
+        lay.addWidget(self.table, 1)
+
+        t = self._report.get("totals") or {}
+        tot = QLabel(
+            f"Reels: {t.get('reels', 0)}  ·  Gross {float(t.get('reel_gross', 0) or 0):.3f}"
+            f"  ·  Core {float(t.get('reel_core', 0) or 0):.3f}"
+            f"  ·  Net {float(t.get('reel_net', 0) or 0):.3f} Kg"
+            f"  |  Boxes: {t.get('boxes', 0)}"
+            f"  ·  Box {float(t.get('box_gross', 0) or 0):.3f} Kg (kept separate)")
+        tot.setProperty("count", True)
+        tot.setWordWrap(True)
+        lay.addWidget(tot)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(QLabel("Printer:"))
+        self.printer_combo = QComboBox()
+        self.printer_combo.setMinimumHeight(44)
+        self.printer_combo.setMinimumWidth(220)
+        try:
+            from PySide6.QtPrintSupport import QPrinterInfo
+            names = [p.printerName() for p in QPrinterInfo.availablePrinters()]
+        except Exception:
+            names = []
+        if names:
+            self.printer_combo.addItems(names)
+        else:
+            self.printer_combo.addItem("(no printer found — Save PDF instead)")
+            self.printer_combo.setEnabled(False)
+        row.addWidget(self.printer_combo, 1)
+        b_print = QPushButton("Print")
+        style_button(b_print, "primary")
+        b_pdf = QPushButton("Save PDF")
+        style_button(b_pdf, "secondary")
+        b_csv = QPushButton("Save CSV")
+        style_button(b_csv, "secondary")
+        b_close = QPushButton("Close")
+        style_button(b_close, "secondary")
+        for b in (b_print, b_pdf, b_csv, b_close):
+            b.setMinimumHeight(44)
+            row.addWidget(b)
+        self._btn_print = b_print
+        lay.addLayout(row)
+        b_close.clicked.connect(self.accept)
+        b_print.clicked.connect(self.do_print)
+        b_pdf.clicked.connect(self.do_pdf)
+        b_csv.clicked.connect(self.do_csv)
+
+    def _queue_name(self) -> str:
+        try:
+            if not self.printer_combo.isEnabled():
+                return ""
+            return str(self.printer_combo.currentText() or "").strip()
+        except Exception:
+            return ""
+
+    def _out_path(self, ext: str) -> str:
+        try:
+            from factory.db import app_data_dir
+            return os.path.join(app_data_dir(), f"daily_report_{self._day}.{ext}")
+        except Exception:
+            base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            return os.path.join(base, "data", f"daily_report_{self._day}.{ext}")
+
+    def do_print(self):
+        if not getattr(self, "_report", None):
+            return
+        if not self.printer_combo.isEnabled():
+            return QMessageBox.warning(self, "Print", "No printer found. Use Save PDF.")
+        from factory.ui.label_preview import _preflight, _printing_state
+        if not _preflight(self._queue_name(), self):
+            return
+        name = self.printer_combo.currentText()
+        try:
+            from factory import slip_pdf as SP
+            with _printing_state(self._btn_print):
+                ok = SP.print_day_report(self, self._report, printer_name=name)
+        except Exception as e:
+            return QMessageBox.warning(self, "Print", f"Could not print:\n{e}")
+        if not ok:
+            return QMessageBox.warning(
+                self, "Print", "Could not print. Check the printer and try again.")
+        from factory.ui.toast import toast
+        toast(self, "Daily report sent to the printer.")
+
+    def do_pdf(self):
+        if not getattr(self, "_report", None):
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save daily report PDF", self._out_path("pdf"), "PDF (*.pdf)")
+        if not path:
+            return
+        try:
+            from factory import slip_pdf as SP
+            SP.save_day_report_pdf(self._report, path)
+        except Exception as e:
+            return QMessageBox.warning(self, "Save PDF", f"Could not save:\n{e}")
+        from factory.ui.toast import toast
+        toast(self, "Daily report saved as PDF.")
+
+    def do_csv(self):
+        if not getattr(self, "_report", None):
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save daily report CSV", self._out_path("csv"), "CSV (*.csv)")
+        if not path:
+            return
+        try:
+            from factory import slip_pdf as SP
+            with open(path, "w", newline="") as f:
+                w = csv.writer(f)
+                for row in SP.day_report_to_csv_rows(self._report):
+                    w.writerow(row)
+        except OSError as e:
+            return QMessageBox.warning(self, "Save CSV", f"Could not write:\n{e}")
+        from factory.ui.toast import toast
+        toast(self, f"Daily report saved ({os.path.basename(path)}).")

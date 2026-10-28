@@ -34,7 +34,7 @@ from factory.ui.device_strip import DeviceStrip
 PRINTER_WIDTH_MM = LabelArt.LABEL_WIDTH_MM
 PRINTER_HEIGHT_MM = LabelArt.LABEL_HEIGHT_MM
 
-# Preview renders wider so the whole 4x3in sticker fits vertically.
+# Preview renders wider so the whole 100x50mm sticker fits vertically.
 PREVIEW_MAX_WIDTH = 440
 
 
@@ -51,9 +51,11 @@ class NewJobDialogMixin:
     @staticmethod
     def ask_new_product(parent, initial_name: str = "", initial_wrappers: str = ""):
         """Add-once product entry. Retains typed values across validation
-        failures (fields are prefilled from the previous attempt, not reset)."""
+        failures (fields are prefilled from the previous attempt, not reset).
+        Pieces is OPTIONAL: blank means a kg-based product (NULL, never
+        invented); a number means pieces/reel."""
         from PySide6.QtWidgets import (QDialog, QFormLayout, QLineEdit,
-                                       QDialogButtonBox)
+                                       QDialogButtonBox, QLabel)
         name_val, wrap_val = initial_name, initial_wrappers
         while True:
             d = QDialog(parent)
@@ -64,10 +66,14 @@ class NewJobDialogMixin:
             name.setMinimumWidth(340)
             name.setText(name_val)
             wrappers = QLineEdit()
-            wrappers.setPlaceholderText("e.g. 16500")
+            wrappers.setPlaceholderText("e.g. 16500 — blank = kg product")
             wrappers.setText(wrap_val)
             f.addRow("Product Name:", name)
-            f.addRow("Pieces / reel:", wrappers)
+            f.addRow("Pieces / reel (optional):", wrappers)
+            hint = QLabel("Blank pieces = weighed in kg (no piece count).")
+            hint.setWordWrap(True)
+            hint.setProperty("hint", True)
+            f.addRow("", hint)
             bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
             f.addRow(bb)
             bb.accepted.connect(d.accept)
@@ -156,7 +162,7 @@ class NewJobDialogMixin:
                     prods = []
                 for p in prods:
                     w = p["wrappers_per_reel"]
-                    label = f"{p['name']} — {w}/reel" if w else f"{p['name']} — pieces unknown"
+                    label = f"{p['name']} — {w}/reel" if w else f"{p['name']} — kg product"
                     combo.addItem(label, userData=p["id"])
                     if sel and p["id"] == sel:
                         combo.setCurrentIndex(combo.count() - 1)
@@ -197,7 +203,8 @@ class NewJobDialogMixin:
             hl.addWidget(add_btn)
             hl.addWidget(wrap_btn)
             f.addRow("Product:", row)
-            hint = QLabel("Jobs run continuously across months; roll/box numbers reset monthly.")
+            hint = QLabel("Jobs run continuously across months; reel/box numbers restart at 1"
+                          " each month for each product.")
             hint.setWordWrap(True)
             f.addRow(hint)
             bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
@@ -280,6 +287,11 @@ class PackagingPage(QWidget, NewJobDialogMixin):
         self.btn_product.setMinimumHeight(40)
         style_button(self.btn_product, "secondary")
         bar.addWidget(self.btn_product)
+        self.btn_targets = QPushButton("Targets…")
+        self.btn_targets.setMinimumHeight(40)
+        style_button(self.btn_targets, "secondary")
+        self.btn_targets.setToolTip("Set packaging targets (reels / boxes / kg / pieces) for this job.")
+        bar.addWidget(self.btn_targets)
         self.job_info = QLabel("")
         self.job_info.setProperty("jobinfo", True)
         self.job_info.setWordWrap(True)
@@ -418,7 +430,7 @@ class PackagingPage(QWidget, NewJobDialogMixin):
         lp = QVBoxLayout(pv)
         lp.setContentsMargins(12, 12, 12, 12)
         lp.setSpacing(6)
-        self.sticker_cap = self._caption("Sticker preview · 4 x 3 in")
+        self.sticker_cap = self._caption("Sticker preview · 100 × 50 mm")
         lp.addWidget(self.sticker_cap)
         self.sticker_preview = PreviewLabel("Weigh to preview sticker.")
         self.sticker_preview.setProperty("sticker", True)
@@ -494,9 +506,9 @@ class PackagingPage(QWidget, NewJobDialogMixin):
         self.box_info.setProperty("status", True)
         self.box_info.setWordWrap(True)
         bp.addWidget(self.box_info)
-        self.box_table = QTableWidget(0, 5)
+        self.box_table = QTableWidget(0, 6)
         self.box_table.setHorizontalHeaderLabels(
-            ["Box", "Reels", "Gross · kg", "Net · kg", "Sticker"])
+            ["Box", "Reels", "Gross · kg", "Tare · kg", "Net · kg", "Sticker"])
         self.box_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.box_table.verticalHeader().setVisible(False)
         self.box_table.verticalHeader().setDefaultSectionSize(44)
@@ -544,6 +556,7 @@ class PackagingPage(QWidget, NewJobDialogMixin):
         # signals
         self.btn_new.clicked.connect(self.new_job)
         self.btn_product.clicked.connect(self.new_product)
+        self.btn_targets.clicked.connect(self.edit_targets)
         self.job_combo.currentIndexChanged.connect(self.job_changed)
         self.gross.valueChanged.connect(lambda *_: self._refresh_state())
         self.core.valueChanged.connect(lambda *_: self._refresh_state())
@@ -624,13 +637,16 @@ class PackagingPage(QWidget, NewJobDialogMixin):
             msg = str(e) or "Request failed."
         return msg
 
-    # ----- sticker preview (fixed 4 x 3in Citizen stock, live what-will-print) -----
+    # ----- sticker preview (fixed 100x50mm Citizen stock, live what-will-print) -----
     @staticmethod
     def _next_roll_no(job_id: int) -> int:
         try:
-            return DA.predict_next_reel_seq()
+            return DA.predict_next_reel_seq(job_id=job_id)
         except Exception:
-            return 1
+            try:
+                return DA.predict_next_reel_seq()
+            except Exception:
+                return 1
 
     @staticmethod
     def _next_bundle_no(job_id: int) -> int:
@@ -640,10 +656,17 @@ class PackagingPage(QWidget, NewJobDialogMixin):
             return 1
 
     @staticmethod
-    def _next_carton_no() -> str:
+    def _next_carton_no(job_id: int | None = None) -> str:
         try:
             from factory.db import current_period, carton_no_for
-            return carton_no_for(current_period(), DA.predict_next_box_seq())
+            if job_id is not None:
+                try:
+                    seq = DA.predict_next_box_seq(job_id=job_id)
+                except Exception:
+                    seq = DA.predict_next_box_seq()
+            else:
+                seq = DA.predict_next_box_seq()
+            return carton_no_for(current_period(), seq)
         except Exception:
             return "C????"
 
@@ -661,7 +684,7 @@ class PackagingPage(QWidget, NewJobDialogMixin):
         job = self.current_job()
         if job is None:
             if cap is not None:
-                cap.setText("Sticker preview · 4 x 3 in")
+                cap.setText("Sticker preview · 100 × 50 mm")
             set_preview_label(lbl, "Select a job to preview stickers.")
             return
         try:
@@ -677,7 +700,7 @@ class PackagingPage(QWidget, NewJobDialogMixin):
             else:
                 if self.gross.value() <= 0:
                     if cap is not None:
-                        cap.setText("Sticker preview · 4 x 3 in")
+                        cap.setText("Sticker preview · 100 × 50 mm")
                     set_preview_label(lbl, "Weigh to preview sticker.")
                 else:
                     if cap is not None:
@@ -699,14 +722,21 @@ class PackagingPage(QWidget, NewJobDialogMixin):
         if round(scale - core, 3) <= 0:
             return "Check gross/core to preview the reel sticker."
         try:
-            seq = DA.predict_next_reel_seq()
+            jid = job.get("id") if isinstance(job, dict) else self.job_id
+            # P0: sticker shows the per-product 1..N (prod_seq).
+            pseq = DA.predict_next_reel_seq(job_id=jid) if jid else DA.predict_next_reel_seq()
             per = current_period()
+            # Global code for DB identity (not shown on sticker).
+            try:
+                gseq = DA.predict_next_reel_seq()
+            except Exception:
+                gseq = pseq
         except Exception:
-            seq, per = 1, current_period()
+            pseq, gseq, per = 1, 1, current_period()
         reel = {"gross": round(scale, 3), "core": round(core, 3),
                 "net": round(scale - core, 3), "created_at": now_iso(),
-                "roll_no": seq, "roll_period": per,
-                "roll_code": roll_code_for(per, seq)}
+                "roll_no": pseq, "prod_seq": pseq, "roll_period": per,
+                "roll_code": roll_code_for(per, gseq)}
         return pil_to_pixmap(LabelArt.render_reel(
             job, reel, width_mm=PRINTER_WIDTH_MM, height_mm=PRINTER_HEIGHT_MM),
             max_width=PREVIEW_MAX_WIDTH)
@@ -728,19 +758,32 @@ class PackagingPage(QWidget, NewJobDialogMixin):
         if tn <= 0:
             return "Check tare/gross/core to preview the box sticker."
         try:
-            seq = DA.predict_next_box_seq()
+            jid = job.get("id") if isinstance(job, dict) else self.job_id
+            if jid:
+                try:
+                    pseq = DA.predict_next_box_seq(job_id=jid)
+                except Exception:
+                    pseq = DA.predict_next_box_seq()
+            else:
+                pseq = DA.predict_next_box_seq()
             per = current_period()
+            try:
+                gseq = DA.predict_next_box_seq()
+            except Exception:
+                gseq = pseq
         except Exception:
-            seq, per = 1, current_period()
-        cn = carton_no_for(per, seq)
+            pseq, gseq, per = 1, 1, current_period()
+        cn = carton_no_for(per, gseq)
         detail = {"job_no": job["job_no"], "job_name": job["job_name"],
                   "packed_at": now_iso(),
                   "num_reels": len(nexts), "carton_no": cn,
+                  "prod_seq": pseq,
                   "bundle_no": self._next_bundle_no(job["id"]),
                   "box_period": per, "box_wt": bw,
                   "total_gross": round(scale, 3),
                   "total_core": tc, "total_net": tn,
-                  "reels": [{"roll_no": r["roll_no"]} for r in nexts],
+                  "reels": [{"roll_no": r.get("prod_seq") or r["roll_no"],
+                             "prod_seq": r.get("prod_seq") or r["roll_no"]} for r in nexts],
                   "qr": DA.qr_payload(cn)}
         return pil_to_pixmap(LabelArt.render_carton(
             detail, width_mm=PRINTER_WIDTH_MM, height_mm=PRINTER_HEIGHT_MM),
@@ -790,6 +833,61 @@ class PackagingPage(QWidget, NewJobDialogMixin):
         if p:
             self.say(f"Product '{p['name']}' added — pick it in New job.", ok=True)
 
+    def edit_targets(self):
+        """Set packaging targets (reels / boxes / kg / pieces) for the job."""
+        from PySide6.QtWidgets import (QDialog, QFormLayout, QLineEdit,
+                                       QDialogButtonBox, QLabel)
+        if self.job_id is None:
+            return self.say("Create/select a job first.", ok=False, kind="warning")
+        job = self.current_job()
+        if not job:
+            return self.say("Job not found — refresh first.", ok=False)
+        d = QDialog(self)
+        d.setWindowTitle(f"Targets — J:{job['job_no']}")
+        f = QFormLayout(d)
+        info = QLabel("Blank = no target. Targets never block packing; they only"
+                      " drive the green FULFILLED state.")
+        info.setWordWrap(True)
+        info.setProperty("hint", True)
+        f.addRow(info)
+        e_reels = QLineEdit(str(job.get("target_reels") or ""))
+        e_reels.setPlaceholderText("e.g. 100")
+        e_boxes = QLineEdit(str(job.get("target_boxes") or ""))
+        e_boxes.setPlaceholderText("e.g. 50")
+        e_kg = QLineEdit(str(job.get("target_weight_kg") or ""))
+        e_kg.setPlaceholderText("e.g. 500 (net kg)")
+        e_pcs = QLineEdit(str(job.get("target_pieces") or ""))
+        e_pcs.setPlaceholderText("e.g. 165000 (wrappers)")
+        if not job.get("wrappers_per_reel"):
+            e_pcs.setEnabled(False)
+            e_pcs.setPlaceholderText("kg product — no piece count")
+        f.addRow("Target reels:", e_reels)
+        f.addRow("Target boxes:", e_boxes)
+        f.addRow("Target net kg:", e_kg)
+        f.addRow("Target pieces:", e_pcs)
+        bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        f.addRow(bb)
+        bb.accepted.connect(d.accept)
+        bb.rejected.connect(d.reject)
+        if d.exec() != QDialog.Accepted:
+            return
+        def _opt(v):
+            t = (v or "").strip()
+            return t or None
+        try:
+            upd = DA.set_job_targets(self.job_id,
+                                     target_reels=_opt(e_reels.text()),
+                                     target_boxes=_opt(e_boxes.text()),
+                                     target_weight_kg=_opt(e_kg.text()),
+                                     target_pieces=_opt(e_pcs.text() if e_pcs.isEnabled() else None))
+        except (ValueError, PermissionError) as e:
+            return self.say(str(e), ok=False)
+        except Exception as e:
+            return self.say(f"Connection issue: {self._backend_error(e)}", ok=False)
+        self.say("Targets saved.", ok=True)
+        self._refresh_job_info()
+        self._refresh_state()
+
     def job_changed(self, i):
         if i < 0:
             return
@@ -822,10 +920,46 @@ class PackagingPage(QWidget, NewJobDialogMixin):
                 f"J:{job['job_no']} {job['job_name']} — connection issue.")
             return
         w = job.get("wrappers_per_reel")
-        wtxt = f"{w}/reel" if w else "pieces unknown"
-        self.job_info.setText(
-            f"J:{job['job_no']} {job['job_name']} ({wtxt})  ·  "
-            f"Loose {st['loose']}  ·  Ready {st['ready_cartons']}")
+        wtxt = f"{w}/reel" if w else "kg product"
+        base = (f"J:{job['job_no']} {job['job_name']} ({wtxt})  ·  "
+                f"Loose {st.get('loose', 0)}  ·  Ready {st.get('ready_cartons', 0)}")
+        # Packaging targets (any combo). Vivid fulfilled state: green banner
+        # text when any target is met so the floor sees it at a glance.
+        tgt_bits: list[str] = []
+        try:
+            if job.get("target_reels"):
+                tgt_bits.append(f"{st.get('reels', 0)}/{job['target_reels']} reels")
+            if job.get("target_boxes"):
+                tgt_bits.append(f"{st.get('boxes', st.get('ready_cartons', 0))}/{job['target_boxes']} boxes")
+            if job.get("target_weight_kg"):
+                tgt_bits.append(f"{st.get('reel_wt', 0):.1f}/{float(job['target_weight_kg']):.1f} kg")
+            if job.get("target_pieces"):
+                _pcs = st.get("pieces")
+                tgt_bits.append(f"{(_pcs if _pcs is not None else 0):,}/{int(job['target_pieces']):,} pcs")
+        except Exception:
+            pass
+        if tgt_bits:
+            base += "  ·  Target " + " · ".join(tgt_bits)
+            if st.get("any_target_met"):
+                base += "  ✓ FULFILLED"
+        self.job_info.setText(base)
+        # Vivid fulfilled indication: job bar turns green + action button
+        # goes success-green when a packaging target is met.
+        try:
+            from factory.ui.styles import set_banner
+            if st.get("any_target_met"):
+                set_banner(self.job_info, "ok")
+            else:
+                # Neutral banner (clears any previous green).
+                try:
+                    self.job_info.setProperty("banner", "neutral")
+                    s = self.job_info.style()
+                    s.unpolish(self.job_info)
+                    s.polish(self.job_info)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     @property
     def msg(self) -> str:
@@ -890,7 +1024,7 @@ class PackagingPage(QWidget, NewJobDialogMixin):
                 "No loose reels — weigh reels in Reel packing first.")
             return
         nxt = loose[:n]
-        rolls = ", ".join(str(r["roll_no"]) for r in nxt)
+        rolls = ", ".join(self._roll_text(r) for r in nxt)
         tail = f" (partial — only {len(nxt)} loose left)" if len(nxt) < n else ""
         self.box_info.setText(f"Next box takes rolls {rolls}{tail}.")
 
@@ -957,11 +1091,23 @@ class PackagingPage(QWidget, NewJobDialogMixin):
                 self._set_action("Check weights", "secondary", False)
                 return
             k = len(nexts)
-            self._set_lcd(
-                f"Box: {k} reel{'s' if k != 1 else ''} · net {tn:.3f} Kg — ready to pack.",
-                "net-ok")
-            self._set_action(
-                f"Pack box ({k} reel{'s' if k != 1 else ''})", "primary", True)
+            # Vivid fulfilled: green success button + checkmark when a target is met.
+            try:
+                _st = DA.job_stats(self.job_id) if self.job_id else {}
+            except Exception:
+                _st = {}
+            if _st.get("any_target_met"):
+                self._set_lcd(
+                    f"✓ TARGET FULFILLED — Box: {k} reel{'s' if k != 1 else ''} · net {tn:.3f} Kg.",
+                    "net-ok")
+                self._set_action(
+                    f"✓ Pack box ({k} reel{'s' if k != 1 else ''})", "success", True)
+            else:
+                self._set_lcd(
+                    f"Box: {k} reel{'s' if k != 1 else ''} · net {tn:.3f} Kg — ready to pack.",
+                    "net-ok")
+                self._set_action(
+                    f"Pack box ({k} reel{'s' if k != 1 else ''})", "primary", True)
             return
 
         if scale <= 0:
@@ -973,8 +1119,16 @@ class PackagingPage(QWidget, NewJobDialogMixin):
             self._set_lcd(f"Net {net:.3f} — not possible. Check gross and core.", "net-bad")
             self._set_action("Check weights", "secondary", False)
             return
-        self._set_lcd(f"Net: {net:.3f} Kg — single reel.", "net-ok")
-        self._set_action("Save & print reel", "success", True)
+        try:
+            _st2 = DA.job_stats(self.job_id) if self.job_id else {}
+        except Exception:
+            _st2 = {}
+        if _st2.get("any_target_met"):
+            self._set_lcd(f"✓ TARGET FULFILLED — Net: {net:.3f} Kg.", "net-ok")
+            self._set_action("✓ Save & print reel", "success", True)
+        else:
+            self._set_lcd(f"Net: {net:.3f} Kg — single reel.", "net-ok")
+            self._set_action("Save & print reel", "success", True)
 
     def _typical_reel_gross(self) -> float:
         """Job-aware mock default: median loose reel gross, else last resort."""
@@ -1170,7 +1324,12 @@ class PackagingPage(QWidget, NewJobDialogMixin):
 
     @staticmethod
     def _roll_text(r: dict) -> str:
-        """Bare reel number — the floor's visual identity (roll_code stays DB-only)."""
+        """Per-product reel number (P0) — the floor's visual identity."""
+        try:
+            if r.get("prod_seq") is not None:
+                return str(int(r["prod_seq"]))
+        except (TypeError, ValueError):
+            pass
         return str(r.get("roll_no"))
 
     def refresh_history(self):
@@ -1220,12 +1379,19 @@ class PackagingPage(QWidget, NewJobDialogMixin):
             for bx in boxes:
                 i = self.box_table.rowCount()
                 self.box_table.insertRow(i)
-                self.box_table.setItem(i, 0, QTableWidgetItem(bare_carton_no(bx.get("carton_no") or "")))
+                # Per-product box number when present (P0), else global bare.
+                try:
+                    _bno = str(int(bx.get("prod_seq"))) if bx.get("prod_seq") is not None else bare_carton_no(bx.get("carton_no") or "")
+                except (TypeError, ValueError):
+                    _bno = bare_carton_no(bx.get("carton_no") or "")
+                self.box_table.setItem(i, 0, QTableWidgetItem(_bno))
                 self.box_table.setItem(i, 1, QTableWidgetItem(
                     ",".join(str(x) for x in (bx.get("rolls") or [])) or "—"))
                 self.box_table.setItem(i, 2, QTableWidgetItem(
                     f"{float(bx.get('total_gross') or 0):.3f}"))
                 self.box_table.setItem(i, 3, QTableWidgetItem(
+                    f"{float(bx.get('box_wt') or 0):.3f}"))
+                self.box_table.setItem(i, 4, QTableWidgetItem(
                     f"{float(bx.get('total_net') or 0):.3f}"))
                 _lb = QTableWidgetItem(self._label_text(bx))
                 try:
@@ -1233,7 +1399,7 @@ class PackagingPage(QWidget, NewJobDialogMixin):
                     _lb.setForeground(_QColor2(status_color("printed" if _printed else "pending")))
                 except Exception:
                     pass
-                self.box_table.setItem(i, 4, _lb)
+                self.box_table.setItem(i, 5, _lb)
         self.table.blockSignals(False)
         self.box_table.blockSignals(False)
         self.update_history_info()

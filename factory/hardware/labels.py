@@ -7,7 +7,7 @@ Roll No#, Supervisor; carton swaps the roll-number box for a QR). The PNG is
 what gets sent to the Windows spooler (Citizen Windows driver) — no EPL/ZPL
 emulation games needed, works with the stock Citizen USB driver.
 
-Fixed media: 4in wide (101.6mm) x 3in tall (76.2mm). No height option.
+Fixed media: 100 mm wide x 50 mm tall (2:1). No size options.
 
 Also used for the on-screen preview.
 """
@@ -19,23 +19,23 @@ from datetime import datetime
 
 from factory.db import COMPANY, fmt_date_ddmmyy, bare_carton_no
 
-# Fixed Citizen media: 4in x 3in. Width fixed by hardware; height fixed to the
-# sticker stock (matches the old label proportions, wider than tall).
-LABEL_WIDTH_MM = 101.6
-LABEL_HEIGHT_MM = 76.2
+# Fixed Citizen media: 100 x 50 mm (2:1). Width fixed by hardware; height
+# fixed to the sticker stock loaded on the floor (10cm x 5cm rolls).
+LABEL_WIDTH_MM = 100.0
+LABEL_HEIGHT_MM = 50.0
 LABEL_DPI = 203
 
 # Type-3 client box sticker: A4-width media (210 mm), height follows the
 # number of coils in the box. Printed on the dispatch station's wide label
-# printer, not the 4x3 Citizen used for reel/box stickers.
+# printer, not the 100x50 Citizen used for reel/box stickers.
 WIDE_WIDTH_MM = 210.0
 WIDE_DPI = 203
-WIDE_MIN_H_MM = 78.0
+WIDE_MIN_H_MM = 79.0
 
 
 def wide_label_height_mm(n_rows: int) -> float:
     """Content height: fixed header/table chrome + one 8 mm band per coil."""
-    return max(WIDE_MIN_H_MM, 67.0 + 8.0 * max(0, int(n_rows or 0)))
+    return max(WIDE_MIN_H_MM, 68.0 + 8.0 * max(0, int(n_rows or 0)))
 
 
 def label_px(width_mm: float = LABEL_WIDTH_MM, height_mm: float = LABEL_HEIGHT_MM,
@@ -202,10 +202,9 @@ def render_reel(job: dict, reel: dict, width_mm=LABEL_WIDTH_MM,
     _cell_text(d, (A, r0a, C, r0b), COMPANY, 34)
     _cell_text(d, (C, r0a, E, r0b), f"J:{job['job_no']}", 34, right=True)
     _cell_text(d, (A, r1a, E, r1b), f"Job Name:{job['job_name']}", 30)
-    _per = str(reel.get("roll_period") or "")
+    # Date shows once only (DD-MM-YY). The month period stays DB-only
+    # (roll_period/roll_code) and never prints on the sticker.
     _date_txt = f"Date:{fmt_date_ddmmyy(reel['created_at'])}"
-    if _per:
-        _date_txt += f" {_per}"
     _cell_text(d, (A, r2a, C, r2b), _date_txt, 28)
     _cell_text(d, (C, r2a, E, r2b), "No of Reels:1", 26)
     wpr = job.get("wrappers_per_reel")
@@ -226,7 +225,7 @@ def render_reel(job: dict, reel: dict, width_mm=LABEL_WIDTH_MM,
     # never on this sticker.
     mid = r4a + (r6b - r4a) * 0.28
     _cell_text(d, (C, r4a, E, mid), "Roll No#", 26)
-    _cell_text(d, (C, mid, E, r6b), str(reel["roll_no"]), 120)
+    _cell_text(d, (C, mid, E, r6b), str(reel.get("prod_seq") or reel["roll_no"]), 120)
     return img
 
 
@@ -243,6 +242,25 @@ def is_weight_only(detail: dict) -> bool:
         return not detail.get("reels")
     except Exception:
         return not detail.get("reels")
+
+
+def _box_display_no(detail: dict) -> str:
+    """Bare box number for the sticker: per-product seq when present.
+
+    P0 per-product counting keeps the global carton_no (QR identity) unique
+    while the floor reads a per-product 1..N each month. Old rows without
+    prod_seq fall back to the global bare number.
+    """
+    try:
+        ps = detail.get("prod_seq")
+        if ps is not None and str(ps).strip() != "":
+            return str(int(ps))
+    except (TypeError, ValueError):
+        pass
+    try:
+        return bare_carton_no(detail.get("carton_no"))
+    except Exception:
+        return str(detail.get("carton_no") or "")
 
 
 def render_weight_carton(detail: dict, width_mm=LABEL_WIDTH_MM,
@@ -264,8 +282,10 @@ def render_weight_carton(detail: dict, width_mm=LABEL_WIDTH_MM,
     _cell_text(d, (A, r0a, C, r0b), COMPANY, 34)
     _cell_text(d, (C, r0a, E, r0b), f"J:{detail['job_no']}", 34, right=True)
     _cell_text(d, (A, r1a, E, r1b), f"Job Name:{detail['job_name']}", 30)
+    # No Bundle line (not required on the sticker). Weight-only boxes carry
+    # no reels, so the second band names the content instead of a bundle.
     _cell_text(d, (A, r2a, E, r2b),
-               f"Bundle:{detail['bundle_no']}", 28)
+               "Rolls:—", 28)
     _cell_text(d, (A, r3a, C, r3b),
                f"Date:{fmt_date_ddmmyy(detail['packed_at'])}", 28)
     _cell_text(d, (C, r3a, E, r3b), "BOX", 26)
@@ -278,11 +298,11 @@ def render_weight_carton(detail: dict, width_mm=LABEL_WIDTH_MM,
         qx = int(C + (E - C - qr.size[0]) / 2)
         img.paste(qr, (qx, int(r4a + 6)))
         _cell_text(d, (C, r4a + 6 + qr.size[1], E, r4b),
-                   bare_carton_no(detail["carton_no"]), 34, center=True)
+                   _box_display_no(detail), 34, center=True)
     else:
         mid = r4a + (r4b - r4a) * 0.28
         _cell_text(d, (C, r4a, E, mid), "Box No#", 26)
-        _cell_text(d, (C, mid, E, r4b), bare_carton_no(detail["carton_no"]), 80)
+        _cell_text(d, (C, mid, E, r4b), _box_display_no(detail), 80)
     return img
 
 
@@ -306,12 +326,19 @@ def render_carton(detail: dict, width_mm=LABEL_WIDTH_MM,
     A, B, C, E = cols["A"], cols["B"], cols["C"], cols["E"]
     (r0a, r0b), (r1a, r1b), (r2a, r2b) = rows[0], rows[1], rows[2]
     (r3a, r3b), (r4a, r4b), (r5a, r5b), (r6a, r6b) = rows[3], rows[4], rows[5], rows[6]
-    rolls = ",".join(str(r["roll_no"]) for r in detail.get("reels", []))
+    rolls = ",".join(str(r.get("prod_seq") or r["roll_no"]) for r in detail.get("reels", []))
     _cell_text(d, (A, r0a, C, r0b), COMPANY, 34)
     _cell_text(d, (C, r0a, E, r0b), f"J:{detail['job_no']}", 34, right=True)
     _cell_text(d, (A, r1a, E, r1b), f"Job Name:{detail['job_name']}", 30)
+    # No Bundle line (not required). The tare (empty-box weight) prints here
+    # so the floor can verify it stays constant (e.g. 1.400 Kg) regardless
+    # of how many reels are inside. Rolls stay for traceability.
+    try:
+        _bw_txt = f"{float(detail.get('box_wt') or 0):.3f}"
+    except (TypeError, ValueError):
+        _bw_txt = "—"
     _cell_text(d, (A, r2a, E, r2b),
-               f"Bundle:{detail['bundle_no']}  Rolls:{rolls}", 28)
+               f"Tare:{_bw_txt} Kg  Rolls:{rolls or '—'}", 26)
     _cell_text(d, (A, r3a, C, r3b),
                f"Date:{fmt_date_ddmmyy(detail['packed_at'])}", 28)
     _cell_text(d, (C, r3a, E, r3b), f"No of Reels:{detail['num_reels']}", 26)
@@ -328,11 +355,11 @@ def render_carton(detail: dict, width_mm=LABEL_WIDTH_MM,
         qx = int(C + (E - C - qr.size[0]) / 2)
         img.paste(qr, (qx, int(r4a + 6)))
         _cell_text(d, (C, r4a + 6 + qr.size[1], E, r6b),
-                   bare_carton_no(detail["carton_no"]), 34, center=True)
+                   _box_display_no(detail), 34, center=True)
     else:
         mid = r4a + (r6b - r4a) * 0.28
         _cell_text(d, (C, r4a, E, mid), "Box No#", 26)
-        _cell_text(d, (C, mid, E, r6b), bare_carton_no(detail["carton_no"]), 80)
+        _cell_text(d, (C, mid, E, r4b), _box_display_no(detail), 80)
     return img
 
 
@@ -466,17 +493,15 @@ def render_client_box(detail: dict, width_mm: float = WIDE_WIDTH_MM,
     _draw_spaced_center(d, (tx0 + tx1) // 2, (top + band_bot) // 2,
                         title, tf, spacing)
 
-    # ---- header grid: 3 rows, left + right groups ----
-    head_bot = px(45)
-    row_h = (head_bot - band_bot) / 3
-    for i in (1, 2):
+    # ---- header grid: 4 rows (PO date added), left + right groups ----
+    head_bot = px(51)
+    row_h = (head_bot - band_bot) / 4
+    for i in (1, 2, 3):
         y = int(band_bot + row_h * i)
         d.line([(left, y), (right, y)], fill="black", width=line)
     div_x = px(122)
     d.line([(div_x, band_bot), (div_x, head_bot)], fill="black", width=line)
-    # Close the third header row (Product / No of Coils) before the table
-    # header starts. Without this line the product row and the S.no header
-    # row run together on the printed sticker.
+    # Close the fourth header row before the table header starts.
     d.line([(left, head_bot), (right, head_bot)], fill="black", width=line)
 
     label_font = _font(px(3.0), bold=True)
@@ -484,14 +509,20 @@ def render_client_box(detail: dict, width_mm: float = WIDE_WIDTH_MM,
     r_label_x, r_value_x = px(126), px(160)
     l_max = div_x - px(3) - l_value_x
     r_max = right - px(3) - r_value_x
+    try:
+        _po_d = _dmystr(detail.get("po_date")) if detail.get("po_date") else "—"
+    except Exception:
+        _po_d = "—"
     left_fields = (
         ("Pack. Date", _dmystr(detail.get("packed_at"))),
         ("CUSTOMER", str(detail.get("customer") or "—")),
         ("PRODUCT", str(detail.get("product_name") or detail.get("job_name") or "—")),
+        ("PO Date", _po_d),
     )
     right_fields = (
         ("BATCH NO.", str(detail.get("batch_no") or "—")),
         ("Customer Po:", str(detail.get("customer_po") or "—")),
+        ("PO Date:", _po_d),
         ("NO OF Coils:", str(detail.get("num_coils", n) or 0)),
     )
     for i, (lab, val) in enumerate(left_fields):

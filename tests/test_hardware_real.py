@@ -223,7 +223,7 @@ def _fake_qt(monkey_state, begin_ok=True):
 
         def pageRect(self, unit):
             # Derive the printable area from the requested page layout so the
-            # same fake covers the 4x3 Citizen and the 210mm-wide client stock.
+            # same fake covers the 100x50 Citizen and the 210mm-wide client stock.
             lay = monkey_state.get("layout")
             if lay is not None:
                 try:
@@ -233,7 +233,7 @@ def _fake_qt(monkey_state, begin_ok=True):
                                  int(round(full.height() / 25.4 * 203)))
                 except Exception:
                     pass
-            return QRect(0, 0, 812, 609)  # 4x3in @203dpi full-bleed
+            return QRect(0, 0, 799, 399)  # 100x50mm @203dpi full-bleed
 
         def resolution(self):
             return 203
@@ -298,15 +298,15 @@ def test_real_print_renders_complete_data_and_paints_stock():
         assert QtCitizenCLS621("Citizen").print_carton_label(
             {"detail": detail}) is True
         assert rendered["carton"] == detail, "must render complete detail"
-    # fixed 101.6x76.2mm @203dpi, zero margins, painter begin/end honored
+    # fixed 100x50mm @203dpi, zero margins, painter begin/end honored
     lay = st["layout"]
     from PySide6.QtGui import QPageLayout as _PL
     assert lay.orientation() == _PL.Portrait, \
-        "Qt rotates custom sizes: Portrait keeps 101.6-wide stock as-is"
+        "Qt rotates custom sizes: Portrait keeps 100-wide stock as-is"
     try:
         full = lay.fullRect(_PL.Millimeter)
-        assert abs(full.width() - 101.6) < 1.0, full
-        assert abs(full.height() - 76.2) < 1.0, full
+        assert abs(full.width() - 100.0) < 1.0, full
+        assert abs(full.height() - 50.0) < 1.0, full
     except AssertionError:
         raise
     except Exception:
@@ -314,12 +314,12 @@ def test_real_print_renders_complete_data_and_paints_stock():
     ps = lay.pageSize()
     try:
         size_mm = ps.size(G.QPageSize.Millimeter)
-        assert abs(size_mm.width() - 101.6) < 0.5, size_mm
-        assert abs(size_mm.height() - 76.2) < 0.5, size_mm
+        assert abs(size_mm.width() - 100.0) < 0.5, size_mm
+        assert abs(size_mm.height() - 50.0) < 0.5, size_mm
     except Exception:
         pts = ps.sizePoints()
-        assert abs(pts.width() - 288.0) < 1.0, pts
-        assert abs(pts.height() - 216.0) < 1.0, pts
+        assert abs(pts.width() - 283.5) < 1.0, pts
+        assert abs(pts.height() - 141.7) < 1.0, pts
     try:
         margins = lay.margins()
     except TypeError:
@@ -330,7 +330,7 @@ def test_real_print_renders_complete_data_and_paints_stock():
     assert st["painter"].drawn, "label image must be painted"
     rect = st["painter"].drawn[-1][0]
     assert (rect.x(), rect.y()) == (0, 0)
-    assert abs(rect.width() - 812) < 3 and abs(rect.height() - 609) < 3
+    assert abs(rect.width() - 799) < 3 and abs(rect.height() - 399) < 3
     calls = st["FakePrinter"].instances[-1].calls
     assert ("fullpage", True) in calls, "must request full-page printing"
     assert ("resolution", 203) in calls, "must request 203dpi"
@@ -339,7 +339,7 @@ def test_real_print_renders_complete_data_and_paints_stock():
 def test_real_client_label_print_uses_wide_custom_stock():
     """Type-3 wide client sticker: 210 x content-height, zero margins.
 
-    The real Qt path must request the exact custom paper size (not 4x3
+    The real Qt path must request the exact custom paper size (not 100x50
     Citizen stock), paint the full-resolution 203dpi art at the origin, and
     still fail closed if the driver reports a different page.
     """
@@ -560,7 +560,7 @@ def test_stored_configs_use_stable_data_root():
         assert HWC._default_path() == os.path.join(tmp, "hardware.json")
         HWC.save({"scale_port": "COM3", "scale_baud": 9600,
                   "printer_name": "", "label_width_mm": 100,
-                  "label_height_mm": 100, "label_dpi": 203})
+                  "label_height_mm": 50, "label_dpi": 203})
         assert os.path.exists(os.path.join(tmp, "hardware.json"))
         assert HWC.load()["scale_port"] == "COM3"
         assert HW.MockCitizenCLS621().log_path == os.path.join(

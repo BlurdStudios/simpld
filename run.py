@@ -103,9 +103,37 @@ def main():
         QMessageBox.critical(None, "Simpl'd", f"Bad LAN settings:\n{e}")
         return
 
+    # Licensing: locked States (none/invalid/blocked) open the Activate
+    # dialog before login (local mode only; LAN dispatchers are enforced
+    # server-side per-login). Demo builds bypass. Grace/expiring proceed
+    # with a banner. Backup/Export of the DB file itself never needs login.
+    try:
+        from factory import license as _LIC
+        _st = _LIC.license_status()
+        os.environ["SIMPLD_LICENSE_STATE"] = str(_st.get("state") or "")
+        print(f"[license] {_LIC.license_display(_st)}", flush=True)
+        if not DA.is_lan() and _st.get("state") in ("ok", "expiring", "grace"):
+            try:
+                _LIC.record_station()
+            except Exception as _e:
+                print(f"[license] station heartbeat failed: {_e}", flush=True)
+        if _st.get("state") in ("grace", "expiring"):
+            try:
+                from PySide6.QtWidgets import QMessageBox as _MB
+                _MB.warning(
+                    None, "Simpl'd licence",
+                    f"{_LIC.license_display(_st)}\n\nContact admin.")
+            except Exception:
+                pass
+    except Exception as _e:
+        print(f"[license] check skipped: {_e}", flush=True)
+
     if not DA.is_lan():
         from factory.seed import ensure_production_db
         ensure_production_db()
+        from factory.ui.activate import ensure_activated
+        if not ensure_activated():
+            return
 
     if DEV:
         _install_dev_reloader(app, _py_files(os.path.dirname(os.path.abspath(__file__))))

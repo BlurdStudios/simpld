@@ -1,4 +1,4 @@
-"""Packaging sticker previews: fixed 4x3in stock, table art, read-only.
+"""Packaging sticker previews: fixed 100x50mm stock, table art, read-only.
 
 Covers the live Type-1 (reel, NO QR) + Type-2 (box, WITH QR) previews on the
 packaging page. No customer/shift/supervisor on stickers (customer lives on
@@ -51,10 +51,10 @@ def _select_job(pg, job_id):
     raise AssertionError("job not in combo")
 
 
-def test_stock_fixed_4x3in_no_height_option():
+def test_stock_fixed_100x50mm_no_height_option():
     from factory.ui.page_packaging import PRINTER_WIDTH_MM, PRINTER_HEIGHT_MM
-    assert abs(PRINTER_WIDTH_MM - 101.6) < 0.01
-    assert abs(PRINTER_HEIGHT_MM - 76.2) < 0.5
+    assert abs(PRINTER_WIDTH_MM - 100.0) < 0.01
+    assert abs(PRINTER_HEIGHT_MM - 50.0) < 0.5
     _, pg = _page()
     assert not hasattr(pg, "label_height"), "no height option on the page"
 
@@ -121,10 +121,11 @@ def test_box_preview_needs_loose_reels_then_renders_art():
 
     wt = S.carton_detail(S.pack_weight_carton(job["id"], 10.5, path=p)["id"], path=p)
     assert wt["reels"] == [] and wt["num_reels"] == 0 and wt["box_wt"] == 0.0
-    assert "Roll" not in carton_label_text(wt), carton_label_text(wt)
+    assert "Bundle" not in carton_label_text(wt), carton_label_text(wt)
+    assert "Rolls:" in carton_label_text(wt)
     for sticker in (detail, wt):
         img = L.render_carton(sticker)
-        assert img.size == (812, 609), img.size
+        assert img.size == (799, 399), img.size
         dark = sum(1 for x in range(0, img.size[0], 7) if sum(img.getpixel((x, 1))[:3]) < 120)
         assert dark > img.size[0] // 7 * 0.9, "top border row must print dark"
 
@@ -160,7 +161,7 @@ def test_reel_table_art_matches_photo_layout():
             "created_at": "2026-10-03 10:00:00", "roll_no": 23}
     img = L.render_reel(job, reel)
     W, H = img.size
-    assert (W, H) == (812, 609), (W, H)  # 4x3in @203dpi
+    assert (W, H) == (799, 399), (W, H)  # 100x50mm @203dpi
     px = img.load()
     # outer border dark on all four sides; inner grid lines dark
     assert sum(px[W // 2, 1][:3]) < 150, "top border"
@@ -180,17 +181,18 @@ def test_reel_sticker_shows_no_of_pieces():
     job = {"job_no": 4167, "job_name": "APPY FIZZ-160ML BODY", "wrappers_per_reel": 16500}
     assert "No of Pieces:16500" in reel_label_text(job, reel)
     img = L.render_reel(job, reel)
-    assert img.size == (812, 609), img.size
+    assert img.size == (799, 399), img.size
     job_none = {"job_no": 4167, "job_name": "APPY FIZZ-160ML BODY", "wrappers_per_reel": None}
     img_none = L.render_reel(job_none, reel)
-    assert img_none.size == (812, 609), img_none.size
+    # Fixed 100x50mm stock: same canvas regardless of piece count.
+    assert img_none.size == (799, 399), img_none.size
     assert img.tobytes() != img_none.tobytes(), \
         "the count must be drawn into the art, not only stated"
     # unknown job (no key at all — same shape as test_hardware_real._job_reel_detail)
     job_unk = {"job_no": 4167, "job_name": "APPY FIZZ-160ML BODY"}
     assert "No of Pieces:unknown" in reel_label_text(job_unk, reel)
     img_unk = L.render_reel(job_unk, reel)
-    assert img_unk.size == (812, 609), img_unk.size
+    assert img_unk.size == (799, 399), img_unk.size
 
 
 def test_preview_writes_nothing():
@@ -287,7 +289,7 @@ def test_preview_fits_padded_bounds_on_resize():
 
 
 if __name__ == "__main__":
-    test_stock_fixed_4x3in_no_height_option()
+    test_stock_fixed_100x50mm_no_height_option()
     test_idle_shows_hint_not_art()
     test_reel_weigh_shows_only_reel_art()
     test_box_preview_needs_loose_reels_then_renders_art()

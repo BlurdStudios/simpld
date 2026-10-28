@@ -4,7 +4,7 @@ Cross-platform by design: the Citizen printer is used through its normal
 OS-installed driver (the same printer name shown in any Print dialog), via
 Qt PrintSupport (QPrinter/QPainter). No EPL/ZPL command bytes are invented
 or sent — the existing full-resolution label art from
-factory.hardware.labels (render_reel / render_carton, 101.6 x 76.2 mm fixed
+factory.hardware.labels (render_reel / render_carton, 100 x 50 mm fixed
 stock at 203 dpi, zero margins) is painted 1:1 onto the label page.
 
 Data contract: pass the COMPLETE rendering inputs, not a truncated summary:
@@ -20,8 +20,8 @@ from __future__ import annotations
 from .base import PrinterInterface
 from . import labels as LabelArt
 
-LABEL_WIDTH_MM = LabelArt.LABEL_WIDTH_MM    # 101.6 (4 in fixed stock)
-LABEL_HEIGHT_MM = LabelArt.LABEL_HEIGHT_MM  # 76.2  (3 in fixed stock)
+LABEL_WIDTH_MM = LabelArt.LABEL_WIDTH_MM    # 100 (fixed 100x50 stock)
+LABEL_HEIGHT_MM = LabelArt.LABEL_HEIGHT_MM  # 50  (fixed 100x50 stock)
 
 
 def available_printers() -> list[str]:
@@ -40,7 +40,7 @@ def printer_exists(name: str) -> bool:
 class QtCitizenCLS621(PrinterInterface):
     """Real label printer through its installed OS driver.
 
-    Used for the 4x3 Citizen on packaging and the wide client-sticker
+    Used for the 100x50 Citizen on packaging and the wide client-sticker
     printer on dispatch. printer_name must exactly match an installed
     printer (see available_printers() / the Devices dialog).
     """
@@ -191,14 +191,20 @@ class QtCitizenCLS621(PrinterInterface):
                 f"Printer {self.printer_name!r} refused the job — check it is "
                 f"online with the right label stock loaded")
         try:
-            # Paint 1:1 onto the fixed 101.6x76.2mm stock at the printer's
+            # Paint 1:1 onto the fixed 100x50mm stock at the printer's
             # own resolution, origin (0,0), zero margins by construction.
             res = int(printer.resolution() or dpi)
             w_px = int(width_mm / 25.4 * res)
             h_px = int(height_mm / 25.4 * res)
             try:
                 pr = printer.pageRect(QPrinter.DevicePixel)
-                if pr.width() < w_px or pr.height() < h_px:
+                # Driver rounding slop: hardware margins are already verified
+                # <=0.25mm above and painting is at origin (0,0) full-page, so
+                # a sub-0.5mm shortfall in the *reported* printable rect is not
+                # real clipping (the Citizen reports 797px here vs 799px of
+                # label). Wrong stock is tens of mm short and still fails.
+                slop = max(4, int(round(0.5 / 25.4 * res)))
+                if pr.width() < w_px - slop or pr.height() < h_px - slop:
                     raise RuntimeError(
                         f"Printer {self.printer_name!r} printable area is "
                         f"{pr.width()}x{pr.height()}px < label {w_px}x{h_px}px — "

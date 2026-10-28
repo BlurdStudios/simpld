@@ -31,30 +31,48 @@ from factory.ui.styles import style_button, set_banner
 from factory.ui.device_strip import DeviceStrip
 
 
-def _piece_alert(loaded: int, required: int, unit: str = "pcs"):
+def _piece_alert(loaded, required, unit: str = "pcs"):
     """Progressive loading alert: 75% on track, 90% almost done, target/over.
 
     Returns (text, toast/banner kind) or None below 75%. The backend still
     owns the hard stop; this only tells the operator how close they are.
+    Supports kg floats (formats to 3 decimals) as well as int pieces.
     """
     try:
-        loaded, required = int(loaded), int(required)
+        if unit == "kg":
+            loaded_f, required_f = float(loaded), float(required)
+        else:
+            loaded, required = int(loaded), int(required)
+            loaded_f, required_f = float(loaded), float(required)
     except (TypeError, ValueError):
         return None
-    if required <= 0:
+    if required_f <= 0:
         return None
-    pct = loaded * 100.0 / required
-    if loaded >= required:
-        over = loaded - required
-        if over > 0:
-            return (f"Target reached — over by {over:,} {unit}.", "warning")
-        return (f"Target reached — {loaded:,}/{required:,} {unit}.", "success")
-    left = required - loaded
+    pct = loaded_f * 100.0 / required_f
+    if loaded_f >= required_f:
+        over = loaded_f - required_f
+        if unit == "kg":
+            if over > 0.0005:
+                return (f"✓ TARGET FULFILLED — over by {over:.3f} {unit}.", "success")
+            return (f"✓ TARGET FULFILLED — {loaded_f:.3f}/{required_f:.3f} {unit}.", "success")
+        over_i = int(over)
+        if over_i > 0:
+            return (f"✓ TARGET FULFILLED — over by {over_i:,} {unit}.", "success")
+        return (f"✓ TARGET FULFILLED — {int(loaded_f):,}/{int(required_f):,} {unit}.", "success")
+    left = required_f - loaded_f
+    if unit == "kg":
+        if pct >= 90:
+            return (f"Almost done — {left:.3f} {unit} left "
+                    f"({loaded_f:.1f}/{required_f:.1f}).", "warning")
+        if pct >= 75:
+            return (f"{left:.3f} {unit} left ({pct:.0f}% loaded).", "info")
+        return None
+    left_i, loaded_i, required_i = int(left), int(loaded_f), int(required_f)
     if pct >= 90:
-        return (f"Almost done — {left:,} {unit} left "
-                f"({loaded:,}/{required:,}).", "warning")
+        return (f"Almost done — {left_i:,} {unit} left "
+                f"({loaded_i:,}/{required_i:,}).", "warning")
     if pct >= 75:
-        return (f"{left:,} {unit} left ({pct:.0f}% loaded).", "info")
+        return (f"{left_i:,} {unit} left ({pct:.0f}% loaded).", "info")
     return None
 
 
@@ -270,14 +288,16 @@ class DispatchPage(QWidget):
         return msg
 
     def _need_text(self, o: dict) -> str:
-        """Order target as seen by the floor: pieces for new orders, legacy
-        bundle counts for old rows (required_pieces NULL)."""
+        """Order target as seen by the floor: pieces / kg / legacy boxes."""
         try:
             if o.get("required_pieces") is not None:
                 unit = ("pcs" if str(o.get("piece_unit") or "reel") != "reel"
                         else "coils")
                 return (f"{int(o.get('loaded_pieces') or 0)}/"
                         f"{int(o['required_pieces'])} {unit}")
+            if o.get("required_weight_kg") is not None:
+                return (f"{float(o.get('loaded_net') or 0):.1f}/"
+                        f"{float(o['required_weight_kg']):.1f} kg")
             return f"{int(o.get('loaded') or 0)}/{int(o.get('required_bundles') or 0)} boxes"
         except Exception:
             return "?"
@@ -361,18 +381,28 @@ class DispatchPage(QWidget):
             if o["id"] == self.order_id:
                 o["loaded"] = prog.get("loaded", 0)
                 o["loaded_pieces"] = prog.get("loaded_pieces", 0)
+                o["loaded_net"] = prog.get("loaded_net", 0)
                 o["remaining"] = prog.get("remaining", 0)
         o = self.selected_order()
         self._alert = None
         if o:
             alert = None
-            unit_word = "pcs" if unit != "reel" else "coils"
             if o.get("required_pieces") is not None:
+                unit_word = "pcs" if unit == "wrapper" else "coils"
                 required = int(o["required_pieces"])
                 loaded_pieces = int(prog.get("loaded_pieces") or 0)
                 counts = (f"loaded {prog.get('loaded', 0)} boxes /"
                           f" {loaded_pieces:,} {unit_word} of {required:,}")
                 alert = _piece_alert(loaded_pieces, required, unit_word)
+            elif o.get("required_weight_kg") is not None or prog.get("required_weight_kg") is not None:
+                try:
+                    required_kg = float(o.get("required_weight_kg") if o.get("required_weight_kg") is not None else prog.get("required_weight_kg"))
+                except (TypeError, ValueError):
+                    required_kg = 0.0
+                loaded_kg = float(prog.get("loaded_net") or 0)
+                counts = (f"loaded {prog.get('loaded', 0)} boxes /"
+                          f" {loaded_kg:.3f} kg of {required_kg:.3f}")
+                alert = _piece_alert(loaded_kg, required_kg, "kg")
             else:
                 counts = f"loaded {prog.get('loaded', 0)}/{int(o.get('required_bundles') or 0)} boxes"
             self._alert = alert
@@ -396,8 +426,19 @@ class DispatchPage(QWidget):
         can = self._can_dispatch()
         has_sel = self.table.selectionModel() is not None and bool(
             self.table.selectionModel().selectedRows())
+        # Vivid fulfilled: Complete turns solid green with ✓ once the target
+        # is reached so the floor sees it without reading the text.
+        fulfilled = bool(getattr(self, "_alert", None) and self._alert[1] == "success")
         try:
             self.btn_complete.setEnabled(bool(loading and can))
+            if fulfilled and loading and can:
+                style_button(self.btn_complete, "success")
+                if "✓" not in self.btn_complete.text():
+                    self.btn_complete.setText("✓ Complete dispatch")
+            else:
+                style_button(self.btn_complete, "primary")
+                if self.btn_complete.text().startswith("✓ "):
+                    self.btn_complete.setText("Complete dispatch")
             self.btn_cancel.setEnabled(bool(loading and can))
             self.btn_unscan.setEnabled(bool(loading and can and has_sel))
             self.btn_sticker.setEnabled(bool(can and has_sel))
@@ -415,7 +456,7 @@ class DispatchPage(QWidget):
     # ----- actions -----
     def new_order(self):
         from PySide6.QtWidgets import (QDialog, QFormLayout, QLineEdit as _LE,
-                                       QDialogButtonBox)
+                                       QDialogButtonBox, QDoubleSpinBox)
         if not self._can_dispatch():
             return self.say("Dispatcher or admin only.", ok=False)
         try:
@@ -448,11 +489,13 @@ class DispatchPage(QWidget):
             boxes = int(s.get("boxes") or 0)
             coils = int(s.get("coils") or 0)
             pcs = s.get("pieces")
+            wkg = s.get("weight_kg")
             if boxes <= 0:
                 have = "no ready stock"
             elif pcs is None:
                 have = (f"{boxes} box{'es' if boxes != 1 else ''} · "
-                        f"{coils} coil{'s' if coils != 1 else ''}")
+                        f"{coils} coil{'s' if coils != 1 else ''} · "
+                        f"{float(wkg or 0):.1f} kg")
             else:
                 have = (f"{boxes} box{'es' if boxes != 1 else ''} · "
                         f"{coils} coil{'s' if coils != 1 else ''} · "
@@ -471,6 +514,10 @@ class DispatchPage(QWidget):
         po.setPlaceholderText("Client PO number — always printed on the sticker")
         po.setMinimumWidth(360)
         f.addRow("Customer PO:", po)
+        po_date = _LE()
+        po_date.setPlaceholderText("YYYY-MM-DD — PO date, prints beside PO (optional)")
+        po_date.setMinimumWidth(180)
+        f.addRow("PO date:", po_date)
         batch = _LE()
         batch.setPlaceholderText("Optional — blank = SVSF/MON-DD from coil mfg date")
         batch.setMinimumWidth(360)
@@ -482,7 +529,13 @@ class DispatchPage(QWidget):
         need.setGroupSeparatorShown(True)
         need.setMinimumWidth(180)
         f.addRow("Pieces required (wrappers):", need)
-        note = QLabel("Client orders are in pieces (wrappers), not boxes. "
+        need_kg = QDoubleSpinBox()
+        need_kg.setRange(0.001, 100_000_000)
+        need_kg.setDecimals(3)
+        need_kg.setValue(100.0)
+        need_kg.setMinimumWidth(180)
+        f.addRow("Kg required (net):", need_kg)
+        note = QLabel("Piece products order in wrappers; kg products order in net kg. "
                       "The sticker numbers boxes 1..N as they are scanned.")
         note.setWordWrap(True)
         note.setProperty("hint", True)
@@ -500,28 +553,40 @@ class DispatchPage(QWidget):
             jid = int(combo.currentData() or 0)
             s = stock.get(jid, {})
             boxes = int(s.get("boxes") or 0)
+            is_piece = w > 0
+            # Show only the relevant target field.
+            try:
+                need.setVisible(is_piece)
+                need_kg.setVisible(not is_piece)
+                # Update row labels visibility via form rows is automatic;
+                # keep both rows but disable the irrelevant one.
+                need.setEnabled(is_piece)
+                need_kg.setEnabled(not is_piece)
+            except Exception:
+                pass
             if s.get("pieces") is None:
-                avail = (f"Ready stock: {boxes} box{'es' if boxes != 1 else ''}."
+                avail = (f"Ready stock: {boxes} box{'es' if boxes != 1 else ''} · "
+                         f"{float(s.get('weight_kg') or 0):.1f} kg."
                          if boxes else "Ready stock: none — pack boxes first.")
             else:
                 avail = (f"Ready stock: {boxes} box{'es' if boxes != 1 else ''} · "
                          f"{int(s.get('coils') or 0):,} coils · "
                          f"{int(s['pieces']):,} pcs.")
-            if w > 0:
+            if is_piece:
                 hint.setText(f"{avail} Pieces per coil: {w:,}. "
                              "The order target is total wrappers (pieces).")
                 hint.setStyleSheet("")
-                save_btn.setEnabled(True)
             else:
-                hint.setText(f"{avail} This job has no wrappers-per-reel count. "
-                             "Set it on the product/job first.")
-                hint.setStyleSheet("color: #B45309; font-weight: 600;")
-                save_btn.setEnabled(False)
+                hint.setText(f"{avail} Kg product (no piece count). "
+                             "The order target is total net kg.")
+                hint.setStyleSheet("")
+            save_btn.setEnabled(True)
 
         combo.currentIndexChanged.connect(lambda _i: update_hint())
         update_hint()
 
         def validate_and_accept():
+            import re as _re
             if not cust.text().strip():
                 QMessageBox.warning(d, "New order", "Customer name required.")
                 return
@@ -530,10 +595,8 @@ class DispatchPage(QWidget):
                     d, "New order",
                     "Customer PO required — it always prints on the sticker.")
                 return
-            if current_wpr() <= 0:
-                QMessageBox.warning(
-                    d, "New order",
-                    "Set wrappers per reel on this job/product first.")
+            if po_date.text().strip() and not _re.fullmatch(r"\d{4}-\d{2}-\d{2}", po_date.text().strip()):
+                QMessageBox.warning(d, "New order", "PO date must be YYYY-MM-DD or blank.")
                 return
             d.accept()
 
@@ -542,18 +605,34 @@ class DispatchPage(QWidget):
         if d.exec() != QDialog.Accepted:
             return
         try:
-            o = DA.create_dispatch_order(
-                cust.text(), combo.currentData(),
-                required_pieces=int(need.value()),
-                customer_po=po.text(), batch_no=batch.text(),
-                piece_unit="wrapper")
+            jid = combo.currentData()
+            if current_wpr() > 0:
+                o = DA.create_dispatch_order(
+                    cust.text(), jid,
+                    required_pieces=int(need.value()),
+                    customer_po=po.text(), po_date=po_date.text().strip() or None,
+                    batch_no=batch.text(),
+                    piece_unit="wrapper")
+            else:
+                o = DA.create_dispatch_order(
+                    cust.text(), jid,
+                    required_weight_kg=float(need_kg.value()),
+                    customer_po=po.text(), po_date=po_date.text().strip() or None,
+                    batch_no=batch.text(),
+                    piece_unit="kg")
         except (ValueError, PermissionError) as e:
             return self.say(str(e), ok=False)
         except Exception as e:
             return self.say(f"Connection issue: {self._err(e)}"
                             " Refresh, check the order exists, then retry.", ok=False)
-        self.say(f"Order {o['order_no']} created"
-                 f" ({int(o['required_pieces']):,} pcs required).", ok=True)
+        if o.get("required_pieces") is not None:
+            self.say(f"Order {o['order_no']} created"
+                     f" ({int(o['required_pieces']):,} pcs required).", ok=True)
+        elif o.get("required_weight_kg") is not None:
+            self.say(f"Order {o['order_no']} created"
+                     f" ({float(o['required_weight_kg']):.3f} kg required).", ok=True)
+        else:
+            self.say(f"Order {o['order_no']} created.", ok=True)
         self.refresh(select_id=o["id"])
 
     def do_scan(self):
@@ -703,6 +782,10 @@ class DispatchPage(QWidget):
             body = ("Complete this order? Boxes leave Ready stock.\n"
                     f"Requires {int(o['required_pieces']):,} {unit} —"
                     " the last box may overshoot by its own piece count.")
+        elif o and o.get("required_weight_kg") is not None:
+            body = ("Complete this order? Boxes leave Ready stock.\n"
+                    f"Requires {float(o['required_weight_kg']):.3f} kg net —"
+                    " the last box may overshoot.")
         else:
             body = ("Complete this order? Boxes leave Ready stock.\n"
                     "Requires the exact bundle count — partial loads are blocked.")
@@ -722,6 +805,11 @@ class DispatchPage(QWidget):
             self.say(f"Order {done['order_no']} dispatched"
                      f" ({done.get('loaded', 0)} boxes, "
                      f"{int(done.get('loaded_pieces') or 0):,} {unit}).",
+                     ok=True)
+        elif done.get("required_weight_kg") is not None:
+            self.say(f"Order {done['order_no']} dispatched"
+                     f" ({done.get('loaded', 0)} boxes, "
+                     f"{float(done.get('loaded_net') or 0):.3f} kg).",
                      ok=True)
         else:
             self.say(f"Order {done['order_no']} dispatched ({done['loaded']} boxes).", ok=True)

@@ -101,10 +101,71 @@ def _alloc_seq(c: sqlite3.Connection, period: str, kind: str) -> int:
     return nxt
 
 
-def predict_next_reel_seq(period: str | None = None, path: str | None = None) -> int:
+def _alloc_prod_seq(c: sqlite3.Connection, period: str, product_id: int, kind: str) -> int:
+    """Per-product monthly counter (P0): each product restarts at 1 each month.
+
+    Runs inside the caller's BEGIN IMMEDIATE txn. Never reuses deleted
+    numbers (monotonic per product+month). product_id None (legacy job
+    without product) falls back to 0 bucket so allocation never fails.
+    """
+    pid = int(product_id) if product_id is not None else 0
+    r = c.execute("SELECT last_no FROM monthly_product_counters"
+                  " WHERE period=? AND product_id=? AND kind=?",
+                  (period, pid, kind)).fetchone()
+    if r is None:
+        # Seed from existing MAX prod_seq so legacy backfill + new writes
+        # never collide.
+        if kind == "reel":
+            m = c.execute(
+                "SELECT MAX(r.prod_seq) m FROM reels r JOIN jobs j ON j.id=r.job_id"
+                " WHERE r.roll_period=? AND COALESCE(j.product_id,0)=?",
+                (period, pid)).fetchone()
+        else:
+            m = c.execute(
+                "SELECT MAX(ct.prod_seq) m FROM cartons ct JOIN jobs j ON j.id=ct.job_id"
+                " WHERE ct.box_period=? AND COALESCE(j.product_id,0)=?",
+                (period, pid)).fetchone()
+        base = int(m["m"] or 0) if m and m["m"] else 0
+        nxt = base + 1
+        c.execute("INSERT INTO monthly_product_counters(period, product_id, kind, last_no)"
+                  " VALUES(?,?,?,?)", (period, pid, kind, nxt))
+        return nxt
+    nxt = int(r["last_no"] or 0) + 1
+    c.execute("UPDATE monthly_product_counters SET last_no=? WHERE period=? AND product_id=? AND kind=?",
+              (nxt, period, pid, kind))
+    return nxt
+
+
+def _product_id_for_job(c: sqlite3.Connection, job_id: int) -> int | None:
+    r = c.execute("SELECT product_id FROM jobs WHERE id=?", (job_id,)).fetchone()
+    if not r:
+        return None
+    return r["product_id"]
+
+
+def predict_next_reel_seq(period: str | None = None, path: str | None = None,
+                          product_id: int | None = None, job_id: int | None = None) -> int:
+    """Next reel seq. Global when no product/job given (legacy preview);
+    per-product 1..N when product_id or job_id is given (P0 sticker preview)."""
     per = period or current_period()
     c = get_conn(path)
     try:
+        pid: int | None = product_id
+        if pid is None and job_id is not None:
+            r = c.execute("SELECT product_id FROM jobs WHERE id=?", (job_id,)).fetchone()
+            pid = r["product_id"] if r else None
+        if pid is not None:
+            r = c.execute("SELECT last_no FROM monthly_product_counters"
+                          " WHERE period=? AND product_id=? AND kind='reel'",
+                          (per, int(pid))).fetchone()
+            base = int(r["last_no"] or 0) if r else 0
+            m = c.execute(
+                "SELECT MAX(r.prod_seq) m FROM reels r JOIN jobs j ON j.id=r.job_id"
+                " WHERE r.roll_period=? AND COALESCE(j.product_id,0)=?",
+                (per, int(pid))).fetchone()
+            if m and m["m"]:
+                base = max(base, int(m["m"]))
+            return base + 1
         r = c.execute("SELECT last_no FROM monthly_counters WHERE period=? AND kind='reel'",
                       (per,)).fetchone()
         base = int(r["last_no"] or 0) if r else 0
@@ -118,11 +179,28 @@ def predict_next_reel_seq(period: str | None = None, path: str | None = None) ->
         c.close()
 
 
-def predict_next_box_seq(period: str | None = None, path: str | None = None) -> int:
+def predict_next_box_seq(period: str | None = None, path: str | None = None,
+                         product_id: int | None = None, job_id: int | None = None) -> int:
     import re as _re
     per = period or current_period()
     c = get_conn(path)
     try:
+        pid: int | None = product_id
+        if pid is None and job_id is not None:
+            r = c.execute("SELECT product_id FROM jobs WHERE id=?", (job_id,)).fetchone()
+            pid = r["product_id"] if r else None
+        if pid is not None:
+            r = c.execute("SELECT last_no FROM monthly_product_counters"
+                          " WHERE period=? AND product_id=? AND kind='box'",
+                          (per, int(pid))).fetchone()
+            base = int(r["last_no"] or 0) if r else 0
+            m = c.execute(
+                "SELECT MAX(ct.prod_seq) m FROM cartons ct JOIN jobs j ON j.id=ct.job_id"
+                " WHERE ct.box_period=? AND COALESCE(j.product_id,0)=?",
+                (per, int(pid))).fetchone()
+            if m and m["m"]:
+                base = max(base, int(m["m"]))
+            return base + 1
         r = c.execute("SELECT last_no FROM monthly_counters WHERE period=? AND kind='box'",
                       (per,)).fetchone()
         base = int(r["last_no"] or 0) if r else 0
@@ -164,13 +242,39 @@ def _parse_wrappers(value) -> int:
     return value
 
 
-def create_product(name: str, wrappers_per_reel: int, path: str | None = None,
+def _parse_wrappers_optional(value) -> int | None:
+    """Optional pieces: blank/None means a kg-based product (NULL).
+
+    Returns None for empty input, else the strict positive int. Never
+    invents a count — blank stays unknown.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("Pieces/reel must be a positive whole number (e.g. 16500) or blank for kg")
+    if isinstance(value, float):
+        if not value.is_integer():
+            raise ValueError("Pieces/reel must be a positive whole number (e.g. 16500) or blank for kg")
+        value = int(value)
+    if isinstance(value, str):
+        t = value.strip()
+        if t == "":
+            return None
+        if not t.isdigit():
+            raise ValueError("Pieces/reel must be a positive whole number (e.g. 16500) or blank for kg")
+        value = int(t)
+    if not isinstance(value, int) or value <= 0:
+        raise ValueError("Pieces/reel must be a positive whole number (e.g. 16500) or blank for kg")
+    return value
+
+
+def create_product(name: str, wrappers_per_reel: int | None = None, path: str | None = None,
                    actor: dict | None = None) -> dict:
     _product_actor(path)
     name = (name or "").strip().upper()
     if not name:
         raise ValueError("Product name required (e.g. APPY FIZZ-160ML (SEP.28) BODY)")
-    w = _parse_wrappers(wrappers_per_reel)
+    w = _parse_wrappers_optional(wrappers_per_reel)
     c = get_conn(path)
     try:
         try:
@@ -388,8 +492,112 @@ def job_stats(job_id: int, path: str | None = None) -> dict:
         reels = c.execute("SELECT COUNT(*) n, COALESCE(SUM(net),0) w FROM reels WHERE job_id=?", (job_id,)).fetchone()
         loose = c.execute("SELECT COUNT(*) n FROM reels WHERE job_id=? AND status='loose'", (job_id,)).fetchone()
         cart = c.execute("SELECT COUNT(*) n, COALESCE(SUM(total_net),0) w FROM cartons WHERE job_id=? AND status='Ready'", (job_id,)).fetchone()
-        return {"reels": reels["n"], "reel_wt": round(reels["w"], 3),
-                "loose": loose["n"], "ready_cartons": cart["n"], "ready_wt": round(cart["w"], 3)}
+        boxes_all = c.execute("SELECT COUNT(*) n FROM cartons WHERE job_id=?", (job_id,)).fetchone()
+        job = c.execute("SELECT target_reels, target_boxes, target_weight_kg, target_pieces,"
+                        " wrappers_per_reel FROM jobs WHERE id=?", (job_id,)).fetchone()
+        out: dict = {"reels": reels["n"], "reel_wt": round(reels["w"], 3),
+                "loose": loose["n"], "ready_cartons": cart["n"], "ready_wt": round(cart["w"], 3),
+                "boxes": boxes_all["n"]}
+        if job:
+            try:
+                wpr = int(job["wrappers_per_reel"] or 0)
+            except (TypeError, ValueError):
+                wpr = 0
+            pieces = int(reels["n"] or 0) * wpr if wpr > 0 else None
+            out.update({
+                "target_reels": job["target_reels"],
+                "target_boxes": job["target_boxes"],
+                "target_weight_kg": job["target_weight_kg"],
+                "target_pieces": job["target_pieces"],
+                "pieces": pieces,
+                "wrappers_per_reel": job["wrappers_per_reel"],
+            })
+            # Fulfilment flags (any target set + reached).
+            try:
+                tr = job["target_reels"]
+                out["target_reels_met"] = bool(tr and int(reels["n"] or 0) >= int(tr))
+            except (TypeError, ValueError):
+                out["target_reels_met"] = False
+            try:
+                tb = job["target_boxes"]
+                out["target_boxes_met"] = bool(tb and int(boxes_all["n"] or 0) >= int(tb))
+            except (TypeError, ValueError):
+                out["target_boxes_met"] = False
+            try:
+                tw = job["target_weight_kg"]
+                out["target_weight_met"] = bool(tw and float(reels["w"] or 0) >= float(tw))
+            except (TypeError, ValueError):
+                out["target_weight_met"] = False
+            try:
+                tp = job["target_pieces"]
+                out["target_pieces_met"] = bool(tp and pieces is not None and pieces >= int(tp))
+            except (TypeError, ValueError):
+                out["target_pieces_met"] = False
+            out["any_target_met"] = bool(out.get("target_reels_met") or out.get("target_boxes_met")
+                                         or out.get("target_weight_met") or out.get("target_pieces_met"))
+            out["any_target_set"] = bool(job["target_reels"] or job["target_boxes"]
+                                         or job["target_weight_kg"] or job["target_pieces"])
+        return out
+    finally:
+        c.close()
+
+
+def set_job_targets(job_id: int, target_reels: int | None = None,
+                    target_boxes: int | None = None,
+                    target_weight_kg: float | None = None,
+                    target_pieces: int | None = None,
+                    path: str | None = None, actor: dict | None = None) -> dict:
+    """Set packaging targets for a job (any combination; None clears).
+
+    Targets are advisory goals shown with vivid fulfilled state in Packaging;
+    they never block weighing/packing. All values must be >0 when given.
+    """
+    resolved = _job_actor(path)
+    def _opt_int(v, label):
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None
+        try:
+            iv = int(v)
+        except (TypeError, ValueError):
+            raise ValueError(f"{label} must be a positive whole number")
+        if iv <= 0:
+            raise ValueError(f"{label} must be > 0")
+        return iv
+    def _opt_float(v, label):
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            raise ValueError(f"{label} must be a number > 0")
+        if not math.isfinite(fv) or fv <= 0:
+            raise ValueError(f"{label} must be > 0")
+        return round(fv, 3)
+    tr = _opt_int(target_reels, "Target reels")
+    tb = _opt_int(target_boxes, "Target boxes")
+    tw = _opt_float(target_weight_kg, "Target weight")
+    tp = _opt_int(target_pieces, "Target pieces")
+    c = get_conn(path)
+    c.isolation_level = None
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        try:
+            j = c.execute("SELECT job_no FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if not j:
+                raise ValueError("Job not found")
+            c.execute("UPDATE jobs SET target_reels=?, target_boxes=?,"
+                      " target_weight_kg=?, target_pieces=? WHERE id=?",
+                      (tr, tb, tw, tp, job_id))
+            _audit(c, resolved, "set_job_targets", "job", job_id,
+                   f"J:{j['job_no']} targets reels={tr} boxes={tb} kg={tw} pcs={tp}")
+            c.execute("COMMIT")
+        except Exception:
+            try:
+                c.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise
+        return dict(c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone())
     finally:
         c.close()
 
@@ -407,12 +615,12 @@ def create_reel(job_id: int, gross: float, core: float | None = None,
                 path: str | None = None, actor: dict | None = None,
                 period: str | None = None) -> dict:
     """Weigh one reel. Net = gross - core. Monthly global roll_no (resets 1
-    each month across ALL jobs); never reused after deletion (counter table).
-    Allocates counter + insert in one BEGIN IMMEDIATE transaction.
+    each month across ALL jobs) for DB identity + per-product prod_seq
+    (P0: each product restarts at 1 each month) for the sticker.
 
-    Legacy roll_no/weights/links are preserved; new rows gain roll_period +
-    roll_code (RYYYYMM-NNNN) for month-qualified identity. Jobs stay
-    continuous across months (no job restart).
+    The sticker shows prod_seq (floor's 1..N per product per month); the
+    global roll_no/roll_code stays the unique DB identity (QR-free reels
+    still need unambiguous history). Never reused after deletion.
     """
     resolved = _prod_actor(path)
     shift = (shift or "DAY").upper()
@@ -449,17 +657,23 @@ def create_reel(job_id: int, gross: float, core: float | None = None,
                 c.execute("UPDATE monthly_counters SET last_no=? WHERE period=? AND kind='reel'",
                           (seq, per))
             code = roll_code_for(per, seq)
+            # P0 per-product display seq (sticker 1..N per product per month).
+            try:
+                _pid = job["product_id"]
+            except Exception:
+                _pid = None
+            pseq = _alloc_prod_seq(c, per, int(_pid) if _pid is not None else 0, "reel")
             ts = now_iso()
             cur = c.execute(
-                "INSERT INTO reels(job_id, roll_no, roll_period, roll_code, gross, core, net,"
+                "INSERT INTO reels(job_id, roll_no, roll_period, roll_code, prod_seq, gross, core, net,"
                 " shift, supervisor, customer, status, created_at,"
                 " print_count, print_status)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?, 'loose', ?, 0, 'pending')",
-                (job_id, seq, per, code, round(float(g), 3), round(cw, 3), net,
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?, 'loose', ?, 0, 'pending')",
+                (job_id, seq, per, code, pseq, round(float(g), 3), round(cw, 3), net,
                  shift, (supervisor or "").upper(), (customer or "").strip().upper(), ts))
             rid = cur.lastrowid
             _audit(c, resolved, "create_reel", "reel", rid,
-                   f"J:{job['job_no']} {code} period={per} roll_no={seq}")
+                   f"J:{job['job_no']} {code} period={per} roll_no={seq} prod_seq={pseq}")
             c.commit()
         except Exception:
             try:
@@ -519,8 +733,8 @@ def job_boxes(job_id: int, path: str | None = None) -> list[dict]:
     """Every box of a job in packing order, with its linked bare roll numbers.
 
     Boxes are packed in production order, so ascending row id is the queue
-    order used by the sticker printer. Roll numbers are the visual identity
-    (the stored roll_code may be month-qualified).
+    order used by the sticker printer. Roll numbers are the per-product
+    visual identity (prod_seq when present, else global roll_no).
     """
     c = get_conn(path)
     try:
@@ -532,9 +746,10 @@ def job_boxes(job_id: int, path: str | None = None) -> list[dict]:
             d["box_wt"] = round(float(d.get("box_wt") or 0), 3)
             d["pieces"] = int(d.get("num_reels") or 0)
             rr = c.execute(
-                "SELECT r.roll_no FROM reels r JOIN carton_items ci ON ci.reel_id=r.id"
+                "SELECT r.roll_no, r.prod_seq FROM reels r JOIN carton_items ci ON ci.reel_id=r.id"
                 " WHERE ci.carton_id=? ORDER BY r.id", (d["id"],)).fetchall()
-            d["rolls"] = [x["roll_no"] for x in rr]
+            d["rolls"] = [int(x["prod_seq"]) if x["prod_seq"] is not None else int(x["roll_no"])
+                          for x in rr]
             out.append(d)
         return out
     finally:
@@ -899,8 +1114,12 @@ def next_carton_no(c: sqlite3.Connection) -> str:
     return carton_no_for(per, max(base, mx) + 1)
 
 
-def _alloc_box(c: sqlite3.Connection, period: str) -> tuple[str, int]:
-    """Allocate monthly box number transactionally; never reuses numbers."""
+def _alloc_box(c: sqlite3.Connection, period: str, product_id: int | None = None) -> tuple[str, int, int]:
+    """Allocate monthly box numbers: global + per-product display seq.
+
+    Returns (carton_no, global_seq, prod_seq). Global stays UNIQUE (QR);
+    prod_seq is the P0 per-product 1..N shown on the sticker.
+    """
     import re as _re
     seq = _alloc_seq(c, period, "box")
     mx = 0
@@ -913,7 +1132,10 @@ def _alloc_box(c: sqlite3.Connection, period: str) -> tuple[str, int]:
         seq = mx + 1
         c.execute("UPDATE monthly_counters SET last_no=? WHERE period=? AND kind='box'",
                   (seq, period))
-    return carton_no_for(period, seq), seq
+    cn = carton_no_for(period, seq)
+    pid = int(product_id) if product_id is not None else 0
+    pseq = _alloc_prod_seq(c, period, pid, "box")
+    return cn, seq, pseq
 
 
 def pack_weight_carton(job_id: int, gross_weight: float, shift: str = "DAY",
@@ -946,7 +1168,11 @@ def pack_weight_carton(job_id: int, gross_weight: float, shift: str = "DAY",
             if job["status"] != "open":
                 raise ValueError("Job is closed. Reopen it to pack boxes.")
             per = period or current_period()
-            cn, _seq = _alloc_box(c, per)
+            try:
+                _pid = job["product_id"]
+            except Exception:
+                _pid = None
+            cn, _seq, _pseq = _alloc_box(c, per, int(_pid) if _pid is not None else 0)
             r = c.execute("SELECT MAX(bundle_no) m FROM cartons WHERE job_id=?",
                           (job_id,)).fetchone()
             bn = (r["m"] or 0) + 1
@@ -954,15 +1180,15 @@ def pack_weight_carton(job_id: int, gross_weight: float, shift: str = "DAY",
             if w <= 0:
                 raise ValueError("Box weight too small to record (rounds to 0). Check scale.")
             cur = c.execute(
-                "INSERT INTO cartons(carton_no, job_id, bundle_no, box_period, num_reels,"
-                " total_gross, total_core, total_net, shift, customer, status, packed_at,"
+                "INSERT INTO cartons(carton_no, job_id, bundle_no, box_period, prod_seq, num_reels,"
+                " box_wt, total_gross, total_core, total_net, shift, customer, status, packed_at,"
                 " print_count, print_status)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?, 'Ready', ?, 0, 'pending')",
-                (cn, job_id, bn, per, 0, w, 0, w, shift,
+                " VALUES(?,?,?,?,?,?,0,?,?,?,?,?, 'Ready', ?, 0, 'pending')",
+                (cn, job_id, bn, per, _pseq, 0, w, 0, w, shift,
                  (customer or "").strip().upper(), now_iso()))
             cid = cur.lastrowid
             _audit(c, resolved, "pack_box", "carton", cid,
-                   f"{cn} J:{job['job_no']} period={per} bundle={bn} box_wt={w}")
+                   f"{cn} J:{job['job_no']} period={per} bundle={bn} prod_seq={_pseq} box_wt={w}")
             c.commit()
         except Exception:
             try:
@@ -1035,16 +1261,20 @@ def pack_next_box(job_id: int, gross_weight: float, box_weight: float,
                 raise ValueError(
                     "Box net <= 0. The box/tare plus cores exceed the measured box.")
             per = period or current_period()
-            cn, _seq = _alloc_box(c, per)
+            try:
+                _pid2 = job["product_id"]
+            except Exception:
+                _pid2 = None
+            cn, _seq, _pseq = _alloc_box(c, per, int(_pid2) if _pid2 is not None else 0)
             r = c.execute("SELECT MAX(bundle_no) m FROM cartons WHERE job_id=?",
                           (job_id,)).fetchone()
             bn = (r["m"] or 0) + 1
             cur = c.execute(
-                "INSERT INTO cartons(carton_no, job_id, bundle_no, box_period, num_reels,"
+                "INSERT INTO cartons(carton_no, job_id, bundle_no, box_period, prod_seq, num_reels,"
                 " box_wt, total_gross, total_core, total_net, shift, customer, status,"
                 " packed_at, print_count, print_status)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?, 'Ready', ?, 0, 'pending')",
-                (cn, job_id, bn, per, len(reels), bw, tg, tc, tn, shift,
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?, 'Ready', ?, 0, 'pending')",
+                (cn, job_id, bn, per, _pseq, len(reels), bw, tg, tc, tn, shift,
                  (customer or "").strip().upper(), now_iso()))
             cid = cur.lastrowid
             for rr in reels:
@@ -1052,7 +1282,7 @@ def pack_next_box(job_id: int, gross_weight: float, box_weight: float,
                           (cid, rr["id"]))
                 c.execute("UPDATE reels SET status='packed' WHERE id=?", (rr["id"],))
             _audit(c, resolved, "pack_box_reels", "carton", cid,
-                   f"{cn} J:{job['job_no']} period={per} reels={[x['id'] for x in reels]}"
+                   f"{cn} J:{job['job_no']} period={per} prod_seq={_pseq} reels={[x['id'] for x in reels]}"
                    f" rolls={[x['roll_no'] for x in reels]} tare={bw}"
                    f" gross={tg} net={tn}")
             c.commit()
@@ -1101,7 +1331,11 @@ def pack_carton(job_id: int, reel_ids: list[int], shift: str = "DAY",
             tc = round(sum(r["core"] for r in reels), 3)
             tn = round(sum(r["net"] for r in reels), 3)
             per = period or current_period()
-            cn, _seq = _alloc_box(c, per)
+            try:
+                _pid3 = job["product_id"]
+            except Exception:
+                _pid3 = None
+            cn, _seq, _pseq = _alloc_box(c, per, int(_pid3) if _pid3 is not None else 0)
             r = c.execute("SELECT MAX(bundle_no) m FROM cartons WHERE job_id=?",
                           (job_id,)).fetchone()
             bn = (r["m"] or 0) + 1
@@ -1109,18 +1343,18 @@ def pack_carton(job_id: int, reel_ids: list[int], shift: str = "DAY",
                 got = {(r["customer"] or "").strip().upper() for r in reels if "customer" in r.keys()}
                 customer = got.pop() if len(got) == 1 else ""
             cur = c.execute(
-                "INSERT INTO cartons(carton_no, job_id, bundle_no, box_period, num_reels,"
-                " total_gross, total_core, total_net, shift, customer, status, packed_at,"
+                "INSERT INTO cartons(carton_no, job_id, bundle_no, box_period, prod_seq, num_reels,"
+                " box_wt, total_gross, total_core, total_net, shift, customer, status, packed_at,"
                 " print_count, print_status)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?, 'Ready', ?, 0, 'pending')",
-                (cn, job_id, bn, per, len(reels), tg, tc, tn, shift,
+                " VALUES(?,?,?,?,?,?,0,?,?,?,?,?, 'Ready', ?, 0, 'pending')",
+                (cn, job_id, bn, per, _pseq, len(reels), tg, tc, tn, shift,
                  (customer or "").strip().upper(), now_iso()))
             cid = cur.lastrowid
             for r in reels:
                 c.execute("INSERT INTO carton_items(carton_id, reel_id) VALUES(?,?)", (cid, r["id"]))
                 c.execute("UPDATE reels SET status='packed' WHERE id=?", (r["id"],))
             _audit(c, resolved, "pack_carton_legacy", "carton", cid,
-                   f"{cn} J:{job['job_no']} reels={[x['id'] for x in reels]}")
+                   f"{cn} J:{job['job_no']} prod_seq={_pseq} reels={[x['id'] for x in reels]}")
             c.commit()
         except Exception:
             try:
@@ -1147,7 +1381,9 @@ def carton_detail(carton_id: int, path: str | None = None) -> dict:
             " WHERE ci.carton_id=? ORDER BY r.id", (carton_id,)).fetchall()
         d = dict(ct)
         d["reels"] = [dict(r) for r in reels]
-        d["rolls"] = [r["roll_no"] for r in d["reels"]]
+        # Floor reads per-product numbers (prod_seq) when present.
+        d["rolls"] = [int(r.get("prod_seq")) if r.get("prod_seq") is not None else int(r["roll_no"])
+                      for r in d["reels"]]
         d["box_wt"] = round(float(d.get("box_wt") or 0), 3)
         # Dispatch counts pieces as reels: a 2-reel box = 2 pieces.
         d["pieces"] = int(d.get("num_reels") or 0)
@@ -1171,9 +1407,10 @@ def ready_stock(job_id: int | None = None, path: str | None = None) -> list[dict
         out = []
         for r in rows:
             d = dict(r)
-            rr = c.execute("SELECT roll_no FROM reels r JOIN carton_items ci ON ci.reel_id=r.id"
+            rr = c.execute("SELECT r.roll_no, r.prod_seq FROM reels r JOIN carton_items ci ON ci.reel_id=r.id"
                            " WHERE ci.carton_id=? ORDER BY r.id", (d["id"],)).fetchall()
-            d["rolls"] = [x["roll_no"] for x in rr]
+            d["rolls"] = [int(x["prod_seq"]) if x["prod_seq"] is not None else int(x["roll_no"])
+                          for x in rr]
             d["box_wt"] = round(float(d.get("box_wt") or 0), 3)
             # Dispatch counts pieces as reels: a 2-reel box = 2 pieces.
             d["pieces"] = int(d.get("num_reels") or 0)
@@ -1187,16 +1424,16 @@ def ready_stock(job_id: int | None = None, path: str | None = None) -> list[dict
 def ready_stock_summary(path: str | None = None) -> dict:
     """Ready-stock totals per job in ONE aggregate query (no per-job reads).
 
-    Returns {job_id: {"boxes": n, "coils": n, "pieces": n|None}}. Pieces is
-    None when the job has no wrappers-per-reel count (legacy rows). Used by
-    the New dispatch order dialog so the picker shows live stock in
-    brackets without N extra round trips (matters on the LAN backend).
+    Returns {job_id: {"boxes": n, "coils": n, "pieces": n|None, "weight_kg": f}}.
+    Pieces is None when the job has no wrappers-per-reel count (kg product);
+    weight_kg is the Ready net-kg total for kg targets.
     """
     c = get_conn(path)
     try:
         rows = c.execute(
             "SELECT ct.job_id AS job_id, COUNT(*) AS boxes,"
             " COALESCE(SUM(ct.num_reels), 0) AS coils,"
+            " COALESCE(SUM(ct.total_net), 0) AS weight_kg,"
             " j.wrappers_per_reel AS wpr"
             " FROM cartons ct JOIN jobs j ON j.id=ct.job_id"
             " WHERE ct.status='Ready' GROUP BY ct.job_id").fetchall()
@@ -1208,8 +1445,13 @@ def ready_stock_summary(path: str | None = None) -> dict:
                 wpr = int(r["wpr"] or 0)
             except (TypeError, ValueError):
                 wpr = 0
+            try:
+                wkg = round(float(r["weight_kg"] or 0), 3)
+            except (TypeError, ValueError):
+                wkg = 0.0
             out[jid] = {"boxes": int(r["boxes"] or 0), "coils": coils,
-                        "pieces": coils * wpr if wpr > 0 else None}
+                        "pieces": coils * wpr if wpr > 0 else None,
+                        "weight_kg": wkg}
         return out
     finally:
         c.close()
@@ -1269,33 +1511,37 @@ def create_dispatch_order(customer: str, job_id: int, required_bundles: int | No
                           order_date: str | None = None, path: str | None = None,
                           actor: dict | None = None,
                           required_pieces: int | None = None,
-                          customer_po: str = "", batch_no: str = "",
-                          piece_unit: str = "wrapper") -> dict:
+                          customer_po: str = "", po_date: str | None = None,
+                          batch_no: str = "",
+                          piece_unit: str = "wrapper",
+                          required_weight_kg: float | None = None) -> dict:
     """Create a loading order.
 
-    New orders count WRAPPERS (the client's "pieces"): `required_pieces` is
-    the wrapper target and loaded pieces are each box's coil count multiplied
-    by the job's `wrappers_per_reel`. Scanning stops once the target is
-    reached; the crossing box is accepted whole (a 3-coil box can overshoot
-    the target and that is flagged in the UI). Legacy piece orders created
-    before this change carry `piece_unit='reel'` (one linked reel = one
-    piece) and keep their old arithmetic. Legacy bundle orders created with
-    `required_bundles` keep the exact bundle-count behavior.
+    Three target kinds (exactly one required):
+    - `required_pieces` wrappers (piece products, needs wrappers_per_reel),
+    - `required_weight_kg` net-kg (kg products, sums loaded total_net),
+    - `required_bundles` legacy box count.
 
-    `customer_po` is the client PO printed on the wide sticker; `batch_no`
-    is optional (blank = derive SVSF/MON-DD from the coil mfg date at print
-    time). Exactly one of required_pieces / required_bundles must be given.
+    `customer_po` prints on the wide sticker; `po_date` (YYYY-MM-DD, optional)
+    is the client PO date set at order creation and printed beside the PO.
+    `batch_no` optional (blank = derive SVSF/MON-DD at print time).
     """
+    import re as _re
     resolved = _dispatch_actor(path)
     if not (customer or "").strip():
         raise ValueError("Customer name required")
-    if required_pieces is None and required_bundles is None:
-        raise ValueError("Provide required_pieces (pieces) or required_bundles (legacy)")
+    given = sum(1 for v in (required_pieces, required_bundles, required_weight_kg)
+                if v is not None)
+    if given == 0:
+        raise ValueError("Provide required_pieces (pieces), required_weight_kg (kg), or required_bundles (legacy)")
+    if given > 1:
+        raise ValueError("Give only one target: pieces, kg, or boxes — not several")
     unit = str(piece_unit or "wrapper").strip().lower()
-    if unit not in ("wrapper", "reel"):
-        raise ValueError("Piece unit must be 'wrapper' or 'reel'")
+    if unit not in ("wrapper", "reel", "kg"):
+        raise ValueError("Piece unit must be 'wrapper', 'reel' or 'kg'")
     req_p: int | None = None
     req_b: int | None = None
+    req_kg: float | None = None
     if required_pieces is not None:
         try:
             req_p = int(required_pieces)
@@ -1304,6 +1550,16 @@ def create_dispatch_order(customer: str, job_id: int, required_bundles: int | No
         if not math.isfinite(float(req_p)) or req_p <= 0:
             raise ValueError("Required pieces must be > 0")
         req_b = 0
+    elif required_weight_kg is not None:
+        try:
+            req_kg = float(required_weight_kg)
+        except (TypeError, ValueError):
+            raise ValueError("Required kg must be a number > 0")
+        if not math.isfinite(req_kg) or req_kg <= 0:
+            raise ValueError("Required kg must be > 0")
+        req_kg = round(req_kg, 3)
+        req_b = 0
+        unit = "kg"
     else:
         try:
             req_b = int(required_bundles)  # type: ignore[arg-type]
@@ -1318,6 +1574,10 @@ def create_dispatch_order(customer: str, job_id: int, required_bundles: int | No
         raise ValueError("Customer PO must be 64 characters or fewer")
     if len(batch) > 64:
         raise ValueError("Batch number must be 64 characters or fewer")
+    pod = (po_date or "").strip() if po_date else ""
+    if pod:
+        if not _re.fullmatch(r"\d{4}-\d{2}-\d{2}", pod):
+            raise ValueError("PO date must be YYYY-MM-DD")
     c = get_conn(path)
     c.isolation_level = None
     try:
@@ -1335,17 +1595,21 @@ def create_dispatch_order(customer: str, job_id: int, required_bundles: int | No
             seq = _alloc_order_seq(c)
             on = f"DO-{seq:04d}"
             cur = c.execute(
-                "INSERT INTO dispatch_orders(order_no, customer, customer_po, batch_no,"
-                " job_id, required_bundles, required_pieces, piece_unit, status,"
+                "INSERT INTO dispatch_orders(order_no, customer, customer_po, po_date, batch_no,"
+                " job_id, required_bundles, required_pieces, required_weight_kg, piece_unit, status,"
                 " order_date, created_at)"
-                " VALUES(?,?,?,?,?,?,?,?, 'loading', ?, ?)",
-                (on, customer.strip().upper(), po, batch, job_id, req_b, req_p,
+                " VALUES(?,?,?,?,?,?,?,?,?,?, 'loading', ?, ?)",
+                (on, customer.strip().upper(), po, pod, batch, job_id, req_b, req_p, req_kg,
                  unit, order_date or today_iso(), now_iso()))
             oid = cur.lastrowid
-            need = (f"pieces={req_p} ({unit})" if req_p is not None
-                    else f"bundles={req_b}")
+            if req_p is not None:
+                need = f"pieces={req_p} ({unit})"
+            elif req_kg is not None:
+                need = f"kg={req_kg}"
+            else:
+                need = f"bundles={req_b}"
             _audit(c, resolved, "create_order", "order", oid,
-                   f"{on} J:{job['job_no']} need={need} po={po or '—'}")
+                   f"{on} J:{job['job_no']} need={need} po={po or '—'} po_date={pod or '—'}")
             c.execute("COMMIT")
         except Exception:
             try:
@@ -1382,7 +1646,12 @@ def _piece_counts(items: list, unit: str = "reel",
 
 
 def _unit_word(unit: str) -> str:
-    return "pcs" if str(unit or "reel").lower() == "wrapper" else "coils"
+    u = str(unit or "reel").lower()
+    if u == "wrapper":
+        return "pcs"
+    if u == "kg":
+        return "kg"
+    return "coils"
 
 
 def list_orders(status: str | None = None, path: str | None = None) -> list[dict]:
@@ -1408,12 +1677,23 @@ def list_orders(status: str | None = None, path: str | None = None) -> list[dict
             d["loaded"] = len(items)          # loaded cartons/bundles
             d["loaded_cartons"] = len(items)
             d["loaded_pieces"] = _piece_counts(items, unit, wpr)
+            d["loaded_net"] = round(sum(float(x["total_net"] or 0) for x in items), 3)
             rp = d.get("required_pieces")
+            rq = d.get("required_weight_kg")
             if rp is not None:
                 rp = int(rp)
                 d["required_pieces"] = rp
                 d["remaining_pieces"] = max(0, rp - d["loaded_pieces"])
                 d["remaining"] = d["remaining_pieces"]  # legacy alias, pieces here
+            elif rq is not None:
+                try:
+                    rq = float(rq)
+                except (TypeError, ValueError):
+                    rq = 0.0
+                d["required_weight_kg"] = rq
+                d["remaining_weight_kg"] = round(max(0.0, rq - d["loaded_net"]), 3)
+                d["remaining"] = d["remaining_weight_kg"]
+                d["remaining_pieces"] = 0
             else:
                 d["remaining_pieces"] = 0
                 d["remaining"] = max(0, int(d["required_bundles"]) - len(items))
@@ -1446,6 +1726,7 @@ def order_progress(order_id: int, path: str | None = None) -> dict:
         d["loaded_cartons"] = len(items)
         d["loaded_pieces"] = _piece_counts(items, unit, wpr)
         rp = d.get("required_pieces")
+        rq = d.get("required_weight_kg")
         if rp is not None:
             rp = int(rp)
             d["required_pieces"] = rp
@@ -1453,10 +1734,24 @@ def order_progress(order_id: int, path: str | None = None) -> dict:
             d["remaining"] = d["remaining_pieces"]  # legacy alias, pieces here
             d["pieces_pct"] = (round(d["loaded_pieces"] * 100.0 / rp, 1)
                                if rp > 0 else 0.0)
+            d["weight_pct"] = 0.0
+        elif rq is not None:
+            try:
+                rq = float(rq)
+            except (TypeError, ValueError):
+                rq = 0.0
+            d["required_weight_kg"] = rq
+            d["loaded_net"] = round(sum(float(x["total_net"] or 0) for x in items), 3)
+            d["remaining_weight_kg"] = round(max(0.0, rq - d["loaded_net"]), 3)
+            d["remaining"] = d["remaining_weight_kg"]
+            d["remaining_pieces"] = 0
+            d["pieces_pct"] = 0.0
+            d["weight_pct"] = (round(d["loaded_net"] * 100.0 / rq, 1) if rq > 0 else 0.0)
         else:
             d["remaining_pieces"] = 0
             d["remaining"] = max(0, int(d["required_bundles"]) - len(items))
             d["pieces_pct"] = 0.0
+            d["weight_pct"] = 0.0
         d["loaded_net"] = round(sum(x["total_net"] for x in items), 3)
         return d
     finally:
@@ -1495,11 +1790,17 @@ def _build_dispatch_slip(c: sqlite3.Connection, o: dict) -> dict:
     rows = _dispatch_slip_rows(c, o["id"], unit, wpr)
     rp = o.get("required_pieces")
     rp = int(rp) if rp is not None else None
+    rq = o.get("required_weight_kg")
+    try:
+        rq = float(rq) if rq is not None else None
+    except (TypeError, ValueError):
+        rq = None
     return {
         "order_id": o["id"],
         "order_no": o["order_no"],
         "customer": o["customer"],
         "customer_po": o.get("customer_po") or "",
+        "po_date": o.get("po_date") or "",
         "batch_no": o.get("batch_no") or "",
         "job_no": o.get("job_no"),
         "job_name": o.get("job_name"),
@@ -1507,6 +1808,7 @@ def _build_dispatch_slip(c: sqlite3.Connection, o: dict) -> dict:
         "pieces_word": _unit_word(unit),
         "required_bundles": int(o.get("required_bundles") or 0),
         "required_pieces": rp,
+        "required_weight_kg": rq,
         "loaded_boxes": len(rows),
         "loaded_pieces": sum(r["pieces"] for r in rows),
         "loaded_net": round(sum(r["net"] for r in rows), 3),
@@ -1657,6 +1959,7 @@ def scan_into_order(order_id: int, scan_text: str, path: str | None = None,
                 raise ValueError(f"Box {bare_carton_no(ct['carton_no'])} is already loaded in another order.")
             items = _order_items(c, order_id)
             rp = o["required_pieces"]
+            rq = o["required_weight_kg"]
             unit = str(o["piece_unit"] or "reel")
             job = c.execute("SELECT wrappers_per_reel FROM jobs WHERE id=?",
                             (o["job_id"],)).fetchone()
@@ -1666,6 +1969,7 @@ def scan_into_order(order_id: int, scan_text: str, path: str | None = None,
                     "This order counts wrappers, but its job has no wrappers-per-reel "
                     "count. Set it on the product/job before loading boxes.")
             pieces_before = _piece_counts(items, unit, wpr)
+            net_before = round(sum(float(x["total_net"] or 0) for x in items), 3)
             if rp is not None:
                 # Piece-based order: stop once the target is reached. The
                 # scan that crosses the target is accepted whole (a 3-coil
@@ -1680,6 +1984,15 @@ def scan_into_order(order_id: int, scan_text: str, path: str | None = None,
                     raise ValueError(
                         f"Box {bare_carton_no(ct['carton_no'])} has no linked reels — it cannot load on a"
                         " piece-based order.")
+            elif rq is not None:
+                try:
+                    rq = float(rq)
+                except (TypeError, ValueError):
+                    raise ValueError("Order kg target invalid — contact admin")
+                if net_before >= rq:
+                    raise ValueError(
+                        f"Order already full ({net_before:.3f}/{rq:.3f} kg loaded)."
+                        " Complete it first.")
             elif len(items) >= int(o["required_bundles"]):
                 raise ValueError(f"Order already full ({o['required_bundles']} bundles). Complete it first.")
             next_box_no = len(items) + 1
@@ -1693,12 +2006,18 @@ def scan_into_order(order_id: int, scan_text: str, path: str | None = None,
             loaded_now = pieces_before + (
                 int(ct["num_reels"] or 0) * wpr if unit == "wrapper"
                 else int(ct["num_reels"] or 0))
+            loaded_net_now = round(net_before + float(ct["total_net"] or 0), 3)
+            if rq is not None:
+                audit_extra = f" ({loaded_net_now:.3f}/{float(rq):.3f} kg)"
+            elif rp is not None:
+                audit_extra = f" ({loaded_now:,}/{int(rp):,} {_unit_word(unit)})"
+            else:
+                audit_extra = ""
             _audit(c, resolved, "scan", "order", order_id,
-                   f"{cn} loaded as client box {next_box_no}"
-                   + (f" ({loaded_now:,}/{int(rp):,} {_unit_word(unit)})"
-                      if rp is not None else ""))
+                   f"{cn} loaded as client box {next_box_no}" + audit_extra)
             ct["client_box_no"] = next_box_no
             ct["loaded_pieces"] = loaded_now
+            ct["loaded_net"] = loaded_net_now
             ct["piece_unit"] = unit
             c.execute("COMMIT")
         except Exception:
@@ -1753,10 +2072,9 @@ def complete_dispatch(order_id: int, path: str | None = None,
                       actor: dict | None = None) -> dict:
     """Complete a loading order once the target is reached.
 
-    Piece-based orders complete when loaded pieces >= required pieces (the
-    last box may overshoot; partial loads still cannot complete). Legacy
-    bundle orders keep the exact count: loaded must equal required.
-    Completed/cancelled orders cannot be completed again."""
+    Piece orders complete when loaded pieces >= required; kg orders when
+    loaded net >= required kg (crossing box accepted whole); bundle orders
+    keep the exact count. Completed/cancelled orders cannot be completed again."""
     resolved = _dispatch_actor(path)
     c = get_conn(path)
     c.isolation_level = None
@@ -1772,6 +2090,7 @@ def complete_dispatch(order_id: int, path: str | None = None,
             if not items:
                 raise ValueError("Nothing scanned yet. Scan at least 1 box.")
             rp = o["required_pieces"]
+            rq = o["required_weight_kg"]
             unit = str(o["piece_unit"] or "reel")
             job = c.execute("SELECT wrappers_per_reel FROM jobs WHERE id=?",
                             (o["job_id"],)).fetchone()
@@ -1784,6 +2103,17 @@ def complete_dispatch(order_id: int, path: str | None = None,
                         f"Partial load: {pieces:,}/{rp:,} {_unit_word(unit)} scanned."
                         " Scan the remaining boxes or remove this order's extras first.")
                 done_note = f"{pieces:,}/{rp:,} {_unit_word(unit)}"
+            elif rq is not None:
+                try:
+                    rq = float(rq)
+                except (TypeError, ValueError):
+                    raise ValueError("Order kg target invalid — contact admin")
+                loaded_net = round(sum(float(x["total_net"] or 0) for x in items), 3)
+                if loaded_net < rq:
+                    raise ValueError(
+                        f"Partial load: {loaded_net:.3f}/{rq:.3f} kg scanned."
+                        " Scan the remaining boxes or remove this order's extras first.")
+                done_note = f"{loaded_net:.3f}/{rq:.3f} kg"
             else:
                 if len(items) != int(o["required_bundles"]):
                     raise ValueError(
@@ -1958,12 +2288,16 @@ def client_label_detail(order_id: int, carton_id: int,
             raise ValueError("Box is not loaded in this order.")
         coils = c.execute(
             "SELECT r.* FROM reels r JOIN carton_items ci ON ci.reel_id=r.id"
-            " WHERE ci.carton_id=? ORDER BY r.roll_no", (carton_id,)).fetchall()
+            " WHERE ci.carton_id=? ORDER BY r.id", (carton_id,)).fetchall()
         wpr = int(o["wrappers_per_reel"] or 0)
         rows = []
         for r in coils:
+            try:
+                _rn = int(r["prod_seq"]) if r["prod_seq"] is not None else int(r["roll_no"])
+            except (TypeError, ValueError):
+                _rn = int(r["roll_no"])
             rows.append({
-                "roll_no": int(r["roll_no"]),
+                "roll_no": _rn,
                 "pieces": wpr,
                 "gross": float(r["gross"]),
                 "core": float(r["core"]),
@@ -1985,6 +2319,7 @@ def client_label_detail(order_id: int, carton_id: int,
             "order_no": o["order_no"],
             "customer": o["customer"],
             "customer_po": o["customer_po"] or "",
+            "po_date": o["po_date"] if "po_date" in o.keys() else "",
             "batch_no": batch,
             "job_no": o["job_no"],
             "job_name": o["job_name"],
@@ -2028,6 +2363,147 @@ def daily_summary(day: str | None = None, path: str | None = None) -> dict:
         }
     finally:
         c.close()
+
+
+# ---------- daily report (day-scoped line items across all jobs) ----------
+def day_report(day: str | None = None, path: str | None = None) -> dict:
+    """Every reel weighed + every box packed on one day, across ALL jobs.
+
+    Read-only (never writes). Reel rows: `reels JOIN jobs WHERE
+    date(created_at)=day` with month-qualified roll identity via the SAME
+    helper as get_slip (`_roll_label`). Box rows: `cartons JOIN jobs WHERE
+    date(packed_at)=day` with carton_no / bundle_no / num_reels /
+    total_gross and the factual linked rolls (carton_items membership only,
+    nothing inferred). Totals keep reel and box weights SEPARATE — reel
+    weights are never merged into box weights (same rule as get_slip).
+    """
+    import re as _re
+    day = day or today_iso()
+    if not _re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        raise ValueError("day must be YYYY-MM-DD")
+    from .slip_pdf import _roll_label
+    c = get_conn(path)
+    try:
+        reels = [dict(r) for r in c.execute(
+            "SELECT r.*, j.job_no AS job_no, j.job_name AS job_name"
+            " FROM reels r JOIN jobs j ON j.id=r.job_id"
+            " WHERE date(r.created_at)=? ORDER BY j.job_no, r.roll_no, r.id",
+            (day,)).fetchall()]
+        cartons = [dict(r) for r in c.execute(
+            "SELECT ct.*, j.job_no AS job_no, j.job_name AS job_name"
+            " FROM cartons ct JOIN jobs j ON j.id=ct.job_id"
+            " WHERE date(ct.packed_at)=? ORDER BY j.job_no, ct.bundle_no, ct.id",
+            (day,)).fetchall()]
+
+        # Factual carton_items links only; a bare roll_no is never displayed
+        # alone (labels are month-qualified). No membership is inferred.
+        reel_to_carton: dict[int, str] = {}
+        for ci in c.execute(
+                "SELECT ci.reel_id, ct.carton_no"
+                " FROM carton_items ci JOIN cartons ct ON ct.id=ci.carton_id"
+                " JOIN reels r ON r.id=ci.reel_id"
+                " WHERE date(r.created_at)=?", (day,)).fetchall():
+            reel_to_carton[int(ci["reel_id"])] = ci["carton_no"]
+
+        carton_to_rolls: dict[int, list[int]] = {}
+        carton_to_labels: dict[int, list[str]] = {}
+        for ci in c.execute(
+                "SELECT ci.carton_id, r.roll_no, r.roll_period, r.roll_code,"
+                " j.job_no AS job_no"
+                " FROM carton_items ci JOIN cartons ct ON ct.id=ci.carton_id"
+                " JOIN reels r ON r.id=ci.reel_id"
+                " JOIN jobs j ON j.id=ct.job_id"
+                " WHERE date(ct.packed_at)=? ORDER BY ci.carton_id, r.id",
+                (day,)).fetchall():
+            carton_to_rolls.setdefault(int(ci["carton_id"]), []).append(int(ci["roll_no"]))
+            carton_to_labels.setdefault(int(ci["carton_id"]), []).append(
+                _roll_label(dict(ci), ci["job_no"]))
+        for v in carton_to_rolls.values():
+            v.sort()
+    finally:
+        c.close()
+
+    reel_rows: list[dict] = []
+    for r in reels:
+        reel_rows.append({
+            "kind": "Reel",
+            "roll_no": int(r["roll_no"]),
+            "roll_period": (r.get("roll_period") or ""),
+            "roll_code": (r.get("roll_code") or ""),
+            "roll_label": _roll_label(r, r["job_no"]),
+            "job_no": int(r["job_no"]),
+            "job_name": (r.get("job_name") or ""),
+            "num_reels": 1,
+            "weight_only": False,
+            "gross": round(float(r["gross"]), 3),
+            "core": round(float(r["core"]), 3),
+            "net": round(float(r["net"]), 3),
+            "status": r.get("status", ""),
+            "carton_no": reel_to_carton.get(int(r["id"]), ""),
+        })
+
+    box_rows: list[dict] = []
+    for ct in cartons:
+        linked_roll_nos = carton_to_rolls.get(int(ct["id"]), [])
+        linked = bool(linked_roll_nos) or int(ct.get("num_reels") or 0) != 0
+        stored_gross = round(float(ct["total_gross"]), 3)
+        box_rows.append({
+            "kind": "Box",
+            "carton_no": ct["carton_no"],
+            "bundle_no": int(ct["bundle_no"]),
+            "box_period": (ct.get("box_period") or ""),
+            "num_reels": int(ct.get("num_reels") or 0),
+            "weight_only": not linked,
+            "linked": linked,
+            "job_no": int(ct["job_no"]),
+            "job_name": (ct.get("job_name") or ""),
+            "rolls": ",".join(str(n) for n in linked_roll_nos),
+            "roll_refs": ", ".join(carton_to_labels.get(int(ct["id"]), [])),
+            "gross": stored_gross,
+            "core": 0.0,
+            "net": 0.0,
+            "status": ct.get("status", ""),
+            "note": ("legacy reel-linked box" if linked
+                     else "independent weighed box"),
+        })
+
+    # Totals stay separate: reels counted once from the reels table; boxes
+    # summed from stored carton weights. Box weights are never added to
+    # reel totals.
+    rg = round(sum(r["gross"] for r in reel_rows), 3)
+    rc = round(sum(r["core"] for r in reel_rows), 3)
+    rn = round(sum(r["net"] for r in reel_rows), 3)
+    bg = round(sum(b["gross"] for b in box_rows), 3)
+
+    by_job: dict[int, dict] = {}
+    for r in reel_rows:
+        j = by_job.setdefault(r["job_no"], {
+            "job_no": r["job_no"], "job_name": r["job_name"],
+            "reels": 0, "reel_net": 0.0, "boxes": 0, "box_gross": 0.0})
+        j["reels"] += 1
+        j["reel_net"] = round(j["reel_net"] + r["net"], 3)
+    for b in box_rows:
+        j = by_job.setdefault(b["job_no"], {
+            "job_no": b["job_no"], "job_name": b["job_name"],
+            "reels": 0, "reel_net": 0.0, "boxes": 0, "box_gross": 0.0})
+        j["boxes"] += 1
+        j["box_gross"] = round(j["box_gross"] + b["gross"], 3)
+
+    return {
+        "day": day,
+        "reel_rows": reel_rows,
+        "box_rows": box_rows,
+        "totals": {
+            "reels": len(reel_rows),
+            "reel_gross": rg,
+            "reel_core": rc,
+            "reel_net": rn,
+            "boxes": len(box_rows),
+            "box_gross": bg,
+        },
+        "by_job": [by_job[k] for k in sorted(by_job)],
+        "rows": reel_rows + box_rows,
+    }
 
 
 def packing_slip_rows(job_id: int, path: str | None = None) -> tuple[dict, list[dict]]:

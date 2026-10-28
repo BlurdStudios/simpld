@@ -66,7 +66,7 @@ state resets. Factory floor: plain `python3 run.py` (no watcher).
 1. **Packaging — nested Reel packing / Box packing workspaces (no weight auto-detect)**
    - **Reel packing** — set the session core weight once, weigh one reel → SAVE + PRINT **Type-1 reel sticker (NO QR)** — bordered table (Company + J:no, Job Name, Date/No of Reels, No of Pieces, Gross/Core/Net, big bare Roll No#). No customer, shift or supervisor on the sticker. The preview under the weigh card shows reel art here (box art in Box packing). Stick it on the reel, then the reel waits loose for Box packing.
    - **Box packing** — set the session box/tare weight once (it applies to every box). Weigh the packed box: the next loose reels in production order are consumed into it, and PACK creates the box **without printing**. The Type-2 box sticker (WITH QR) is queued and printed one-by-one from the sticker queue (reprint available); it shows `Bundle:n · Rolls:24,25` and the bare box number once under the QR. QR = `VASAVI:<box code>`; the scanner accepts the QR or the plain code + Enter.
-   - Fixed stock for Type-1/Type-2: 4 x 3 in Citizen media (101.6 x 76.2 mm @203dpi). No size options.
+   - Fixed stock for Type-1/Type-2: 100 x 50 mm Citizen media (2:1 @203dpi). No size options.
    - Note: the box layout is inferred from the reel-sticker photo — send a box-sticker photo to correct it.
    - The loose-reel list is display-only (no checkboxes / Select all / Clear): Box packing always consumes the next loose reels in production order. PACK validates the gross weight, the session box/tare and the reels-per-box limit before writing anything.
 2. **Ready Stock** — boxes with status Ready, listed by bare box number. No customer shown. Search by number, code or job; reprint sticker, Packing Slip (A4 match of the old paper slip: left data table, right print preview, office-printer box + Save PDF). **Scan QR to verify**: scan any box (Ready or dispatched) to see its batch + box details and dispatch status.
@@ -160,7 +160,7 @@ Design constraints that are deliberate — do not "fix" them without re-checking
 No Devices dialog, no port dropdown. Simpl'd works out the hardware itself: it
 probes every serial port for a weigh machine that answers with a parseable
 weight frame, and picks the configured label printer out of the OS printer list
-(the 4x3 Citizen on packaging; the wide client-sticker printer on dispatch).
+(the 100x50 Citizen on packaging; the wide client-sticker printer on dispatch).
 The QR scanner is a keyboard wedge and needs no configuration. Each station page
 shows clickable device pills; click one to re-detect it, or press Refresh.
 
@@ -176,7 +176,7 @@ it never silently falls back to a mock scale. Full detail in
   stale or 0.000 kg value presented as measured)
 - `factory/hardware/qtprint.py` — real label printers through their installed
   OS driver via Qt (QPrinter/QPainter, zero margins). Type-1/Type-2 use the
-  fixed 101.6 x 76.2 mm Citizen stock; Type-3 renders a 210 mm-wide sticker
+  fixed 100 x 50 mm Citizen stock; Type-3 renders a 210 mm-wide sticker
   whose height follows the coil count and requires that exact custom paper
   size on the dispatch printer. No EPL/ZPL commands.
 - `factory/hardware/mock.py` — MockEssaeDS215, MockCitizenCLS621 (file log),

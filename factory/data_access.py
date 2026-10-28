@@ -252,25 +252,29 @@ def parse_scan(text: str) -> str:
 # Small input normalizer (UI passes raw text; server needs real ints)
 # --------------------------------------------------------------------------
 
-def _wrappers_int(value: Any) -> int:
-    """Strict positive int for wrappers/reel, mirroring services' message."""
-    if isinstance(value, bool) or value is None:
+def _wrappers_int(value: Any) -> int | None:
+    """Optional positive int for wrappers/reel; blank/None = kg product (NULL)."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
         raise ValueError(
-            "Pieces/reel must be a positive whole number (e.g. 16500)")
+            "Pieces/reel must be a positive whole number (e.g. 16500) or blank for kg")
     if isinstance(value, float):
         if not value.is_integer():
             raise ValueError(
-                "Pieces/reel must be a positive whole number (e.g. 16500)")
+                "Pieces/reel must be a positive whole number (e.g. 16500) or blank for kg")
         value = int(value)
     if isinstance(value, str):
         t = value.strip()
+        if t == "":
+            return None
         if not t.isdigit():
             raise ValueError(
-                "Pieces/reel must be a positive whole number (e.g. 16500)")
+                "Pieces/reel must be a positive whole number (e.g. 16500) or blank for kg")
         value = int(t)
     if not isinstance(value, int) or value <= 0:
         raise ValueError(
-            "Pieces/reel must be a positive whole number (e.g. 16500)")
+            "Pieces/reel must be a positive whole number (e.g. 16500) or blank for kg")
     return value
 
 
@@ -352,6 +356,20 @@ def set_job_status(job_id: int, status: str) -> None:
         return
     from . import services as _svc
     _svc.set_job_status(job_id, status)
+
+
+def set_job_targets(job_id: int, target_reels=None, target_boxes=None,
+                    target_weight_kg=None, target_pieces=None) -> dict:
+    """Set packaging targets for a job (any combo; None clears)."""
+    if backend() == "lan":
+        return _lan_client().set_job_targets(
+            job_id, target_reels=target_reels, target_boxes=target_boxes,
+            target_weight_kg=target_weight_kg, target_pieces=target_pieces)
+    from . import services as _svc
+    return _svc.set_job_targets(job_id, target_reels=target_reels,
+                                target_boxes=target_boxes,
+                                target_weight_kg=target_weight_kg,
+                                target_pieces=target_pieces)
 
 
 def delete_job(job_id: int) -> None:
@@ -524,19 +542,29 @@ def carton_verify(scan_text: str) -> dict | None:
 # Read-only predictions / history / summary (actual backend formats)
 # --------------------------------------------------------------------------
 
-def predict_next_reel_seq() -> int:
-    """Next reel sequence number (int on both backends)."""
+def predict_next_reel_seq(product_id: int | None = None, job_id: int | None = None) -> int:
+    """Next reel sequence: per-product when job/product given (P0 sticker), else global."""
     if backend() == "lan":
-        return int(_lan_client().predict_next_reel_seq()["next_seq"])
+        args: dict = {}
+        if product_id is not None:
+            args["product_id"] = int(product_id)
+        if job_id is not None:
+            args["job_id"] = int(job_id)
+        return int(_lan_client().predict_next_reel_seq(args)["next_seq"])
     from . import services as _svc
-    return int(_svc.predict_next_reel_seq())
+    return int(_svc.predict_next_reel_seq(product_id=product_id, job_id=job_id))
 
 
-def predict_next_box_seq() -> int:
+def predict_next_box_seq(product_id: int | None = None, job_id: int | None = None) -> int:
     if backend() == "lan":
-        return int(_lan_client().predict_next_box_seq()["next_seq"])
+        args: dict = {}
+        if product_id is not None:
+            args["product_id"] = int(product_id)
+        if job_id is not None:
+            args["job_id"] = int(job_id)
+        return int(_lan_client().predict_next_box_seq(args)["next_seq"])
     from . import services as _svc
-    return int(_svc.predict_next_box_seq())
+    return int(_svc.predict_next_box_seq(product_id=product_id, job_id=job_id))
 
 
 def production_history(limit: int = 200) -> list:
@@ -564,21 +592,25 @@ def create_dispatch_order(customer: str, job_id: int,
                           required_bundles: int | None = None,
                           order_date: str | None = None,
                           required_pieces: int | None = None,
-                          customer_po: str = "", batch_no: str = "",
-                          piece_unit: str = "wrapper") -> dict:
-    """New orders count wrappers; legacy callers keep required_bundles exact."""
+                          customer_po: str = "", po_date: str | None = None,
+                          batch_no: str = "",
+                          piece_unit: str = "wrapper",
+                          required_weight_kg: float | None = None) -> dict:
+    """New orders count wrappers/kg; legacy callers keep required_bundles exact."""
     if backend() == "lan":
         return _lan_client().create_dispatch_order(
             customer, job_id, required_bundles, order_date=order_date,
             required_pieces=required_pieces, customer_po=customer_po,
-            batch_no=batch_no, piece_unit=piece_unit)
+            po_date=po_date, batch_no=batch_no, piece_unit=piece_unit,
+            required_weight_kg=required_weight_kg)
     from . import services as _svc
     return _svc.create_dispatch_order(customer, job_id, required_bundles,
                                       order_date=order_date,
                                       required_pieces=required_pieces,
-                                      customer_po=customer_po,
+                                      customer_po=customer_po, po_date=po_date,
                                       batch_no=batch_no,
-                                      piece_unit=piece_unit)
+                                      piece_unit=piece_unit,
+                                      required_weight_kg=required_weight_kg)
 
 
 def scan_into_order(order_id: int, scan_text: str) -> dict:
@@ -654,6 +686,14 @@ def daily_summary(day: str | None = None) -> dict:
         return _lan_client().daily_summary(day)
     from . import services as _svc
     return _svc.daily_summary(day)
+
+
+def day_report(day: str | None = None) -> dict:
+    """Day-scoped line items (reels + boxes) across all jobs. Read-only."""
+    if backend() == "lan":
+        return _lan_client().day_report(day)
+    from . import services as _svc
+    return _svc.day_report(day)
 
 
 def slip_data(job_id: int) -> dict:

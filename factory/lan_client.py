@@ -110,8 +110,18 @@ class LanClient:
     def login(self, username: str, password: str) -> dict:
         """Authenticate against the server DB. Stores the session token."""
         self._token = None
-        data = self._raw("login", {"username": username, "password": password},
-                         with_token=False)
+        try:
+            from factory import license as _LIC
+            sid = _LIC.station_id()
+            sfp = _LIC.machine_fingerprint()
+        except Exception:
+            sid, sfp = None, None
+        args: dict = {"username": username, "password": password}
+        if sid:
+            args["station_id"] = sid
+        if sfp:
+            args["station_fp"] = sfp
+        data = self._raw("login", args, with_token=False)
         tok = data.get("session_token")
         if not tok:
             raise LanAuthError("Login did not return a session.")
@@ -255,11 +265,11 @@ class LanClient:
     def carton_verify(self, scan_text: str) -> dict | None:
         return self.call("carton_verify", {"scan_text": scan_text})
 
-    def predict_next_reel_seq(self) -> dict:
-        return self.call("predict_next_reel_seq")
+    def predict_next_reel_seq(self, args: dict | None = None) -> dict:
+        return self.call("predict_next_reel_seq", args or {})
 
-    def predict_next_box_seq(self) -> dict:
-        return self.call("predict_next_box_seq")
+    def predict_next_box_seq(self, args: dict | None = None) -> dict:
+        return self.call("predict_next_box_seq", args or {})
 
     def todays_reels(self) -> list:
         return self.call("todays_reels")
@@ -290,6 +300,12 @@ class LanClient:
         if day:
             args["day"] = day
         return self.call("daily_summary", args)
+
+    def day_report(self, day: str | None = None) -> dict:
+        args: dict = {}
+        if day:
+            args["day"] = day
+        return self.call("day_report", args)
 
     def get_slip(self, job_id: int) -> dict:
         return self.call("get_slip", {"job_id": job_id})
@@ -325,6 +341,20 @@ class LanClient:
                        request_id: str | None = None) -> dict:
         return self.call("set_job_status", {"job_id": job_id, "status": status},
                          request_id=request_id)
+
+    def set_job_targets(self, job_id: int, target_reels=None, target_boxes=None,
+                        target_weight_kg=None, target_pieces=None,
+                        request_id: str | None = None) -> dict:
+        args: dict = {"job_id": job_id}
+        if target_reels is not None:
+            args["target_reels"] = target_reels
+        if target_boxes is not None:
+            args["target_boxes"] = target_boxes
+        if target_weight_kg is not None:
+            args["target_weight_kg"] = target_weight_kg
+        if target_pieces is not None:
+            args["target_pieces"] = target_pieces
+        return self.call("set_job_targets", args, request_id=request_id)
 
     def delete_job(self, job_id: int,
                    request_id: str | None = None) -> dict:
@@ -393,8 +423,10 @@ class LanClient:
                               required_bundles: int | None = None,
                               order_date: str | None = None,
                               required_pieces: int | None = None,
-                              customer_po: str = "", batch_no: str = "",
+                              customer_po: str = "", po_date: str | None = None,
+                              batch_no: str = "",
                               piece_unit: str = "wrapper",
+                              required_weight_kg: float | None = None,
                               request_id: str | None = None) -> dict:
         args: dict = {"customer": customer, "job_id": job_id,
                       "piece_unit": piece_unit}
@@ -402,10 +434,14 @@ class LanClient:
             args["required_bundles"] = required_bundles
         if required_pieces is not None:
             args["required_pieces"] = required_pieces
+        if required_weight_kg is not None:
+            args["required_weight_kg"] = required_weight_kg
         if order_date:
             args["order_date"] = order_date
         if customer_po:
             args["customer_po"] = customer_po
+        if po_date:
+            args["po_date"] = po_date
         if batch_no:
             args["batch_no"] = batch_no
         return self.call("create_dispatch_order", args,
