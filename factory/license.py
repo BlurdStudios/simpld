@@ -30,11 +30,13 @@ import os
 import uuid
 from datetime import date, datetime, timedelta
 
-# Vendor Ed25519 public key (base64 raw 32 bytes). Generated 2026-10-26 via
-# tools/issue_license.py --gen-key; private key stays offline with the vendor
-# (env SIMPLD_LICENSE_PRIVKEY or --privkey-file, never in the repo).
+# Vendor Ed25519 public key (base64 raw 32 bytes). Generated 2026-10-28 via
+# tools/issue_license.py --gen-key (rotation 1: original 2026-10-26 key lost
+# before any licence was ever issued, so nothing was invalidated); private
+# key stays offline with the vendor (Worker secret LICENSE_PRIVKEY_B64,
+# never in the repo).
 # Env override SIMPLD_LICENSE_PUBKEY wins (lets the floor rotate without code).
-PUBLIC_KEY_B64 = "wLurqkogkywImSm2rKQ+i6RD3vG9cRD4ccyGQ+lX2lk="
+PUBLIC_KEY_B64 = "yfyk2JgxLrFdEd6dy4GgVe5wnEcUeqL1lA5Uc0LCC70="
 
 EDITIONS = ("simple", "pro", "premium", "trial")
 EDITION_DEFAULT_STATIONS = {"simple": 1, "pro": 3, "premium": 6, "trial": 1}
