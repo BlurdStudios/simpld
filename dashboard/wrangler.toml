@@ -23,12 +23,12 @@ binding = "DB"
 database_name = "simpld-dashboard"
 database_id = "ccf44d7a-9a3c-4b6b-9027-ffba789bf3a2"
 
-# R2 binding commented out until R2 is enabled on this account
-# (Dashboard → R2 → Enable). Releases endpoints return 501 until then;
-# everything else (auth, licences, pushes) works. Re-add + redeploy after.
-# [[r2_buckets]]
-# binding = "RELEASES"
-# bucket_name = "simpld-releases"
+# R2 hosts the Windows installer files (Simpld-Setup-X.Y.Z.exe + .sha256 +
+# latest.json) that the fleet auto-updates from and factories download.
+# Admin → Releases uploads there; clients download from /download.
+[[r2_buckets]]
+binding = "RELEASES"
+bucket_name = "simpld-releases"
 
 [assets]
 directory = "./dist"
