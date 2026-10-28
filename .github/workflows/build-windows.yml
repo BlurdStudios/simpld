@@ -109,7 +109,12 @@ jobs:
             Write-Host "::endgroup::"
           }
 
+  # Release builds run ONLY on version tags. Branch pushes run the test
+  # job above and stop there — no duplicate 8-minute installer build per
+  # fix commit. A tag still runs the full gate (test -> build -> mirror
+  # publish), so nothing untested ever ships.
   build:
+    if: github.ref_type == 'tag'
     needs: test
     runs-on: windows-latest
     strategy:

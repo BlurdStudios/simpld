@@ -201,7 +201,11 @@ def test_dialog_builds_offscreen_with_prefetched_slip(tmp_path):
         assert dlg.windowTitle().endswith(order["order_no"])
         assert dlg.table.rowCount() == 1
         assert dlg.printer_combo is not None
+        # Teardown hygiene: a live top-level dialog at interpreter shutdown
+        # aborts native Windows Qt (green summary, then Fatal Python error).
         dlg.close()
+        dlg.deleteLater()
+        app.processEvents()
     finally:
         reset_auth()
 
@@ -248,6 +252,10 @@ def test_cancelled_orders_hidden_in_dropdown(tmp_path):
             assert any(keep["order_no"] in t for t in labels), labels
             assert not any(drop["order_no"] in t for t in labels), labels
         finally:
+            # Teardown hygiene: destroy the page while QApplication lives —
+            # live widgets at shutdown abort native Windows Qt.
             pg.close()
+            pg.deleteLater()
+            app.processEvents()
     finally:
         reset_auth()

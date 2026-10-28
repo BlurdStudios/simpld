@@ -204,7 +204,15 @@ def test_lan_slip_preview_uses_server_snapshot_no_local_db(lan):
             assert not os.path.exists(sentinel), \
                 "LAN mode must not create a local DB file"
         finally:
+            # Teardown hygiene: destroy the dialog while QApplication lives —
+            # a live top-level dialog at shutdown aborts native Windows Qt
+            # (green summary, then Fatal Python error: Aborted).
             dlg.close()
+            dlg.deleteLater()
+            from PySide6.QtWidgets import QApplication as _QA
+            _inst = _QA.instance()
+            if _inst is not None:
+                _inst.processEvents()
             DA.logout()
     finally:
         DB.DB_PATH = old_path
@@ -247,6 +255,10 @@ def test_lan_slip_disconnect_no_local_fallback_and_relogin(lan):
             dlg.close()
         except Exception:
             pass
+        try:
+            dlg.deleteLater()
+        except Exception:
+            pass
         assert not os.path.exists(sentinel)
         # Relogin on the live host recovers with no restart.
         DA.configure_lan("127.0.0.1", lan["port"], lan["ca"], timeout=10.0)
@@ -257,6 +269,15 @@ def test_lan_slip_disconnect_no_local_fallback_and_relogin(lan):
             assert dlg2._slip is not None
             assert len(dlg2._slip["rows"]) == 4  # 2 reels + 2 boxes
         dlg2.close()
+        try:
+            dlg.deleteLater()
+            dlg2.deleteLater()
+        except Exception:
+            pass
+        from PySide6.QtWidgets import QApplication as _QA2
+        _inst2 = _QA2.instance()
+        if _inst2 is not None:
+            _inst2.processEvents()
         DA.logout()
     finally:
         DB.DB_PATH = old_path
@@ -318,7 +339,16 @@ def test_slip_print_uses_prefetched_slip_and_surfaces_errors(lan):
                 assert w2.call_count >= 1, "printer error must be displayed"
                 assert "Could not print" in str(w2.call_args), w2.call_args
         finally:
+            # Teardown hygiene: destroy the dialog while QApplication lives.
             dlg.close()
+            try:
+                dlg.deleteLater()
+            except Exception:
+                pass
+            from PySide6.QtWidgets import QApplication as _QA3
+            _inst3 = _QA3.instance()
+            if _inst3 is not None:
+                _inst3.processEvents()
             DA.logout()
     finally:
         DA.configure_local()
