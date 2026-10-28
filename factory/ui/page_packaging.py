@@ -854,17 +854,20 @@ class PackagingPage(QWidget, NewJobDialogMixin):
         e_reels.setPlaceholderText("e.g. 100")
         e_boxes = QLineEdit(str(job.get("target_boxes") or ""))
         e_boxes.setPlaceholderText("e.g. 50")
-        e_kg = QLineEdit(str(job.get("target_weight_kg") or ""))
-        e_kg.setPlaceholderText("e.g. 500 (net kg)")
-        e_pcs = QLineEdit(str(job.get("target_pieces") or ""))
-        e_pcs.setPlaceholderText("e.g. 165000 (wrappers)")
-        if not job.get("wrappers_per_reel"):
-            e_pcs.setEnabled(False)
-            e_pcs.setPlaceholderText("kg product — no piece count")
         f.addRow("Target reels:", e_reels)
         f.addRow("Target boxes:", e_boxes)
-        f.addRow("Target net kg:", e_kg)
-        f.addRow("Target pieces:", e_pcs)
+        # Only the product's own unit is offered: pieces for piece products,
+        # net kg for kg products. Reels/boxes apply to both.
+        is_piece = bool(job.get("wrappers_per_reel"))
+        e_unit = QLineEdit()
+        if is_piece:
+            e_unit.setText(str(job.get("target_pieces") or ""))
+            e_unit.setPlaceholderText("e.g. 165000 (wrappers)")
+            f.addRow("Target pieces:", e_unit)
+        else:
+            e_unit.setText(str(job.get("target_weight_kg") or ""))
+            e_unit.setPlaceholderText("e.g. 500 (net kg)")
+            f.addRow("Target net kg:", e_unit)
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         f.addRow(bb)
         bb.accepted.connect(d.accept)
@@ -875,11 +878,18 @@ class PackagingPage(QWidget, NewJobDialogMixin):
             t = (v or "").strip()
             return t or None
         try:
-            upd = DA.set_job_targets(self.job_id,
-                                     target_reels=_opt(e_reels.text()),
-                                     target_boxes=_opt(e_boxes.text()),
-                                     target_weight_kg=_opt(e_kg.text()),
-                                     target_pieces=_opt(e_pcs.text() if e_pcs.isEnabled() else None))
+            if is_piece:
+                upd = DA.set_job_targets(self.job_id,
+                                         target_reels=_opt(e_reels.text()),
+                                         target_boxes=_opt(e_boxes.text()),
+                                         target_weight_kg=None,
+                                         target_pieces=_opt(e_unit.text()))
+            else:
+                upd = DA.set_job_targets(self.job_id,
+                                         target_reels=_opt(e_reels.text()),
+                                         target_boxes=_opt(e_boxes.text()),
+                                         target_weight_kg=_opt(e_unit.text()),
+                                         target_pieces=None)
         except (ValueError, PermissionError) as e:
             return self.say(str(e), ok=False)
         except Exception as e:

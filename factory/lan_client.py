@@ -345,15 +345,12 @@ class LanClient:
     def set_job_targets(self, job_id: int, target_reels=None, target_boxes=None,
                         target_weight_kg=None, target_pieces=None,
                         request_id: str | None = None) -> dict:
-        args: dict = {"job_id": job_id}
-        if target_reels is not None:
-            args["target_reels"] = target_reels
-        if target_boxes is not None:
-            args["target_boxes"] = target_boxes
-        if target_weight_kg is not None:
-            args["target_weight_kg"] = target_weight_kg
-        if target_pieces is not None:
-            args["target_pieces"] = target_pieces
+        # All four keys always sent: explicit null clears the target
+        # server-side, matching local services.set_job_targets behavior.
+        args: dict = {"job_id": job_id, "target_reels": target_reels,
+                      "target_boxes": target_boxes,
+                      "target_weight_kg": target_weight_kg,
+                      "target_pieces": target_pieces}
         return self.call("set_job_targets", args, request_id=request_id)
 
     def delete_job(self, job_id: int,
