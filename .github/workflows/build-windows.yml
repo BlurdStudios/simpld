@@ -36,6 +36,9 @@ jobs:
       # Unbuffered output: a crashed pytest otherwise loses its buffered
       # progress/failure text (learned from the first CI runs).
       PYTHONUNBUFFERED: "1"
+      # Fault handler: a native Qt crash then logs the faulting Python line
+      # instead of dying silent (turns the next flake into actionable data).
+      PYTHONFAULTHANDLER: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -60,13 +63,15 @@ jobs:
       # eventually abort the interpreter (Windows access violation; the
       # fault site moves between unrelated tests, so it is process state —
       # see the 2026-10-17 CI note in plans/README.md). Each file passes on
-      # its own, and tools/run_tests.py retries a crashed file once.
+      # its own, and tools/run_tests.py retries a crashed file twice
+      # (a ~1-in-3 per-attempt native flake needs 3 attempts to get
+      # the false-red rate per file under ~4%).
       # SIMPLD_DB must stay per-step: the runner context is not available in
       # job-level env.
       - name: Run test suite (one process per file)
         env:
           SIMPLD_DB: ${{ runner.temp }}\test-factory.db
-        run: python tools/run_tests.py
+        run: python tools/run_tests.py --retries 2
 
       # The suite runs headless under offscreen (FreeType fonts). The
       # shipped app uses the native Windows platform (DirectWrite fonts),
