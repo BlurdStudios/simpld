@@ -15,13 +15,13 @@ SITE = "demo-site"
 # the DB (D1) binding — without it the portal falls back to in-memory (dev only).
 [[kv_namespaces]]
 binding = "PUSHES"
-id = "PUT_KV_NAMESPACE_ID_HERE"
-preview_id = "PUT_KV_PREVIEW_ID_HERE"
+id = "92c72ed1c3c04c319dcadae1129b837a"
+preview_id = "1b8cac0b8376443ca906c15874b3aca8"
 
 [[d1_databases]]
 binding = "DB"
 database_name = "simpld-dashboard"
-database_id = "PUT_D1_DATABASE_ID_HERE"
+database_id = "1b055d68-2d32-4633-8a1d-146415d04c18"
 
 [[r2_buckets]]
 binding = "RELEASES"
