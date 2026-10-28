@@ -141,11 +141,14 @@ class NewJobDialogMixin:
     @staticmethod
     def ask_new_job(parent):
         """New packaging job from the products master. Retains the selected
-        product across validation failures. No Size/Core fields
-        (legacy size/core rows stay in the DB, core default unchanged)."""
+        product and typed targets across validation failures. No Size/Core
+        fields (legacy size/core rows stay in the DB, core default unchanged).
+        Targets are optional and set here at creation (blank = none)."""
         from PySide6.QtWidgets import (QDialog, QFormLayout, QComboBox, QPushButton,
-                                       QDialogButtonBox, QHBoxLayout, QWidget, QLabel)
+                                       QDialogButtonBox, QHBoxLayout, QWidget, QLabel,
+                                       QLineEdit)
         select_id = None
+        t_reels_val, t_boxes_val, t_unit_val = "", "", ""
         while True:
             d = QDialog(parent)
             d.setWindowTitle("New job")
@@ -203,6 +206,36 @@ class NewJobDialogMixin:
             hl.addWidget(add_btn)
             hl.addWidget(wrap_btn)
             f.addRow("Product:", row)
+            # Optional targets at creation (blank = none). Only the product's
+            # own unit is offered alongside reels/boxes.
+            t_reels = QLineEdit()
+            t_reels.setPlaceholderText("e.g. 100")
+            t_reels.setText(t_reels_val)
+            t_boxes = QLineEdit()
+            t_boxes.setPlaceholderText("e.g. 50")
+            t_boxes.setText(t_boxes_val)
+            t_unit = QLineEdit()
+            t_unit.setText(t_unit_val)
+            unit_lab = QLabel("Target:")
+            def _unit_update():
+                try:
+                    prods = {p["id"]: p for p in DA.list_products()}
+                except Exception:
+                    prods = {}
+                prod = prods.get(combo.currentData())
+                if prod and prod.get("wrappers_per_reel"):
+                    unit_lab.setText("Target pieces (wrappers):")
+                    if not t_unit.text():
+                        t_unit.setPlaceholderText("e.g. 165000")
+                else:
+                    unit_lab.setText("Target net kg:")
+                    if not t_unit.text():
+                        t_unit.setPlaceholderText("e.g. 500")
+            combo.currentIndexChanged.connect(lambda _i: _unit_update())
+            _unit_update()
+            f.addRow("Target reels (optional):", t_reels)
+            f.addRow("Target boxes (optional):", t_boxes)
+            f.addRow(unit_lab, t_unit)
             hint = QLabel("Jobs run continuously across months; reel/box numbers restart at 1"
                           " each month for each product.")
             hint.setWordWrap(True)
@@ -219,8 +252,35 @@ class NewJobDialogMixin:
                 QMessageBox.warning(parent, "Cannot save job",
                                     "Select a product first (or add it once, then reuse it).")
                 continue
+            # Retain typed targets across validation failures.
+            t_reels_val, t_boxes_val, t_unit_val = t_reels.text(), t_boxes.text(), t_unit.text()
             try:
-                return DA.create_job_for_product(pid)
+                prods = {p["id"]: p for p in DA.list_products()}
+            except Exception:
+                prods = {}
+            prod = prods.get(pid)
+            is_piece = bool(prod and prod.get("wrappers_per_reel"))
+            def _opt_num(v, whole=True):
+                t = (v or "").strip()
+                if not t:
+                    return None
+                try:
+                    n = int(t) if whole else float(t)
+                except (TypeError, ValueError):
+                    return "bad"
+                if whole and (isinstance(n, bool) or n <= 0):
+                    return "bad"
+                if not whole and not (n > 0):
+                    return "bad"
+                return n
+            tr, tb = _opt_num(t_reels_val), _opt_num(t_boxes_val)
+            tu = _opt_num(t_unit_val, whole=is_piece)
+            if tr == "bad" or tb == "bad" or tu == "bad":
+                QMessageBox.warning(parent, "Cannot save job",
+                                    "Targets must be blank or positive numbers.")
+                continue
+            try:
+                job = DA.create_job_for_product(pid)
             except PermissionError as e:
                 QMessageBox.warning(parent, "Cannot save job", str(e))
                 return None
@@ -234,6 +294,22 @@ class NewJobDialogMixin:
                     msg = str(e)
                 QMessageBox.warning(parent, "Cannot save job", msg)
                 return None
+            if tr is not None or tb is not None or tu is not None:
+                try:
+                    if is_piece:
+                        DA.set_job_targets(job["id"], target_reels=tr,
+                                           target_boxes=tb, target_pieces=tu)
+                    else:
+                        DA.set_job_targets(job["id"], target_reels=tr,
+                                           target_boxes=tb, target_weight_kg=tu)
+                except Exception as e:
+                    try:
+                        msg, _k = DA.describe_error(e)
+                    except Exception:
+                        msg = str(e)
+                    QMessageBox.warning(parent, "Targets not saved",
+                                        f"Job J:{job['job_no']} created, but targets failed:\n{msg}")
+            return job
 
 
 class PackagingPage(QWidget, NewJobDialogMixin):
