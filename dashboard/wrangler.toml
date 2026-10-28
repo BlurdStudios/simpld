@@ -15,17 +15,20 @@ SITE = "demo-site"
 # the DB (D1) binding — without it the portal falls back to in-memory (dev only).
 [[kv_namespaces]]
 binding = "PUSHES"
-id = "92c72ed1c3c04c319dcadae1129b837a"
-preview_id = "1b8cac0b8376443ca906c15874b3aca8"
+id = "17fdc9ad8be8462a896f6a64aaf8dc4f"
+preview_id = "620e701c6b104fd9af8b9b15d97788e6"
 
 [[d1_databases]]
 binding = "DB"
 database_name = "simpld-dashboard"
-database_id = "1b055d68-2d32-4633-8a1d-146415d04c18"
+database_id = "ccf44d7a-9a3c-4b6b-9027-ffba789bf3a2"
 
-[[r2_buckets]]
-binding = "RELEASES"
-bucket_name = "simpld-releases"
+# R2 binding commented out until R2 is enabled on this account
+# (Dashboard → R2 → Enable). Releases endpoints return 501 until then;
+# everything else (auth, licences, pushes) works. Re-add + redeploy after.
+# [[r2_buckets]]
+# binding = "RELEASES"
+# bucket_name = "simpld-releases"
 
 [assets]
 directory = "./dist"
