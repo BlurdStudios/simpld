@@ -71,14 +71,20 @@ jobs:
       # The suite runs headless under offscreen (FreeType fonts). The
       # shipped app uses the native Windows platform (DirectWrite fonts),
       # so render the PDF evidence tests there too: their pdftotext checks
-      # then cover the exact engine production uses.
+      # then cover the exact engine production uses. One process per file
+      # (same Qt/PySide6 teardown-crash rationale as the main suite): a
+      # teardown crash in one file must not fail the other.
       - name: Run PDF tests on the native Windows platform
         env:
           QT_QPA_PLATFORM: windows
           SIMPLD_DB: ${{ runner.temp }}\test-factory.db
-        run: >-
-          python -m pytest tests/test_slip_pdf.py tests/test_slip_evidence.py
-          -q -p no:cacheprovider
+        shell: pwsh
+        run: |
+          python -m pytest tests/test_slip_pdf.py -q -p no:cacheprovider
+          $e1 = $LASTEXITCODE
+          python -m pytest tests/test_slip_evidence.py -q -p no:cacheprovider
+          $e2 = $LASTEXITCODE
+          if ($e1 -ne 0 -or $e2 -ne 0) { throw "native PDF tests failed ($e1, $e2)" }
 
       # On failure, re-run just the failing files fail-fast: a pytest that
       # dies mid-test (native crash) never prints its failure summary, and

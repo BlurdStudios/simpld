@@ -223,6 +223,11 @@ def test_slip_dialog_table_and_preview():
     kinds = [d.table.item(i, 0).text() for i in range(d.table.rowCount())]
     assert kinds.count("Reel") == 2 and kinds.count("Box") == 2, kinds
     assert f"J:{job['job_no']}" in d.windowTitle()
+    # Teardown hygiene: a live top-level dialog at interpreter shutdown
+    # crashes native Windows Qt (access violation after a green summary).
+    d.close()
+    d.deleteLater()
+    app.processEvents()
 
 
 def test_evening_backup_copies_db():

@@ -310,6 +310,11 @@ def test_dialog_identifies_reel_box_rows():
     assert d.table.item(1, 0).text() == "Box"
     assert DB.bare_carton_no(b["carton_no"]) == d.table.item(1, 1).text()
     assert f"J:{job['job_no']}" in d.windowTitle()
+    # Teardown hygiene: a live top-level dialog at interpreter shutdown
+    # crashes native Windows Qt (access violation after a green summary).
+    d.close()
+    d.deleteLater()
+    app.processEvents()
 
 
 def test_roll_identity_code_then_period_then_job_fallback():
