@@ -406,7 +406,11 @@ class MainWindow(QMainWindow):
         AboutDialog(self).exec()
 
     def _refresh_license_banner(self):
-        """Persistent licence/trial timer in the sidebar (vivid when expiring)."""
+        """Persistent licence/trial timer in the sidebar (vivid when expiring).
+
+        Trial licences also stamp the window title (TRIAL · Nd left) so the
+        mode is visible even with the sidebar collapsed.
+        """
         try:
             from factory import license as _LIC
             from factory.ui.styles import set_banner
@@ -415,6 +419,13 @@ class MainWindow(QMainWindow):
             ed = str(lic.get("edition") or "")
             state = str(st.get("state") or "")
             left = _LIC.license_days_left(lic if lic else None)
+            try:
+                _user = getattr(self, "user", {}) or {}
+                _base = f"Simpl'd — {_user.get('username', '')} ({_user.get('role', '')})"
+            except Exception:
+                _base = str(self.windowTitle() or "Simpl'd")
+            if ed == "trial" and left is not None and left >= 0:
+                self.setWindowTitle(f"{_base} — TRIAL · {left}d left")
             if state in ("none", "invalid", "blocked"):
                 self.lic_label.setText(f"⚠ {st.get('reason') or state}")
                 set_banner(self.lic_label, "err")

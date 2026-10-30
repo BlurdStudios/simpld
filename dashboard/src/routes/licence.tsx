@@ -181,6 +181,18 @@ export function Licence() {
               {edition === "trial" ? (
                 <div className="grid gap-2">
                   <Label htmlFor="lic-trialdays">Trial length (days, 1–365)</Label>
+                  <div className="flex flex-wrap gap-2">
+                    {[4, 7, 14, 30].map((n) => (
+                      <Button
+                        key={n}
+                        type="button"
+                        variant={effTrialDays === n ? "default" : "outline"}
+                        onClick={() => setTrialDays(String(n))}
+                      >
+                        {n === 7 ? "1 week" : `${n} days`}
+                      </Button>
+                    ))}
+                  </div>
                   <Input
                     id="lic-trialdays"
                     inputMode="numeric"
