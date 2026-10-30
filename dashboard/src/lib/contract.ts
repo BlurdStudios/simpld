@@ -142,6 +142,29 @@ export function extractReporter(body: unknown): { station_id: string; packager_f
   return { station_id, packager_fp };
 }
 
+/** Lenient extraction of the factory licence snapshot (skips when absent
+ *  or malformed — old factories omit it and push on regardless). */
+export function extractSiteLicence(body: unknown): {
+  edition: string; expires: string; days_left: number | null; state: string;
+  app_version: string; packager_fp: string;
+} | null {
+  if (typeof body !== "object" || body === null) return null;
+  const l = (body as Record<string, unknown>).licence;
+  if (typeof l !== "object" || l === null) return null;
+  const rec = l as Record<string, unknown>;
+  const str = (v: unknown): string => (typeof v === "string" ? v.trim().slice(0, 64) : "");
+  const days =
+    typeof rec.days_left === "number" && Number.isInteger(rec.days_left) &&
+    rec.days_left > -10000 && rec.days_left < 10000 ? rec.days_left : null;
+  const out = {
+    edition: str(rec.edition), expires: str(rec.expires), days_left: days,
+    state: str(rec.state), app_version: str(rec.app_version),
+    packager_fp: str(rec.packager_fp),
+  };
+  if (!out.edition && !out.state) return null;
+  return out;
+}
+
 /** Lenient extraction of stations[] heartbeats (skips malformed entries). */
 export function extractStations(body: unknown): Array<{ station_id: string; packager_fp: string }> {
   if (typeof body !== "object" || body === null) return [];

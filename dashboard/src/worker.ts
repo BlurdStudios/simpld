@@ -28,6 +28,7 @@ import { handleAdminUsers } from "./routes/api/admin-users";
 import { handleAdminKeys } from "./routes/api/admin-keys";
 import { handleAdminSites } from "./routes/api/admin-sites";
 import { handleIssueLicence, handleListLicences, handleRenewLicence } from "./routes/api/licenses";
+import { handleListSiteLicences } from "./routes/api/site-licences";
 import {
   handleDownloadRelease,
   handleListReleases,
@@ -88,7 +89,7 @@ export default {
       const store = storeForEnv(env as Record<string, unknown>);
       const reporters = reportersForEnv(env as Record<string, unknown>, accounts);
       await ensureSchema(env, accounts);
-      return handlePushDay(req, { keys, store, reporters });
+      return handlePushDay(req, { keys, store, reporters, accounts });
     }
     if (req.method === "POST" && path === "/api/push-orders") {
       const store = storeForEnv(env as Record<string, unknown>);
@@ -144,6 +145,13 @@ export default {
       if (!me) return needAuth();
       await ensureSchema(env, accounts);
       return handleRenewLicence(req, env, accounts, me);
+    }
+    if (path === "/api/admin/site-licences" && req.method === "GET") {
+      const me = await getSessionUser(req, accounts);
+      if (!me) return needAuth();
+      if (me.role !== "vendor_admin") return needAdmin();
+      await ensureSchema(env, accounts);
+      return handleListSiteLicences(accounts);
     }
     if (path === "/api/releases" && req.method === "GET") {
       const me = await getSessionUser(req, accounts);

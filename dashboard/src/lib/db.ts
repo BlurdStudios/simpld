@@ -57,6 +57,19 @@ export interface ReporterEvent {
   seen_at: string;
 }
 
+/** Live licence snapshot pushed by the factory (one row per site, latest
+ *  push wins). Powers the upgrade/trial-nudge tracking view. */
+export interface SiteLicenceRow {
+  site_id: string;
+  edition: string;
+  expires: string;
+  days_left: number | null;
+  state: string;
+  app_version: string;
+  packager_fp: string;
+  updated_at: string;
+}
+
 export interface SiteOverview {
   site_id: string;
   last_push_at: string | null;
@@ -118,6 +131,16 @@ CREATE TABLE IF NOT EXISTS sites (
   last_reporter_fp TEXT,
   frozen INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS site_licences (
+  site_id TEXT PRIMARY KEY,
+  edition TEXT NOT NULL DEFAULT '',
+  expires TEXT NOT NULL DEFAULT '',
+  days_left INTEGER,
+  state TEXT NOT NULL DEFAULT '',
+  app_version TEXT NOT NULL DEFAULT '',
+  packager_fp TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL DEFAULT ''
+);
 `.trim();
 
 export interface D1Prepared {
@@ -178,6 +201,8 @@ export interface AccountsStore {
   setSiteFrozen(siteId: string, frozen: boolean): Promise<void>;
   logLicence(row: Omit<LicenceLogRow, "id" | "created_at">): Promise<LicenceLogRow>;
   listLicences(siteId?: string): Promise<LicenceLogRow[]>;
+  upsertSiteLicence(row: SiteLicenceRow): Promise<void>;
+  listSiteLicences(): Promise<SiteLicenceRow[]>;
 }
 
 const SESSION_DAYS = 7;
@@ -414,6 +439,18 @@ export class D1AccountsStore implements AccountsStore {
       : await this.db.prepare("SELECT * FROM licences ORDER BY created_at DESC").bind().all<LicenceLogRow>();
     return r.results;
   }
+
+  async upsertSiteLicence(row: SiteLicenceRow): Promise<void> {
+    await this.db
+      .prepare("INSERT INTO site_licences(site_id,edition,expires,days_left,state,app_version,packager_fp,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(site_id) DO UPDATE SET edition=excluded.edition,expires=excluded.expires,days_left=excluded.days_left,state=excluded.state,app_version=excluded.app_version,packager_fp=excluded.packager_fp,updated_at=excluded.updated_at")
+      .bind(row.site_id, row.edition, row.expires, row.days_left, row.state, row.app_version, row.packager_fp, row.updated_at)
+      .run();
+  }
+
+  async listSiteLicences(): Promise<SiteLicenceRow[]> {
+    const r = await this.db.prepare("SELECT * FROM site_licences ORDER BY updated_at DESC").bind().all<SiteLicenceRow>();
+    return r.results;
+  }
 }
 
 /** Dev/smoke backend: same interface, module-level memory. Never for production. */
@@ -433,6 +470,7 @@ class MemoryD1 implements D1Like {
     licences: [],
     reporter_events: [],
     sites: [],
+    site_licences: [],
   };
 
   async exec(q: string): Promise<unknown> {
@@ -510,6 +548,9 @@ class MemoryD1 implements D1Like {
               : [];
           if (q.startsWith("SELECT * FROM licences ORDER BY"))
             return [...t.licences] as unknown as T[];
+          if (q.startsWith("SELECT * FROM site_licences ORDER BY"))
+            return [...t.site_licences].sort((a, b) =>
+              String(b.updated_at).localeCompare(String(a.updated_at))) as unknown as T[];
           throw new Error(`memory D1: unsupported query: ${q}`);
         };
         const runWrite = (): void => {
@@ -566,6 +607,14 @@ class MemoryD1 implements D1Like {
           if (q.startsWith("INSERT INTO licences(")) {
             const [id, site_id, customer, serial, edition, packager_fp, max_stations, issued, expires, max_version, issued_by, created_at] = params;
             t.licences.push({ id, site_id, customer, serial, edition, packager_fp, max_stations, issued, expires, max_version, issued_by, created_at });
+            return;
+          }
+          if (q.startsWith("INSERT INTO site_licences(")) {
+            const [site_id, edition, expires, days_left, state, app_version, packager_fp, updated_at] = params;
+            const row = { site_id, edition, expires, days_left, state, app_version, packager_fp, updated_at };
+            const i = t.site_licences.findIndex((r) => r.site_id === site_id);
+            if (i >= 0) t.site_licences[i] = row;
+            else t.site_licences.push(row);
             return;
           }
           throw new Error(`memory D1: unsupported write: ${q}`);

@@ -9,7 +9,7 @@
 
 | Method | Path | Body | Auth |
 |---|---|---|---|
-| POST | `/api/push-day` | `{site_id, day_report[, reporter, stations]}` | site key |
+| POST | `/api/push-day` | `{site_id, day_report[, reporter, stations, licence]}` | site key |
 | POST | `/api/push-orders` | `{site_id, orders, stock_counts[, reporter, stations]}` | site key |
 | GET | `/api/s/:siteId` | — (viewer data) | site key **or** portal session |
 | POST | `/api/auth/login` | `{email, password}` | — (sets session cookie) |
@@ -114,11 +114,13 @@ builds keep passing and the Worker persists what it can:
   "site_id": "vasavi-f1",
   "day_report": { "...": "..." },
   "reporter": {"station_id": "<dispatcher/station uuid>", "packager_fp": "<32-char board fp>"},
-  "stations": [{"station_id": "<uuid>", "packager_fp": "<fp>"}]
+  "stations": [{"station_id": "<uuid>", "packager_fp": "<fp>"}],
+  "licence": {"edition": "trial", "expires": "2026-11-03", "days_left": 4, "state": "expiring", "app_version": "1.3.0", "packager_fp": "<32-char board fp>"}
 }
 ```
 
-- Missing/empty `reporter`/`stations` (or malformed entries) are ignored, never `400`.
+- Missing/empty `reporter`/`stations`/`licence` (or malformed entries) are ignored, never `400`.
+- `licence` upserts the per-site snapshot behind Admin → Licences → Live tracking (edition/countdown/state/version).
 - Persisted per site (D1 `reporter_events` + `sites.last_reporter_fp`); the admin
   Sites view lists last push, fingerprints seen, and per-site reporter history.
   Without the D1 binding the log is process-local memory (dev only).

@@ -510,12 +510,17 @@ function LicencesTab({ onError }: { onError: (e: string | null) => void }) {
   const [rows, setRows] = useState<
     Array<{ serial: string; site_id: string; edition: string; packager_fp: string; max_stations: number; expires: string; issued_by: string; created_at: string }>
   >([]);
+  const [tracked, setTracked] = useState<
+    Array<{ site_id: string; edition: string; expires: string; days_left: number | null; state: string; app_version: string; packager_fp: string; updated_at: string }>
+  >([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     (async () => {
       try {
         const d = await api("/api/licenses");
         setRows(d.licences);
+        const t = await api("/api/admin/site-licences");
+        setTracked(t.tracked ?? []);
         onError(null);
       } catch (e) {
         onError(e instanceof Error ? e.message : "licences failed");
@@ -525,7 +530,82 @@ function LicencesTab({ onError }: { onError: (e: string | null) => void }) {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  const trackedSites = new Set(tracked.map((t) => t.site_id));
+  const neverActivated = rows
+    .filter((l) => !trackedSites.has(l.site_id))
+    .filter((l, i, a) => a.findIndex((x) => x.site_id === l.site_id) === i);
   return (
+    <div className="grid gap-6">
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <HugeiconsIcon icon={File01Icon} size={18} /> Live tracking — who needs attention
+        </CardTitle>
+        <CardDescription>
+          Pushed by each factory on sync: live edition, countdown and app version.
+          Issued-but-never-pushed rows never activated their key — chase those first.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {loading ? (
+          <Skeleton className="h-40" />
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Site</TableHead>
+                <TableHead>Live edition</TableHead>
+                <TableHead>Expires</TableHead>
+                <TableHead>Left</TableHead>
+                <TableHead>State</TableHead>
+                <TableHead>App</TableHead>
+                <TableHead>Action</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {tracked.map((t) => {
+                const flag = flagFor(t);
+                return (
+                  <TableRow key={t.site_id}>
+                    <TableCell className="font-medium">{t.site_id}</TableCell>
+                    <TableCell>
+                      <Badge variant="secondary">{t.edition || "—"}</Badge>
+                    </TableCell>
+                    <TableCell>{t.expires || "—"}</TableCell>
+                    <TableCell>{t.days_left == null ? "—" : `${t.days_left}d`}</TableCell>
+                    <TableCell>{t.state || "—"}</TableCell>
+                    <TableCell className="text-muted-foreground">{t.app_version || "—"}</TableCell>
+                    <TableCell>
+                      {flag ? (
+                        <Badge variant={flag.tone === "err" ? "destructive" : "outline"}>{flag.label}</Badge>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+              {neverActivated.map((l) => (
+                <TableRow key={"na-" + l.site_id}>
+                  <TableCell className="font-medium">{l.site_id}</TableCell>
+                  <TableCell colSpan={5} className="text-muted-foreground">
+                    Key issued {l.issued_by ? `by ${l.issued_by}` : ""} — never activated (no push yet)
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant="outline">Chase activation</Badge>
+                  </TableCell>
+                </TableRow>
+              ))}
+              {tracked.length === 0 && neverActivated.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={7} className="text-muted-foreground">No licences issued yet.</TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        )}
+      </CardContent>
+    </Card>
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-base">
@@ -571,7 +651,22 @@ function LicencesTab({ onError }: { onError: (e: string | null) => void }) {
         )}
       </CardContent>
     </Card>
+    </div>
   );
+}
+
+function flagFor(t: { edition: string; days_left: number | null; state: string }): {
+  label: string; tone: "warn" | "err";
+} | null {
+  if (t.edition === "trial") {
+    if (t.days_left == null) return null;
+    if (t.days_left < 0) return { label: "Trial over — pitch upgrade", tone: "err" };
+    if (t.days_left <= 3) return { label: `Nudge — ${t.days_left}d left`, tone: "warn" };
+    return null;
+  }
+  if (t.state === "blocked" || t.state === "grace") return { label: "OVERDUE — renew now", tone: "err" };
+  if (t.state === "expiring") return { label: "Renew soon", tone: "warn" };
+  return null;
 }
 
 function ReleasesTab({ onError }: { onError: (e: string | null) => void }) {

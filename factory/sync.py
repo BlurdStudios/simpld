@@ -165,9 +165,32 @@ def build_push(day: str | None = None) -> dict:
                     "packager_fp": _LIC.machine_fingerprint()}
     except Exception:
         reporter = {}
+    # Licence snapshot for vendor tracking (trial countdowns, renewals,
+    # upgrades). Optional: old factories omit it and the server tolerates
+    # its absence. Never blocks the push when licensing itself errors.
+    try:
+        from . import license as _LIC2
+        from .version import VERSION as _APP_VER
+        _st = _LIC2.license_status()
+        _lic = _st.get("lic") or {}
+        licence = {
+            "edition": str(_lic.get("edition") or ""),
+            "expires": str(_lic.get("expires") or _st.get("expires") or ""),
+            "state": str(_st.get("state") or ""),
+            "days_left": _LIC2.license_days_left(_lic if _lic else None),
+            "packager_fp": str(_lic.get("packager_fp") or reporter.get("packager_fp") or ""),
+            "app_version": str(_APP_VER or ""),
+        }
+        if not licence["edition"] and licence["state"] in ("none", "invalid"):
+            licence = {"edition": "", "expires": "", "state": licence["state"],
+                       "days_left": None, "packager_fp": licence["packager_fp"],
+                       "app_version": licence["app_version"]}
+    except Exception:
+        licence = {}
     return {
         "site_id": site,
         "reporter": reporter,
+        "licence": licence,
         "day_report": adapt_day_report(rep),
         "orders": orders,
         "stock_counts": {"raw_rolls": raw_rolls,
