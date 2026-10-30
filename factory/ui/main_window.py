@@ -406,7 +406,9 @@ class MainWindow(QMainWindow):
         AboutDialog(self).exec()
 
     def _refresh_license_banner(self):
-        """Persistent licence/trial timer in the sidebar (vivid when expiring).
+        """Sidebar identity: the licensed CLIENT name always shows (this is
+        whose licence this copy runs under), plus a vivid timer when a
+        trial is active or any licence nears expiry.
 
         Trial licences also stamp the window title (TRIAL · Nd left) so the
         mode is visible even with the sidebar collapsed.
@@ -419,6 +421,8 @@ class MainWindow(QMainWindow):
             ed = str(lic.get("edition") or "")
             state = str(st.get("state") or "")
             left = _LIC.license_days_left(lic if lic else None)
+            cust = str(lic.get("customer") or "").strip()
+            who = f"{cust} · {ed}" if cust and ed else (cust or ed or "")
             try:
                 _user = getattr(self, "user", {}) or {}
                 _base = f"Simpl'd — {_user.get('username', '')} ({_user.get('role', '')})"
@@ -432,21 +436,25 @@ class MainWindow(QMainWindow):
                 self.lic_label.show()
             elif ed == "trial" and left is not None:
                 if left < 0:
-                    self.lic_label.setText(f"Trial expired {-left}d ago — contact vendor")
+                    self.lic_label.setText(f"{who}\nTrial expired {-left}d ago — contact vendor")
                     set_banner(self.lic_label, "err")
                 elif left == 0:
-                    self.lic_label.setText("Trial expires TODAY — contact vendor")
+                    self.lic_label.setText(f"{who}\nTrial expires TODAY — contact vendor")
                     set_banner(self.lic_label, "warn")
                 elif left <= 3:
-                    self.lic_label.setText(f"Trial: {left}d left — contact vendor soon")
+                    self.lic_label.setText(f"{who}\nTrial: {left}d left — contact vendor soon")
                     set_banner(self.lic_label, "warn")
                 else:
-                    self.lic_label.setText(f"Trial: {left}d left")
+                    self.lic_label.setText(f"{who}\nTrial: {left}d left")
                     set_banner(self.lic_label, "info")
                 self.lic_label.show()
             elif state in ("expiring", "grace"):
-                self.lic_label.setText(f"{_LIC.license_display(st)}")
+                self.lic_label.setText(f"{who}\n{_LIC.license_display(st)}")
                 set_banner(self.lic_label, "warn")
+                self.lic_label.show()
+            elif who:
+                self.lic_label.setText(who)
+                set_banner(self.lic_label, "neutral")
                 self.lic_label.show()
             else:
                 self.lic_label.hide()
