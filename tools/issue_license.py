@@ -177,10 +177,10 @@ def main(argv=None) -> int:
                   file=sys.stderr)
             body["max_stations"] = 1
     if args.edition == "trial":
-        if int(args.max_stations) != 1:
-            print("warning: trial edition forced to max_stations=1",
+        if int(args.max_stations) > 3:
+            print("warning: trial edition capped at max_stations=3",
                   file=sys.stderr)
-            body["max_stations"] = 1
+            body["max_stations"] = 3
     msg = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
     sig = priv.sign(msg)
     body["sig"] = base64.b64encode(sig).decode()

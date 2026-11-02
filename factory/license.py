@@ -39,7 +39,7 @@ from datetime import date, datetime, timedelta
 PUBLIC_KEY_B64 = "yfyk2JgxLrFdEd6dy4GgVe5wnEcUeqL1lA5Uc0LCC70="
 
 EDITIONS = ("simple", "pro", "premium", "trial")
-EDITION_DEFAULT_STATIONS = {"simple": 1, "pro": 3, "premium": 6, "trial": 1}
+EDITION_DEFAULT_STATIONS = {"simple": 1, "pro": 3, "premium": 6, "trial": 3}
 EDITION_DEFAULT_FEATURES = {
     "simple": [],
     "pro": ["lan", "history", "summary"],
@@ -254,8 +254,8 @@ def verify_license(lic: dict | None,
         return False, "simple edition has no LAN — contact admin"
     if str(lic.get("edition")) == "trial":
         try:
-            if int(lic.get("max_stations") or 0) != 1:
-                return False, "trial licence is single-station — contact admin"
+            if int(lic.get("max_stations") or 0) > 3:
+                return False, "trial licence allows at most 3 stations — contact admin"
         except (TypeError, ValueError):
             return False, "licence station count invalid — contact admin"
     return True, "ok"

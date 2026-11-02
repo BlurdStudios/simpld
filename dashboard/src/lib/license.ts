@@ -47,7 +47,7 @@ export const EDITION_RULES: Record<string, { stations: number; features: string[
   simple: { stations: 1, features: [], validityDays: 365 },
   pro: { stations: 3, features: ["lan", "history", "summary"], validityDays: 365 },
   premium: { stations: 5, features: ["lan", "history", "summary", "api"], validityDays: 365 },
-  trial: { stations: 1, features: ["lan", "history", "summary"], validityDays: 14 },
+  trial: { stations: 3, features: ["lan", "history", "summary"], validityDays: 14 },
 };
 
 export const LICENCE_MAX_VERSION = "2.x";
@@ -242,7 +242,7 @@ export async function issueLicence(input: IssueInput, privkeyB64: string): Promi
   }
   let maxStations = input.max_stations ?? rule.stations;
   if (edition === "simple") maxStations = 1;
-  if (edition === "trial") maxStations = 1;
+  if (edition === "trial" && maxStations > 3) maxStations = 3;
   if (!Number.isInteger(maxStations) || maxStations < 1 || maxStations > 20) {
     throw new Error("max_stations must be an integer 1..20");
   }
@@ -339,8 +339,8 @@ export async function verifyLicence(
   if (String(l.edition) === "simple" && (l.features as unknown[]).includes("lan")) {
     return { ok: false, reason: "simple edition has no LAN — contact admin" };
   }
-  if (String(l.edition) === "trial" && Number(l.max_stations) !== 1) {
-    return { ok: false, reason: "trial licence is single-station — contact admin" };
+  if (String(l.edition) === "trial" && Number(l.max_stations) > 3) {
+    return { ok: false, reason: "trial licence allows at most 3 stations — contact admin" };
   }
   return { ok: true, reason: "ok" };
 }

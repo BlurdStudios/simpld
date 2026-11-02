@@ -20,7 +20,7 @@ const STATION_SUMMARY: Record<string, string> = {
   simple: "1 station · no LAN",
   pro: "3 stations · LAN",
   premium: "5 stations · LAN + API",
-  trial: "1 station · demo",
+  trial: "3 stations · demo",
 };
 
 const VALIDITY_PRESETS = [
@@ -175,7 +175,7 @@ export function Licence() {
                   <option value="simple">simple — 1 station, no LAN</option>
                   <option value="pro">pro — 3 stations, LAN</option>
                   <option value="premium">premium — 5 stations, LAN+API</option>
-                  <option value="trial">trial — 1 station, N-day demo</option>
+                  <option value="trial">trial — 3 stations, N-day demo</option>
                 </select>
               </div>
               {edition === "trial" ? (
