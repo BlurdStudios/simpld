@@ -85,9 +85,13 @@ export async function handleIssueLicence(
   }
 }
 
-// POST /api/licenses/renew  { serial }  (session auth)
-// One-click renewal: same site/customer/fingerprint/edition, fresh serial +
-// fresh 1-year validity. vendor_admin any serial; clients only their own site.
+// POST /api/licenses/renew  { serial[, edition][, trial_days][, validity_days] }
+// One-click renewal: same site/customer/fingerprint, fresh serial + fresh
+// validity. vendor_admin any serial; clients only their own site.
+// Optional edition change (upgrade/downgrade) is vendor_admin only; clients
+// renewing keep their current edition. Validity presets follow the same
+// rules as issuance (trial_days 1..365 for trials, validity_days 1..1095
+// for paid, vendor_admin only).
 export async function handleRenewLicence(
   req: Request,
   env: Record<string, string | undefined>,
@@ -113,13 +117,37 @@ export async function handleRenewLicence(
   );
   const prev = rows.find((r) => r.serial === serial);
   if (!prev) return json({ error: "unknown serial (or not your site)" }, 404);
+  const b = body as Record<string, unknown>;
+  let edition = prev.edition;
+  let planChange = "";
+  const wantEdition = typeof b.edition === "string" ? b.edition.trim() : "";
+  if (wantEdition && wantEdition !== prev.edition) {
+    if (caller.role !== "vendor_admin") {
+      return json({ error: "plan changes are vendor admin only" }, 403);
+    }
+    edition = wantEdition;
+    planChange = ` (plan-change ${prev.edition}→${edition})`;
+  }
+  const num = (k: string): number | undefined =>
+    typeof b[k] === "number" && Number.isInteger(b[k]) ? (b[k] as number) : undefined;
+  const trialDays = edition === "trial" ? num("trial_days") : undefined;
+  let validityDays: number | undefined;
+  if (edition !== "trial" && caller.role === "vendor_admin") {
+    const v = num("validity_days");
+    if (v !== undefined) {
+      if (v < 1 || v > 1095) return json({ error: "validity_days must be 1..1095" }, 400);
+      validityDays = v;
+    }
+  }
   try {
     const lic = await issueLicence(
       {
         customer: prev.customer || prev.site_id,
         site_id: prev.site_id,
-        edition: prev.edition,
+        edition,
         packager_fp: prev.packager_fp,
+        ...(trialDays !== undefined ? { trial_days: trialDays } : {}),
+        ...(validityDays !== undefined ? { validity_days: validityDays } : {}),
       },
       priv
     );
@@ -133,7 +161,7 @@ export async function handleRenewLicence(
       issued: lic.issued,
       expires: lic.expires,
       max_version: lic.max_version,
-      issued_by: `${caller.email} (renew ${serial})`,
+      issued_by: `${caller.email} (renew ${serial}${planChange})`,
     });
     return json({ ok: true, licence: lic, renewed_from: serial }, 201);
   } catch (e) {

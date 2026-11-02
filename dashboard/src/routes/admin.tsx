@@ -514,28 +514,88 @@ function LicencesTab({ onError }: { onError: (e: string | null) => void }) {
     Array<{ site_id: string; edition: string; expires: string; days_left: number | null; state: string; app_version: string; packager_fp: string; updated_at: string }>
   >([]);
   const [loading, setLoading] = useState(true);
+  const [changing, setChanging] = useState<string | null>(null);
+  const [planPick, setPlanPick] = useState<Record<string, string>>({});
+  const [notice, setNotice] = useState<string | null>(null);
+  async function refresh() {
+    try {
+      const d = await api("/api/licenses");
+      setRows(d.licences);
+      const t = await api("/api/admin/site-licences");
+      setTracked(t.tracked ?? []);
+      onError(null);
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "licences failed");
+    }
+  }
   useEffect(() => {
     (async () => {
-      try {
-        const d = await api("/api/licenses");
-        setRows(d.licences);
-        const t = await api("/api/admin/site-licences");
-        setTracked(t.tracked ?? []);
-        onError(null);
-      } catch (e) {
-        onError(e instanceof Error ? e.message : "licences failed");
-      } finally {
-        setLoading(false);
-      }
+      await refresh();
+      setLoading(false);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  async function changePlan(siteId: string) {
+    const latestSerial = rows.filter((l) => l.site_id === siteId).map((l) => l.serial)[0];
+    if (!latestSerial) {
+      setNotice(`No issued licence found for ${siteId} — issue one from the Licence page first.`);
+      return;
+    }
+    const edition = planPick[siteId] || "pro";
+    setChanging(siteId);
+    setNotice(null);
+    try {
+      const res = await fetch("/api/licenses/renew", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ serial: latestSerial, edition }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error ?? `plan change failed (${res.status})`);
+      const lic = JSON.stringify(data.licence);
+      const blob = new Blob([lic], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `license-${siteId}-${edition}.lic`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      setNotice(`${siteId} moved to ${edition} — new key downloaded, send it to the site.`);
+      await refresh();
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : "plan change failed");
+    } finally {
+      setChanging(null);
+    }
+  }
   const trackedSites = new Set(tracked.map((t) => t.site_id));
   const neverActivated = rows
     .filter((l) => !trackedSites.has(l.site_id))
     .filter((l, i, a) => a.findIndex((x) => x.site_id === l.site_id) === i);
+  const customers = new Set([...tracked.map((t) => t.site_id), ...rows.map((l) => l.site_id)]);
+  const trials = tracked.filter((t) => t.edition === "trial");
+  const endingSoon = tracked.filter((t) => t.days_left != null && t.days_left >= 0 && t.days_left <= 14);
+  const overdue = tracked.filter((t) =>
+    t.state === "blocked" || t.state === "grace" ||
+    (t.edition === "trial" && t.days_left != null && t.days_left < 0));
   return (
     <div className="grid gap-6">
+    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+      {[
+        { k: "Customers", v: String(customers.size) },
+        { k: "Active trials", v: String(trials.filter((t) => t.days_left == null || t.days_left >= 0).length) },
+        { k: "Ending ≤ 14d", v: String(endingSoon.length) },
+        { k: "Overdue", v: String(overdue.length) },
+        { k: "Never activated", v: String(neverActivated.length) },
+      ].map((s) => (
+        <Card key={s.k}>
+          <CardContent className="pt-4">
+            <div className="text-2xl font-bold">{s.v}</div>
+            <div className="text-sm text-muted-foreground">{s.k}</div>
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+    {notice && <p className="text-sm font-medium">{notice}</p>}
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-base">
@@ -560,6 +620,7 @@ function LicencesTab({ onError }: { onError: (e: string | null) => void }) {
                 <TableHead>State</TableHead>
                 <TableHead>App</TableHead>
                 <TableHead>Action</TableHead>
+                <TableHead>Plan</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -582,13 +643,34 @@ function LicencesTab({ onError }: { onError: (e: string | null) => void }) {
                         <span className="text-muted-foreground">—</span>
                       )}
                     </TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        <select
+                          className="flex h-8 rounded-md border border-input bg-transparent px-2 text-xs"
+                          value={planPick[t.site_id] || t.edition || "pro"}
+                          onChange={(e) => setPlanPick({ ...planPick, [t.site_id]: e.target.value })}
+                        >
+                          {["simple", "pro", "premium", "trial"].map((ed) => (
+                            <option key={ed} value={ed}>{ed}</option>
+                          ))}
+                        </select>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={changing === t.site_id}
+                          onClick={() => changePlan(t.site_id)}
+                        >
+                          {changing === t.site_id ? "…" : "Set plan"}
+                        </Button>
+                      </div>
+                    </TableCell>
                   </TableRow>
                 );
               })}
               {neverActivated.map((l) => (
                 <TableRow key={"na-" + l.site_id}>
                   <TableCell className="font-medium">{l.site_id}</TableCell>
-                  <TableCell colSpan={5} className="text-muted-foreground">
+                  <TableCell colSpan={6} className="text-muted-foreground">
                     Key issued {l.issued_by ? `by ${l.issued_by}` : ""} — never activated (no push yet)
                   </TableCell>
                   <TableCell>
