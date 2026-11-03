@@ -22,6 +22,7 @@ from factory import services as S
 from factory.hardware import mock as HW
 from factory.hardware import devices as DEV
 from factory.hardware import config as HWC
+from factory.hardware import status as HWStatus
 from factory.hardware.essae import EssaeDS215, parse_weight_line
 from factory.hardware.qtprint import QtCitizenCLS621
 from tests._auth_helper import ensure_default_users
@@ -795,6 +796,131 @@ def test_autodetect_keeps_env_pinned_config_when_nothing_answers():
         HW.scale, HW.printer = old_s, old_p
 
 
+def test_detect_printer_picks_any_brand_not_citizen_only():
+    """The Citizen-only gate is gone: any label printer matches by hints."""
+    from factory.hardware import autodetect as Auto
+    with _mock.patch("factory.hardware.qtprint.available_printers",
+                      return_value=["Microsoft Print to PDF", "Zebra ZD421"]):
+        assert Auto.detect_printer() == "Zebra ZD421"
+    with _mock.patch("factory.hardware.qtprint.available_printers",
+                      return_value=["Office Laser", "Shipping Label Printer"]):
+        assert Auto.detect_printer() == "Shipping Label Printer"
+    # Citizen still wins when several label printers are installed.
+    with _mock.patch("factory.hardware.qtprint.available_printers",
+                      return_value=["Zebra ZD421", "Citizen CL-S621II"]):
+        assert Auto.detect_printer() == "Citizen CL-S621II"
+
+
+def test_detect_printer_falls_back_to_only_real_printer():
+    """No hint match + exactly one non-virtual printer: take it."""
+    from factory.hardware import autodetect as Auto
+    with _mock.patch("factory.hardware.qtprint.available_printers",
+                      return_value=["Microsoft Print to PDF", "HP LaserJet Pro"]):
+        assert Auto.detect_printer() == "HP LaserJet Pro"
+
+
+def test_detect_printer_never_picks_virtual_or_ambiguous():
+    """Virtual queues are never picked; ambiguous lists stay unconfigured
+    (fail closed) instead of misprinting to the office laser."""
+    from factory.hardware import autodetect as Auto
+    with _mock.patch("factory.hardware.qtprint.available_printers",
+                      return_value=["Microsoft Print to PDF"]):
+        assert Auto.detect_printer() is None
+    with _mock.patch("factory.hardware.qtprint.available_printers",
+                      return_value=["Microsoft Print to PDF", "HP LaserJet",
+                                    "Epson WorkForce"]):
+        assert Auto.detect_printer() is None
+    with _mock.patch("factory.hardware.qtprint.available_printers",
+                      return_value=[]):
+        assert Auto.detect_printer() is None
+
+
+def _live_cfg(**kw):
+    cfg = {"scale_port": "", "scale_baud": 9600, "printer_name": "",
+           "demo_mode": False, "mock_qr": False}
+    cfg.update(kw)
+    return cfg
+
+
+def _live_mocks(ports, printers, usb):
+    """Stacked patches for live-status tests (fully offline)."""
+    return (
+        _mock.patch.object(DEV, "init_error", None),
+        _mock.patch("factory.hardware.devices.is_mock_scale",
+                      return_value=False),
+        _mock.patch("factory.hardware.devices.is_mock_printer",
+                      return_value=False),
+        _mock.patch("factory.hardware.essae.list_ports",
+                      return_value=ports),
+        _mock.patch("factory.hardware.qtprint.available_printers",
+                      return_value=printers),
+        _mock.patch("factory.hardware.status.usb_printer_present",
+                      return_value=usb),
+    )
+
+
+def test_live_status_ready_when_everything_attached():
+    cfg = _live_cfg(scale_port="COM4", printer_name="Citizen X")
+    a, b, c, d, e, f = _live_mocks(["COM4"], ["Citizen X"], True)
+    with a, b, c, d, e, f:
+        states = [s["state"] for s in HWStatus.station_live_status("packaging", cfg)]
+    assert states == ["ready", "ready"], states
+
+
+def test_live_status_unplugged_scale_reads_not_found():
+    """Pulled serial adapter: port gone from enumeration -> setup."""
+    cfg = _live_cfg(scale_port="COM4", printer_name="Citizen X")
+    a, b, c, d, e, f = _live_mocks(["COM9"], ["Citizen X"], True)
+    with a, b, c, d, e, f:
+        specs = HWStatus.station_live_status("packaging", cfg)
+    assert specs[0]["state"] == "setup", specs
+    assert specs[0]["detail"] == "not found", specs
+    assert specs[1]["state"] == "ready", specs
+
+
+def test_live_status_renamed_queue_reads_not_found():
+    cfg = _live_cfg(scale_port="COM4", printer_name="Citizen X")
+    a, b, c, d, e, f = _live_mocks(["COM4"], ["Some Other Printer"], True)
+    with a, b, c, d, e, f:
+        specs = HWStatus.station_live_status("packaging", cfg)
+    assert specs[0]["state"] == "ready", specs
+    assert specs[1]["state"] == "setup", specs
+    assert specs[1]["detail"] == "not found", specs
+
+
+def test_live_status_usb_gone_reads_not_found():
+    """Queue persists but no USB printer attached (the unplug repro)."""
+    cfg = _live_cfg(scale_port="COM4", printer_name="Citizen X")
+    a, b, c, d, e, f = _live_mocks(["COM4"], ["Citizen X"], False)
+    with a, b, c, d, e, f:
+        specs = HWStatus.station_live_status("packaging", cfg)
+    assert specs[0]["state"] == "ready", specs
+    assert specs[1]["state"] == "setup", specs
+
+
+def test_live_status_unknowable_keeps_last_verdict():
+    """USB presence unknowable (None): never flap a working pill."""
+    cfg = _live_cfg(scale_port="COM4", printer_name="Citizen X")
+    a, b, c, d, e, f = _live_mocks(["COM4"], ["Citizen X"], None)
+    with a, b, c, d, e, f:
+        states = [s["state"] for s in HWStatus.station_live_status("packaging", cfg)]
+    assert states == ["ready", "ready"], states
+
+
+def test_sysfs_usb_printer_scan(tmp_path):
+    """Interface class 07 enumerates; anything else does not."""
+    iface = os.path.join(str(tmp_path), "3-2:1.0")
+    os.makedirs(iface)
+    with open(os.path.join(iface, "bInterfaceClass"), "w") as f:
+        f.write("07\n")
+    assert HWStatus._sysfs_usb_printer_present(str(tmp_path)) is True
+    with open(os.path.join(iface, "bInterfaceClass"), "w") as f:
+        f.write("03\n")
+    assert HWStatus._sysfs_usb_printer_present(str(tmp_path)) is False
+    assert HWStatus._sysfs_usb_printer_present(
+        os.path.join(str(tmp_path), "nope")) is False
+
+
 def test_read_scale_real_success_writes_measured():
     p = _fresh_db()
     job = S.create_job("REAL OK JOB", core_wt=0.280, path=p)
@@ -899,5 +1025,14 @@ if __name__ == "__main__":
     test_autodetect_no_answer_stays_unconfigured()
     test_autodetect_forgets_devices_that_stopped_answering()
     test_autodetect_keeps_env_pinned_config_when_nothing_answers()
+    test_detect_printer_picks_any_brand_not_citizen_only()
+    test_detect_printer_falls_back_to_only_real_printer()
+    test_detect_printer_never_picks_virtual_or_ambiguous()
+    test_live_status_ready_when_everything_attached()
+    test_live_status_unplugged_scale_reads_not_found()
+    test_live_status_renamed_queue_reads_not_found()
+    test_live_status_usb_gone_reads_not_found()
+    test_live_status_unknowable_keeps_last_verdict()
+    test_sysfs_usb_printer_scan()
     test_autodetect_concurrent_runs_do_not_clobber()
     print("test_hardware_real PASS")

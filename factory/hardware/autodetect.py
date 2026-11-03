@@ -9,7 +9,9 @@ figures the hardware out by itself:
                   That is a real handshake, not a name guess — a wrong port
                   stays silent, so a false positive is not possible.
   Label printer   reads the installed Windows/Linux printer list and picks the
-                  one whose name matches the Citizen CL-S621 family.
+                  label printer out of it, any brand (name hints first, then
+                  the only real printer when there is exactly one; virtual
+                  queues like Print-to-PDF are never picked).
   QR scanner      nothing to detect — keyboard wedge.
 
 Detected values are written to the same `hardware.json` the old dialog used,
@@ -42,8 +44,21 @@ FALLBACK_BAUDS = (19200, 38400, 57600, 115200)
 PROBE_DWELL = 0.45          # seconds per port; the indicator streams ~10/s
 PROBE_TIMEOUT = 0.5         # serial read timeout
 
-# Substrings that identify the label printer in the OS printer list.
-PRINTER_HINTS = ("citizen", "cl-s621", "cl-s6", "cls-621")
+# Substrings that identify a LABEL printer in the OS printer list, any
+# brand. Citizen entries stay first so the current fleet keeps resolving to
+# the same queue it always did. Generic words ("label", "barcode",
+# "thermal") catch custom-named queues; anything still unmatched falls back
+# to the only real printer when there is exactly one (see detect_printer).
+PRINTER_HINTS = ("citizen", "cl-s621", "cl-s6", "cls-621",
+                 "zebra", "tsc", "datamax", "honeywell", "brother", "dymo",
+                 "sato", "cab", "godex", "postek", "intermec", "bixolon",
+                 "label", "barcode", "thermal")
+
+# Queues that are never a label printer, even as a last resort (Windows
+# always has at least one of these; picking one would "print" stickers
+# into a PDF file and report success).
+VIRTUAL_PRINTER_HINTS = ("print to pdf", "xps document writer", "onenote",
+                         "fax")
 
 
 # ---- weigh machine --------------------------------------------------------
@@ -114,10 +129,21 @@ def detect_scale(cfg: dict | None = None, save: bool = True) -> dict | None:
 
 
 # ---- label printer --------------------------------------------------------
+def _is_virtual_printer(name: str) -> bool:
+    """True for Windows virtual queues (PDF/XPS/OneNote/Fax) — never picked."""
+    low = name.casefold()
+    return any(needle in low for needle in VIRTUAL_PRINTER_HINTS)
+
+
 def detect_printer(save: bool = True) -> str | None:
-    """Pick the Citizen label printer out of the OS printer list.
+    """Pick the label printer out of the OS printer list, any brand.
 
     Probe only (see detect_scale): persistence is done by `detect_all`.
+    Order: label-printer name hints first (Citizen entries first, so the
+    current fleet resolves exactly as before), then the only real printer
+    when there is exactly one. Virtual queues are never picked, and an
+    ambiguous list with no hint match stays unconfigured (fail closed —
+    set the exact queue name instead of misprinting to the office laser).
     """
     from .qtprint import available_printers
 
@@ -128,6 +154,9 @@ def detect_printer(save: bool = True) -> str | None:
         for name in names:
             if needle in name.casefold():
                 return name
+    real = [n for n in names if not _is_virtual_printer(n)]
+    if len(real) == 1:
+        return real[0]
     return None
 
 

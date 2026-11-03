@@ -24,6 +24,19 @@ hardware surface.
 
 Detection runs on a worker thread (`DetectionController`), so probing ports
 never blocks the UI. It fires once at startup (`MainWindow.detect_devices()`).
+A probe that finds nothing forgets the stored entry (unless an env override
+pins it), so a vanished device reads "not found" instead of "ready".
+
+## Realtime pills (live presence, display only)
+
+Detection passes are on demand (startup / Refresh / pill click) — but pills
+must not lie between passes. Every strip re-renders every 5s from
+`status.station_live_status()`: cheap read-only checks (serial enumeration,
+OS printer list, USB printer-class scan), never port opens, never config
+writes. A configured-but-vanished device reads `setup`/`not found` within
+one tick; replugging heals the pill with no click. Only explicit detection
+persists anything. `None` (unknowable platform/failure) keeps the last
+verdict instead of flapping.
 
 ## Interacting with the pills
 

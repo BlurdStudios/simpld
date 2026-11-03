@@ -25,7 +25,7 @@ operators can never turn it on. Demo installers (*-demo.exe) are USB-only.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QSize, QObject, QThread, Signal
+from PySide6.QtCore import Qt, QSize, QObject, QThread, Signal, QTimer
 from PySide6.QtWidgets import (QWidget, QHBoxLayout, QLabel, QFrame, QSizePolicy,
                                QPushButton, QMessageBox)
 
@@ -290,6 +290,14 @@ class DeviceStrip(QWidget):
         self._ctrl = shared_controller()
         self._ctrl.finished.connect(self._on_detected)
         self.refresh()
+        # Realtime pills: cheap presence re-read (port enumeration, printer
+        # list, USB class scan — no probing, no config writes) so pulled
+        # cables flip the pill within seconds. Skipped while a detection
+        # run owns the states; only explicit detection persists anything.
+        self._live = QTimer(self)
+        self._live.setInterval(5000)
+        self._live.timeout.connect(self._live_refresh)
+        self._live.start()
 
     def eventFilter(self, obj, ev):
         from PySide6.QtCore import QEvent
@@ -378,6 +386,25 @@ class DeviceStrip(QWidget):
                               HWStatus.station_status(self._station)):
             pill.refresh(spec)
         self.btn_refresh.setEnabled(not self._ctrl.busy())
+
+    def _live_refresh(self) -> None:
+        """Poll tick: re-render pills with live presence applied.
+
+        Display only — never probes serial ports, never writes config.
+        A skipped tick (detection running, or any error) simply keeps the
+        current pills until the next one.
+        """
+        if self._ctrl.busy():
+            return
+        try:
+            specs = HWStatus.station_live_status(self._station)
+        except Exception:
+            return
+        for pill, spec in zip(self._pills.values(), specs):
+            try:
+                pill.refresh(spec)
+            except Exception:
+                pass
 
     # convenience used by pages that just want to kick off a first detection
     def autodetect_now(self) -> None:
