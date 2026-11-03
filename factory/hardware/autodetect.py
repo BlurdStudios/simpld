@@ -21,6 +21,7 @@ never blocks while ports are probed.
 """
 from __future__ import annotations
 
+import os
 import re
 import threading
 
@@ -138,6 +139,11 @@ def detect_all(save: bool = True, cfg: dict | None = None) -> dict:
     into ONE config read-modify-write, so the two devices can never overwrite
     each other's detection. Anything not found stays unconfigured, so
     devices.py keeps failing closed rather than quietly switching to the mock.
+
+    A device the probe can no longer find is FORGOTTEN (its entry is cleared)
+    so the pills read "not found" instead of "ready" for phantom hardware —
+    unless an env override (SIMPLD_SCALE_PORT / SIMPLD_PRINTER_NAME) pins it,
+    which keeps winning as documented in hardware/config.py.
     """
     with _LOCK:
         cfg = dict(cfg) if cfg is not None else _config.load()
@@ -159,9 +165,19 @@ def detect_all(save: bool = True, cfg: dict | None = None) -> dict:
                 changed = True
             cfg["scale_port"] = scale["port"]
             cfg["scale_baud"] = scale["baud"]
+        elif (cfg.get("scale_port")
+                and cfg.get("scale_port") != os.environ.get("SIMPLD_SCALE_PORT")):
+            # Probed, nothing answered, nobody pinned it: forget the stale
+            # port instead of reporting "ready" for a scale that is gone.
+            changed = True
+            cfg["scale_port"] = ""
         if printer and cfg.get("printer_name") != printer:
             changed = True
             cfg["printer_name"] = printer
+        elif (not printer and cfg.get("printer_name")
+                and cfg.get("printer_name") != os.environ.get("SIMPLD_PRINTER_NAME")):
+            changed = True
+            cfg["printer_name"] = ""
 
         if changed and save:
             try:
@@ -180,7 +196,8 @@ def detect_one(key: str, save: bool = True) -> dict:
     """Re-detect a single device (what clicking one pill does).
 
     Same single read-modify-write discipline as detect_all, but scoped to one
-    device so the other one's stored config is preserved.
+    device so the other one's stored config is preserved. Like detect_all, a
+    probe that finds nothing forgets the stale entry (unless env-pinned).
     """
     with _LOCK:
         cfg = dict(_config.load())
@@ -190,10 +207,16 @@ def detect_one(key: str, save: bool = True) -> dict:
             if out["scale"]:
                 cfg["scale_port"] = out["scale"]["port"]
                 cfg["scale_baud"] = out["scale"]["baud"]
+            elif (cfg.get("scale_port")
+                    and cfg.get("scale_port") != os.environ.get("SIMPLD_SCALE_PORT")):
+                cfg["scale_port"] = ""
         elif key == "printer":
             out["printer"] = detect_printer()
             if out["printer"]:
                 cfg["printer_name"] = out["printer"]
+            elif (cfg.get("printer_name")
+                    and cfg.get("printer_name") != os.environ.get("SIMPLD_PRINTER_NAME")):
+                cfg["printer_name"] = ""
         if save:
             try:
                 _config.save(cfg)

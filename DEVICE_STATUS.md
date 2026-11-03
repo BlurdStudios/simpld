@@ -41,8 +41,11 @@ using the mock.
 
 - **Several scales answer** — the already-configured port wins, so a restart
   never silently migrates to a different machine.
-- **Nothing answers** — the pill reads `not found` and the app stays
-  unconfigured (fail-closed). Fix the cable/power and click the pill again.
+- **Nothing answers** — the stored entry is forgotten and the pill reads
+  `not found` (env pins like `SIMPLD_SCALE_PORT` still win); the app stays
+  unconfigured (fail-closed). A device that was unplugged can therefore never
+  report "ready" from a stale `hardware.json`. Fix the cable/power and click
+  the pill again.
 
 ## Two layout rules that are load-bearing
 

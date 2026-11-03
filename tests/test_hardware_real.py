@@ -9,6 +9,7 @@ persistence. Temp DB + offscreen — never production, never real hardware.
 """
 import os
 import sys
+import json
 import tempfile
 from unittest import mock as _mock
 
@@ -700,6 +701,100 @@ def test_autodetect_no_answer_stays_unconfigured():
         HW.scale, HW.printer = old_s, old_p
 
 
+def test_autodetect_forgets_devices_that_stopped_answering():
+    """Stale hardware.json must not report phantom 'ready' pills.
+
+    Regression: detect_all only wrote on success, so a scale/printer that
+    vanished kept its old port/name and the pills read 'ready' for hardware
+    that was no longer there. A probe that finds nothing now clears the
+    entry (unless an env override pins it).
+    """
+    from factory.hardware import autodetect as Auto
+    tmp = os.path.join(tempfile.mkdtemp(prefix="simpld-auto-"), "hardware.json")
+    old_json = os.environ.get("SIMPLD_HW_JSON")
+    old_s, old_p = HW.scale, HW.printer
+    old_port = os.environ.pop("SIMPLD_SCALE_PORT", None)
+    old_name = os.environ.pop("SIMPLD_PRINTER_NAME", None)
+    os.environ["SIMPLD_HW_JSON"] = tmp
+    with open(tmp, "w") as f:
+        json.dump({"scale_port": "COM7", "scale_baud": 9600,
+                   "printer_name": "Citizen-CLS621"}, f)
+
+    class Silent(EssaeDS215):
+        def _read_lines(self, dwell=0.8):
+            return []
+
+    try:
+        with _mock.patch("factory.hardware.essae.list_ports",
+                          return_value=["COM7"]), \
+              _mock.patch.object(EssaeDS215, "_read_lines", Silent._read_lines), \
+              _mock.patch("factory.hardware.qtprint.available_printers",
+                          return_value=["Microsoft Print to PDF"]):
+            result = Auto.detect_all(save=True)
+        assert result["scale"] is None, result
+        assert result["printer"] is None, result
+        cfg = HWC.load(tmp)
+        assert cfg["scale_port"] == "", cfg
+        assert cfg["printer_name"] == "", cfg
+    finally:
+        if old_json is None:
+            os.environ.pop("SIMPLD_HW_JSON", None)
+        else:
+            os.environ["SIMPLD_HW_JSON"] = old_json
+        if old_port is not None:
+            os.environ["SIMPLD_SCALE_PORT"] = old_port
+        if old_name is not None:
+            os.environ["SIMPLD_PRINTER_NAME"] = old_name
+        HW.scale, HW.printer = old_s, old_p
+
+
+def test_autodetect_keeps_env_pinned_config_when_nothing_answers():
+    """Env overrides still win: a pinned entry is not forgotten."""
+    from factory.hardware import autodetect as Auto
+    tmp = os.path.join(tempfile.mkdtemp(prefix="simpld-auto-"), "hardware.json")
+    old_json = os.environ.get("SIMPLD_HW_JSON")
+    old_s, old_p = HW.scale, HW.printer
+    old_port = os.environ.get("SIMPLD_SCALE_PORT")
+    old_name = os.environ.get("SIMPLD_PRINTER_NAME")
+    os.environ["SIMPLD_HW_JSON"] = tmp
+    os.environ["SIMPLD_SCALE_PORT"] = "COM9"
+    os.environ["SIMPLD_PRINTER_NAME"] = "Pinned Printer"
+    with open(tmp, "w") as f:
+        json.dump({"scale_port": "COM7", "scale_baud": 9600,
+                   "printer_name": "Citizen-CLS621"}, f)
+
+    class Silent(EssaeDS215):
+        def _read_lines(self, dwell=0.8):
+            return []
+
+    try:
+        with _mock.patch("factory.hardware.essae.list_ports",
+                          return_value=["COM9"]), \
+              _mock.patch.object(EssaeDS215, "_read_lines", Silent._read_lines), \
+              _mock.patch("factory.hardware.qtprint.available_printers",
+                          return_value=["Microsoft Print to PDF"]):
+            result = Auto.detect_all(save=True)
+        assert result["scale"] is None, result
+        assert result["printer"] is None, result
+        cfg = HWC.load(tmp)
+        assert cfg["scale_port"] == "COM9", cfg
+        assert cfg["printer_name"] == "Pinned Printer", cfg
+    finally:
+        if old_json is None:
+            os.environ.pop("SIMPLD_HW_JSON", None)
+        else:
+            os.environ["SIMPLD_HW_JSON"] = old_json
+        if old_port is None:
+            os.environ.pop("SIMPLD_SCALE_PORT", None)
+        else:
+            os.environ["SIMPLD_SCALE_PORT"] = old_port
+        if old_name is None:
+            os.environ.pop("SIMPLD_PRINTER_NAME", None)
+        else:
+            os.environ["SIMPLD_PRINTER_NAME"] = old_name
+        HW.scale, HW.printer = old_s, old_p
+
+
 def test_read_scale_real_success_writes_measured():
     p = _fresh_db()
     job = S.create_job("REAL OK JOB", core_wt=0.280, path=p)
@@ -802,5 +897,7 @@ if __name__ == "__main__":
     test_autodetect_finds_scale_by_probing_ports()
     test_autodetect_persists_scale_and_printer()
     test_autodetect_no_answer_stays_unconfigured()
+    test_autodetect_forgets_devices_that_stopped_answering()
+    test_autodetect_keeps_env_pinned_config_when_nothing_answers()
     test_autodetect_concurrent_runs_do_not_clobber()
     print("test_hardware_real PASS")
