@@ -153,6 +153,7 @@ back. `--prune` deletes older installers from the folder after publishing.
 | `SIMPLD_UPDATE_DIR=/path` | local updates folder (packager / USB) |
 | `SIMPLD_UPDATE_FORCE=1` | allow the startup check in a source (dev) run |
 | `SIMPLD_SERVER_HOST/PORT/CA_CERT` | existing LAN wiring — also selects the LAN update channel |
+| `SSL_CERT_FILE=/path/ca-bundle.pem` | trust this CA bundle for update downloads instead of the PC's store |
 
 ## Troubleshooting
 
@@ -165,6 +166,13 @@ back. `--prune` deletes older installers from the folder after publishing.
   updater is pointing at a repo it cannot read. It must point at the public
   mirror (`SIMPLD_UPDATE_REPO` overrides it); releases in the private repo are
   invisible to installed copies by design.
+- **Log shows `certificate verify failed` but the browser works.** That PC's
+  Windows certificate store is broken (stale roots, AV interception) — the
+  browser uses its own certificates, the app used to use the store. Since
+  1.4.1 the app pins update downloads to CA certificates shipped with it,
+  so this heals itself on upgrade; install that version once via USB. For
+  an immediate trust override without upgrading, point `SSL_CERT_FILE` at a
+  valid CA bundle file.
 - **Tag build fails: `RELEASE_MIRROR_TOKEN is not set`.** Complete
   *Release mirror setup* above, then re-run the tag build.
 - **Update prompt appears, install fails at UAC.** The Windows account needs

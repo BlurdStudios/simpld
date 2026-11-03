@@ -42,6 +42,9 @@ Environment switches (see UPDATES.md):
   SIMPLD_UPDATE_GITHUB=0    skip the GitHub channel (offline fleet)
   SIMPLD_UPDATE_REPO=...    override the repo (fork/testing)
   SIMPLD_UPDATE_DIR=...     override the local updates folder
+  SSL_CERT_FILE=...         trust this CA bundle instead of the PC's store
+                            (honoured for update downloads; explicit LAN
+                            anchors still win)
 """
 from __future__ import annotations
 
@@ -210,15 +213,44 @@ def read_sha256_file(path: str) -> str:
 # HTTP
 # --------------------------------------------------------------------------
 
+def _tls_context(explicit_ca: str = "") -> "ssl.SSLContext | None":
+    """TLS trust for update downloads. Never the PC's store alone.
+
+    Floor PCs have broken Windows certificate stores (stale roots, AV
+    interception) while their browsers work fine — so GitHub downloads pin
+    to a CA bundle shipped with the app instead:
+
+    1. an explicitly passed anchor (the LAN channel's packager cert) wins;
+    2. else `SSL_CERT_FILE` (OpenSSL convention) when it names a real file;
+    3. else the bundled `certifi` Mozilla roots;
+    4. else None (system defaults — same as before, never a crash).
+
+    Verification is always on; only the *source* of trust changes.
+    """
+    cafile = (explicit_ca or "").strip()
+    kind = "LAN trust anchor"
+    if not cafile:
+        env = os.environ.get("SSL_CERT_FILE", "").strip()
+        if env and os.path.isfile(env):
+            cafile, kind = env, "SSL_CERT_FILE bundle"
+    if not cafile:
+        try:
+            import certifi
+            cafile, kind = certifi.where(), "bundled CA bundle"
+        except Exception:
+            cafile = ""
+    if not cafile:
+        return None
+    try:
+        return ssl.create_default_context(cafile=cafile)
+    except (OSError, ssl.SSLError) as exc:
+        raise UpdateError(f"cannot load {kind}: {exc}")
+
+
 def _http_get(url: str, *, timeout: float = HTTP_TIMEOUT,
               ca_cert: str = "", max_bytes: int = 1024 * 1024) -> bytes:
     """GET a URL; every transport problem becomes UpdateError (safe to log)."""
-    context = None
-    if ca_cert:
-        try:
-            context = ssl.create_default_context(cafile=ca_cert)
-        except (OSError, ssl.SSLError) as exc:
-            raise UpdateError(f"cannot load LAN trust anchor: {exc}")
+    context = _tls_context(ca_cert)
     req = urllib.request.Request(url, headers={
         "User-Agent": USER_AGENT,
         "Accept": "application/json, */*",
@@ -457,9 +489,7 @@ def download_and_verify(info: UpdateInfo, dest_dir: str | None = None,
                     if progress:
                         progress(done, total)
         else:
-            context = None
-            if info.ca_cert:
-                context = ssl.create_default_context(cafile=info.ca_cert)
+            context = _tls_context(info.ca_cert)
             req = urllib.request.Request(info.url, headers={
                 "User-Agent": USER_AGENT})
             with urllib.request.urlopen(req, timeout=30,

@@ -400,3 +400,41 @@ def test_lan_endpoint_404_without_updates_dir(tls_pair):
             th.join(timeout=10)
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+# --------------------------------------------------------------------------
+# TLS trust: bundled CAs, never the PC's store alone
+# --------------------------------------------------------------------------
+
+def _certifi_bundle():
+    certifi = pytest.importorskip("certifi")
+    return certifi.where()
+
+
+def test_tls_context_pins_to_explicit_anchor():
+    ca = _certifi_bundle()
+    ctx = U._tls_context(ca)
+    assert isinstance(ctx, ssl.SSLContext)
+    assert ctx.verify_mode == ssl.CERT_REQUIRED
+
+
+def test_tls_context_bad_explicit_anchor_raises(tmp_path):
+    bad = os.path.join(str(tmp_path), "nope.pem")
+    with open(bad, "w", encoding="ascii") as f:
+        f.write("not a certificate\n")
+    with pytest.raises(U.UpdateError):
+        U._tls_context(bad)
+
+
+def test_tls_context_honours_ssl_cert_file(monkeypatch):
+    ca = _certifi_bundle()
+    monkeypatch.setenv("SSL_CERT_FILE", ca)
+    ctx = U._tls_context("")
+    assert isinstance(ctx, ssl.SSLContext)
+    assert ctx.verify_mode == ssl.CERT_REQUIRED
+
+
+def test_tls_context_ignores_missing_ssl_cert_file(monkeypatch):
+    monkeypatch.setenv("SSL_CERT_FILE", "/nonexistent/ca-bundle.pem")
+    ctx = U._tls_context("")  # falls through to bundled CAs, never crashes
+    assert ctx is None or isinstance(ctx, ssl.SSLContext)

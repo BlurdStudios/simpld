@@ -3,3 +3,4 @@ qrcode[pil]==8.2
 Pillow==12.3.0
 pyserial==3.5
 cryptography==46.0.3
+certifi==2026.01.04
