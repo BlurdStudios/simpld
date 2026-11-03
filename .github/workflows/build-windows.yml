@@ -4,11 +4,14 @@ name: Build Windows
 # (PyInstaller cannot cross-compile from Linux; the local Wine route is
 # documented as blocked in DEMO_WINDOWS.md.)
 #
-# Branch pushes -> build + artifacts (smoke test).
-# Version tags (v1.2.3) -> same build, then a GitHub Release carrying the
-# installer and its .sha256 — that release is what every installed copy of
-# Simpl'd auto-updates from (see UPDATES.md). The tag must match
-# factory/version.py, or the release job fails before anything is published.
+# Branch pushes build nothing (deliberate): CI runs on version tags only,
+# plus manual dispatch. Push to main freely; cut a tag when a release
+# should be tested, built, and published.
+# Version tags (v1.2.3) -> test gate, then the same build, then a GitHub
+# Release carrying the installer and its .sha256 — that release is what
+# every installed copy of Simpl'd auto-updates from (see UPDATES.md).
+# The tag must match factory/version.py, or the release job fails before
+# anything is published.
 #
 # Editions: the build job runs twice per trigger — prod (the floor build,
 # no Demo switch) and demo (same commit with DEMO_ENABLED flipped to True,
@@ -17,7 +20,6 @@ name: Build Windows
 # to the release mirror, so the fleet can never auto-update into one.
 on:
   push:
-    branches: [main, master]
     tags: ["v*"]
   workflow_dispatch:
 
@@ -109,10 +111,10 @@ jobs:
             Write-Host "::endgroup::"
           }
 
-  # Release builds run ONLY on version tags. Branch pushes run the test
-  # job above and stop there — no duplicate 8-minute installer build per
-  # fix commit. A tag still runs the full gate (test -> build -> mirror
-  # publish), so nothing untested ever ships.
+  # Release builds run ONLY on version tags (and manual dispatch runs the
+  # test job only — the build job still requires a tag). A tag runs the
+  # full gate (test -> build -> mirror publish), so nothing untested
+  # ever ships.
   build:
     if: github.ref_type == 'tag'
     needs: test
