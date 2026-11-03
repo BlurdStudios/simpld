@@ -907,18 +907,21 @@ def test_live_status_unknowable_keeps_last_verdict():
     assert states == ["ready", "ready"], states
 
 
-def test_sysfs_usb_printer_scan(tmp_path):
-    """Interface class 07 enumerates; anything else does not."""
-    iface = os.path.join(str(tmp_path), "3-2:1.0")
-    os.makedirs(iface)
-    with open(os.path.join(iface, "bInterfaceClass"), "w") as f:
-        f.write("07\n")
-    assert HWStatus._sysfs_usb_printer_present(str(tmp_path)) is True
-    with open(os.path.join(iface, "bInterfaceClass"), "w") as f:
-        f.write("03\n")
-    assert HWStatus._sysfs_usb_printer_present(str(tmp_path)) is False
-    assert HWStatus._sysfs_usb_printer_present(
-        os.path.join(str(tmp_path), "nope")) is False
+def test_sysfs_usb_printer_scan():
+    """Interface class 07 enumerates; anything else does not.
+
+    Pure-logic test with fake entries: a ':' cannot be created as a
+    directory name on Windows, so this never touches the filesystem.
+    """
+    hit = lambda n: "07\n" if n == "3-2:1.0" else "03\n"  # noqa: E731
+    assert HWStatus._sysfs_entries_have_printer(
+        ["3-1", "3-2:1.0", "usb1"], hit) is True
+    assert HWStatus._sysfs_entries_have_printer(
+        ["3-1", "3-2:1.0", "usb1"], lambda n: "03\n") is False
+    assert HWStatus._sysfs_entries_have_printer(
+        ["3-1", "usb1"], hit) is False
+    assert HWStatus._sysfs_entries_have_printer([], hit) is False
+    assert HWStatus._sysfs_usb_printer_present("/nonexistent-xyz") is False
 
 
 def test_read_scale_real_success_writes_measured():

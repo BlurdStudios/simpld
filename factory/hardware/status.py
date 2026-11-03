@@ -202,23 +202,36 @@ def station_status(station: str, cfg: dict | None = None) -> list[dict]:
 _SYSFS_USB_ROOT = "/sys/bus/usb/devices"
 
 
+def _sysfs_entries_have_printer(names, read_class) -> bool:
+    """Pure scan core: interface nodes (name contains ':') whose class is 07.
+
+    Split out so tests never touch the filesystem — a ':' cannot even be
+    created as a directory name on Windows.
+    """
+    for name in names:
+        if ":" not in name:
+            continue  # device nodes, not interfaces
+        try:
+            if (read_class(name) or "").strip() == "07":
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def _sysfs_usb_printer_present(root: str = _SYSFS_USB_ROOT) -> bool:
     """True when any USB interface of printer class (07) is enumerated."""
     try:
         names = os.listdir(root)
     except OSError:
         return False
-    for name in names:
-        if ":" not in name:
-            continue  # device nodes, not interfaces
-        try:
-            with open(os.path.join(root, name, "bInterfaceClass"),
-                      "r", errors="replace") as f:
-                if f.read().strip() == "07":
-                    return True
-        except OSError:
-            continue
-    return False
+
+    def _read(name: str) -> str:
+        with open(os.path.join(root, name, "bInterfaceClass"),
+                  "r", errors="replace") as f:
+            return f.read()
+
+    return _sysfs_entries_have_printer(names, _read)
 
 
 def _windows_usbprint_present() -> bool | None:
