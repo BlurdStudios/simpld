@@ -3,8 +3,13 @@
 # Windows Python + PyInstaller. Never touches ~/.wine, global Wine config, or
 # existing apps. Official downloads only (python.org, PyPI).
 #
-# Usage:  tools/build_windows_wine.sh [--skip-install]
+# Usage:  tools/build_windows_wine.sh [--skip-install] [--demo]
 # Output: dist/Simpld/Simpld.exe  +  dist/Simpld-windows-demo.zip (+ .sha256)
+#
+# --skip-install: reuse the Windows Python already in the isolated prefix.
+# --demo: flip DEMO_ENABLED to True in the STAGED copy only (the repo file
+#   is untouched), so the frozen app is the demo edition. The installer is
+#   renamed to Simpld-Setup-X.Y.Z-demo.exe afterwards (CI does the same).
 #
 # Requirements on the Linux host: wine (>=8), curl, unzip, zip.
 set -euo pipefail
@@ -40,7 +45,15 @@ if [ ! -f "$WINEPREFIX/system.reg" ]; then
 fi
 
 # 2. Official Windows Python (python.org only).
-if [ "${1:-}" != "--skip-install" ] || ! wine "$WINPY" --version >/dev/null 2>&1; then
+SKIP_INSTALL=0
+DEMO_BUILD=0
+for a in "$@"; do
+  case "$a" in
+    --skip-install) SKIP_INSTALL=1 ;;
+    --demo) DEMO_BUILD=1 ;;
+  esac
+done
+if [ "$SKIP_INSTALL" != "1" ] || ! wine "$WINPY" --version >/dev/null 2>&1; then
   if [ ! -f "$PY_CACHE" ]; then
     log "downloading $PY_URL"
     curl -fL --retry 3 -o "$PY_CACHE" "$PY_URL"
@@ -63,6 +76,18 @@ mkdir -p "$STAGE"
 cp "$PROJ/run.py" "$STAGE/"
 cp -r "$PROJ/factory" "$STAGE/"
 cp -r "$PROJ/build" "$STAGE/"
+# Demo edition: same commit, baked flag flipped in the staged copy only.
+# The repo file stays DEMO_ENABLED = False (prod).
+if [ "$DEMO_BUILD" = "1" ]; then
+  log "demo edition: flipping DEMO_ENABLED in staged copy"
+  python3 - "$STAGE/factory/version.py" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+assert "DEMO_ENABLED = False" in s, "edition flag missing"
+open(p, "w").write(s.replace("DEMO_ENABLED = False", "DEMO_ENABLED = True"))
+EOF
+fi
 find "$STAGE" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
 find "$STAGE" -name "*.pyc" -delete 2>/dev/null || true
 if [ -f "$STAGE/factory.db" ] || [ -d "$STAGE/data" ]; then
@@ -98,10 +123,19 @@ ls -la "$DIST_DIR" | head
 # Install once: wine innosetup-6.7.3.exe /VERYSILENT /DIR="C:\\InnoSetup"
 # (https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe)
 if [ -f "$WINEPREFIX/drive_c/InnoSetup/ISCC.exe" ]; then
-  log "compiling Inno Setup installer"
-  wine "C:\\InnoSetup\\ISCC.exe" "Z:/$(echo "$PROJ" | sed 's#^/##')/build/windows/simpld.iss"
-  (cd "$DIST_DIR" && sha256sum "Simpld-Setup-1.0.0.exe" > "Simpld-Setup-1.0.0.exe.sha256")
-  log "done: $DIST_DIR/Simpld-Setup-1.0.0.exe"
+  APPVER="$(python3 -c "import sys; sys.path.insert(0, \"$PROJ\"); from factory.version import VERSION; print(VERSION)")"
+  log "compiling Inno Setup installer (v$APPVER)"
+  wine "C:\\InnoSetup\\ISCC.exe" "/DMyAppVersion=$APPVER" "Z:/$(echo "$PROJ" | sed 's#^/##')/build/windows/simpld.iss"
+  if [ "$DEMO_BUILD" = "1" ]; then
+    log "renaming demo installer"
+    mv "$DIST_DIR/Simpld-Setup-$APPVER.exe" "$DIST_DIR/Simpld-Setup-$APPVER-demo.exe"
+    (cd "$DIST_DIR" && sha256sum "Simpld-Setup-$APPVER-demo.exe" > "Simpld-Setup-$APPVER-demo.exe.sha256")
+    rm -f "$DIST_DIR/Simpld-Setup-$APPVER.exe.sha256"
+    log "done: $DIST_DIR/Simpld-Setup-$APPVER-demo.exe"
+  else
+    (cd "$DIST_DIR" && sha256sum "Simpld-Setup-$APPVER.exe" > "Simpld-Setup-$APPVER.exe.sha256")
+    log "done: $DIST_DIR/Simpld-Setup-$APPVER.exe"
+  fi
 else
   log "Inno Setup not installed in prefix — installer step skipped"
 fi
