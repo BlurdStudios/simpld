@@ -186,11 +186,13 @@ def test_reel_sticker_shows_no_of_pieces():
     img_none = L.render_reel(job_none, reel)
     # Fixed 100x50mm stock: same canvas regardless of piece count.
     assert img_none.size == (799, 399), img_none.size
+    assert "Pieces" not in reel_label_text(job_none, reel), \
+        "unknown count prints nothing, not even the label"
     assert img.tobytes() != img_none.tobytes(), \
         "the count must be drawn into the art, not only stated"
     # unknown job (no key at all — same shape as test_hardware_real._job_reel_detail)
     job_unk = {"job_no": 4167, "job_name": "APPY FIZZ-160ML BODY"}
-    assert "No of Pieces:unknown" in reel_label_text(job_unk, reel)
+    assert "Pieces" not in reel_label_text(job_unk, reel)
     img_unk = L.render_reel(job_unk, reel)
     assert img_unk.size == (799, 399), img_unk.size
 

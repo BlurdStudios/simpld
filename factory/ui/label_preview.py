@@ -206,9 +206,9 @@ def set_preview_label(label, px_or_text):
 def _pieces_txt(job: dict) -> str:
     wpr = job.get("wrappers_per_reel")
     try:
-        return f"No of Pieces:{int(wpr)}" if wpr is not None else "No of Pieces:unknown"
+        return f"No of Pieces:{int(wpr)}" if wpr is not None else ""
     except (TypeError, ValueError):
-        return "No of Pieces:unknown"
+        return ""
 
 
 def _queue_name_of(printer) -> str:
@@ -290,16 +290,17 @@ def reel_label_text(job: dict, reel: dict) -> str:
     # Visual identity is the per-product bare number when present (P0
     # per-product monthly counting); the month-qualified roll_code stays in
     # the DB and only appears on evidence surfaces (slip / History "Full ID"),
-    # never on this sticker. Date prints once only (DD-MM-YY).
+    # never on this sticker. Date sits beside the job name; the sticker is
+    # always one reel so no reel count prints.
     ident = str(reel.get("prod_seq") or reel["roll_no"])
+    pieces = _pieces_txt(job)
     return (
         f"{COMPANY}   J:{job['job_no']}\n"
-        f"Job Name:{job['job_name']}\n"
-        f"Date:{fmt_date_ddmmyy(reel['created_at'])}  |  No of Reels:1\n"
-        f"{_pieces_txt(job)}\n"
+        f"Job Name:{job['job_name']}  |  Date:{fmt_date_ddmmyy(reel['created_at'])}\n"
         f"Gross Wt:  {reel['gross']:.3f} Kg   |  Roll No# {ident}\n"
         f"Core Wt:   {reel['core']:.3f} Kg   |\n"
         f"Net Wt:    {reel['net']:.3f} Kg   |\n"
+        + (f"{pieces}   |\n" if pieces else "") +
         f"(Type-1 single-reel sticker — NO QR)"
     )
 
@@ -318,9 +319,8 @@ def carton_label_text(detail: dict) -> str:
     if int(detail.get("num_reels") or 0) == 0:
         return (
             f"{COMPANY}   J:{detail['job_no']}\n"
-            f"Job Name:{detail['job_name']}\n"
-            f"Rolls:—\n"
-            f"Date:{fmt_date_ddmmyy(detail['packed_at'])}\n"
+            f"Job Name:{detail['job_name']}  |  Date:{fmt_date_ddmmyy(detail['packed_at'])}\n"
+            f"Rolls:—  |  BOX\n"
             f"Box Wt:  {detail['total_gross']:.3f} Kg\n"
             f"QR:{detail['qr']}\n"
             f"Box No:{_box_no}"
@@ -328,9 +328,9 @@ def carton_label_text(detail: dict) -> str:
     rolls = ",".join(str(r.get("prod_seq") or r["roll_no"]) for r in detail["reels"])
     return (
         f"{COMPANY}   J:{detail['job_no']}\n"
-        f"Job Name:{detail['job_name']}\n"
-        f"Tare:{_bw} Kg  Rolls:{rolls}\n"
-        f"Date:{fmt_date_ddmmyy(detail['packed_at'])}  |  No of Reels:{detail['num_reels']}\n"
+        f"Job Name:{detail['job_name']}  |  Date:{fmt_date_ddmmyy(detail['packed_at'])}\n"
+        f"Tare:{_bw} Kg  |  No of Reels:{detail['num_reels']}\n"
+        f"Rolls:{rolls}\n"
         f"Total Gross: {detail['total_gross']:.3f} Kg\n"
         f"Total Core:  {detail['total_core']:.3f} Kg\n"
         f"Total Net:   {detail['total_net']:.3f} Kg\n"
