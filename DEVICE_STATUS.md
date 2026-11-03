@@ -38,6 +38,17 @@ one tick; replugging heals the pill with no click. Only explicit detection
 persists anything. `None` (unknowable platform/failure) keeps the last
 verdict instead of flapping.
 
+Printer rule: the installed queue list is authoritative. A configured
+queue that is still enumerated stays `ready` even when no USB printer
+class is seen — that is the normal case for network/shared queues, which
+have no USBPRINT device on this PC. The USB scan is advisory only (the
+pill tooltip notes "Queue seen · no USB printer class"), and an actually
+unplugged USB printer fails explicitly at print time with the queue name
+in the error. A missing queue still reads `setup`, with the OS-reported
+queue names in the tooltip (`Seen N: …`) so "not found" is diagnosable on
+the floor; detection outcomes are also logged (`simpld.hardware`) to
+`simpld.log`.
+
 ## Interacting with the pills
 
 - **Click a pill** — re-detects that one device.

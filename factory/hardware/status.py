@@ -69,8 +69,14 @@ STATION_OF = {dev: st for st, (_, devs) in STATIONS.items() for dev in devs}
 # ---- scanner session activity --------------------------------------------
 # When the last barcode/QR landed in the app. Session-scoped on purpose: it
 # answers "is the wedge reaching me right now?", not "has it ever worked".
+# Attempts (Enter pressed in the scan box with text in it) are tracked
+# separately from landed scans: input reaching the box proves keystrokes
+# arrive, while zero landed with attempts > 0 means the scans are failing
+# validation (wrong box / order not loading) — a different problem from a
+# dead wedge, and the pill tells them apart.
 _last_scan: float | None = None
 _scan_count: int = 0
+_scan_attempts: int = 0
 
 
 def note_scan(when: float | None = None) -> None:
@@ -80,9 +86,37 @@ def note_scan(when: float | None = None) -> None:
     _scan_count += 1
 
 
+def note_scan_attempt() -> None:
+    """Record scan-box input submitted (Enter with text), landed or not."""
+    global _scan_attempts
+    _scan_attempts += 1
+
+
+def reset_scanner_session() -> None:
+    """Forget this session's scan activity (call on logout).
+
+    The pill answers "is the wedge reaching me right now" — a new login
+    is a new session, so stale counts must not leak across it.
+    """
+    global _last_scan, _scan_count, _scan_attempts
+    _last_scan = None
+    _scan_count = 0
+    _scan_attempts = 0
+
+
 def scanner_activity() -> tuple[int, float | None]:
     """(scans this session, last scan epoch or None)."""
     return _scan_count, _last_scan
+
+
+def scanner_attempts() -> int:
+    """Scan-box submissions this session, landed or not."""
+    return _scan_attempts
+
+
+def scanner_input_without_landing() -> bool:
+    """True when input reaches the app but no scan has landed yet."""
+    return _scan_attempts > 0 and _scan_count <= 0
 
 
 def _hhmmss(epoch: float) -> str:
@@ -114,9 +148,16 @@ def _detail_printer(cfg: dict) -> tuple[str, str]:
 
 def _detail_scanner() -> tuple[str, str]:
     count, last = scanner_activity()
-    if count <= 0:
-        return "idle", "wedge · no scan yet"
-    return "active", f"{count} scan{'' if count == 1 else 's'} · {_hhmmss(last)[3:]}"
+    if count > 0:
+        return "active", f"{count} scan{'' if count == 1 else 's'} · {_hhmmss(last)[3:]}"
+    if _scan_attempts > 0:
+        # Keystrokes reach the box but nothing validated: the wedge (or the
+        # operator) is typing, yet no scan landed — usually wrong box, order
+        # not loading, or a wedge missing its Enter suffix (which routes to
+        # the same failure: text submitted but rejected).
+        return ("idle", f"input seen · {_scan_attempts} attempt"
+                f"{'' if _scan_attempts == 1 else 's'} · none landed")
+    return "idle", "wedge · no scan yet"
 
 
 # ---- detection-in-progress -----------------------------------------------
@@ -177,10 +218,20 @@ def device_status(key: str, cfg: dict | None = None) -> dict:
     out = {"key": key, "state": state, "detail": detail, **spec}
     if state == "setup":
         # The one thing an operator can do next, spelled out in the tooltip
-        # rather than crowding the pill.
-        out["hint"] = "Click to detect again."
+        # rather than crowding the pill. For the printer, add what the OS
+        # actually reports so "not found" is diagnosable on the floor.
+        hint = "Click to detect again."
+        if key == PRINTER:
+            seen = _printer_seen_hint()
+            if seen:
+                hint += f" {seen}"
+        out["hint"] = hint
     elif state == "demo":
         out["hint"] = "Demo mode is on — this device is simulated."
+    elif key == SCANNER and scanner_input_without_landing():
+        out["hint"] = ("Input reaches the app but no scan landed — read the "
+                       "error line (wrong box? order not loading? wedge "
+                       "missing its Enter suffix?).")
     return out
 
 
@@ -235,15 +286,27 @@ def _sysfs_usb_printer_present(root: str = _SYSFS_USB_ROOT) -> bool:
 
 
 def _windows_usbprint_present() -> bool | None:
-    """True when a USBPRINT device is enumerated (ctypes, stdlib only)."""
+    """True when a USBPRINT device is enumerated (ctypes, stdlib only).
+
+    Returns None when the query itself cannot run (non-Windows, missing
+    setupapi, call failure) — callers must keep the last verdict instead
+    of flapping. Only a successful enumeration that finds zero USBPRINT
+    devices returns False, and even then callers treat it as advisory:
+    network/shared queues have no USBPRINT device on this PC.
+    """
     try:
         import ctypes
         setupapi = ctypes.windll.setupapi
         DIGCF_PRESENT = 0x00000002
         DIGCF_ALLCLASSES = 0x00000004
         setupapi.SetupDiGetClassDevsW.restype = ctypes.c_void_p
+        setupapi.SetupDiGetClassDevsW.argtypes = [
+            ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_void_p, ctypes.c_ulong]
+        setupapi.SetupDiEnumDeviceInfo.restype = ctypes.c_int
         setupapi.SetupDiEnumDeviceInfo.argtypes = [
             ctypes.c_void_p, ctypes.c_ulong, ctypes.c_void_p]
+        setupapi.SetupDiDestroyDeviceInfoList.restype = ctypes.c_int
+        setupapi.SetupDiDestroyDeviceInfoList.argtypes = [ctypes.c_void_p]
 
         class _DevInfo(ctypes.Structure):
             _fields_ = [("cbSize", ctypes.c_ulong),
@@ -296,11 +359,44 @@ def scale_port_present(port: str) -> bool | None:
         return None
 
 
+def _printer_seen_hint() -> str | None:
+    """Best-effort 'Seen N: a, b' summary for printer tooltips. None when
+    the printer list cannot be read (no QApplication yet, Qt missing, …).
+
+    Display-only: never raises, never blocks. Keeps the operator from
+    guessing why detection says "not found".
+    """
+    try:
+        from PySide6.QtWidgets import QApplication
+        if QApplication.instance() is None:
+            return None
+        from .qtprint import available_printers
+        names = available_printers()
+    except Exception:
+        return None
+    if not names:
+        return "Seen 0 printers — check the driver install and spooler."
+    shown = ", ".join(names[:4])
+    if len(names) > 4:
+        shown += f" +{len(names) - 4} more"
+    if len(shown) > 90:
+        shown = shown[:87] + "…"
+    return f"Seen {len(names)}: {shown}."
+
+
 def live_device_status(key: str, cfg: dict | None = None) -> dict:
     """device_status() with cheap live presence applied (display only).
 
     A configured-but-vanished device reads setup/"not found" so the pills
     track cables within one poll tick. Never probes, never writes config.
+
+    Printer rule: the installed queue list is authoritative. A configured
+    queue that is still enumerated stays `ready` — the USB class scan is
+    advisory only (network/shared queues have no USBPRINT device on this
+    PC, and must not flip a working printer to "not found"). An actually
+    unplugged USB printer fails explicitly at print time with the queue
+    name in the error. A missing queue still reads setup, with the seen
+    queue names in the hint.
     """
     if cfg is None:
         cfg = _config.load()
@@ -315,12 +411,27 @@ def live_device_status(key: str, cfg: dict | None = None) -> dict:
         elif key == PRINTER:
             from .qtprint import available_printers
             name = str(cfg.get("printer_name") or "")
-            if name not in available_printers():
+            seen = available_printers()
+            if name not in seen:
+                hint = "Click to detect again."
+                shown = ", ".join(seen[:4])
+                if len(seen) > 4:
+                    shown += f" +{len(seen) - 4} more"
+                if shown:
+                    if len(shown) > 90:
+                        shown = shown[:87] + "…"
+                    hint += f" Seen {len(seen)}: {shown}."
+                else:
+                    hint += " Seen 0 printers."
                 return {**spec, "state": "setup", "detail": "not found",
-                        "hint": "Click to detect again."}
+                        "hint": hint}
             if usb_printer_present() is False:
-                return {**spec, "state": "setup", "detail": "not found",
-                        "hint": "Click to detect again."}
+                # Queue present, no USB printer class on this PC. Most
+                # likely a network/shared queue — stay ready, note it.
+                return {**spec,
+                        "hint": "Queue seen · no USB printer class on this PC "
+                                "(normal for network/shared queues). "
+                                "Check the cable if printing fails."}
     except Exception:
         pass
     return spec

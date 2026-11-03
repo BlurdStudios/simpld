@@ -506,6 +506,11 @@ class MainWindow(QMainWindow):
         try:
             DA.logout()
         finally:
+            try:
+                from factory.hardware import status as _HWStatus
+                _HWStatus.reset_scanner_session()
+            except Exception:
+                pass
             self.logout_requested.emit()
 
     # ----- cross-page refresh (only what this role has) -----

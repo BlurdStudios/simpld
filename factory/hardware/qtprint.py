@@ -20,8 +20,12 @@ from __future__ import annotations
 from .base import PrinterInterface
 from . import labels as LabelArt
 
+import logging as _logging
+
 LABEL_WIDTH_MM = LabelArt.LABEL_WIDTH_MM    # 100 (fixed 100x50 stock)
 LABEL_HEIGHT_MM = LabelArt.LABEL_HEIGHT_MM  # 50  (fixed 100x50 stock)
+
+_log = _logging.getLogger("simpld.hardware")
 
 
 def available_printers() -> list[str]:
@@ -30,6 +34,11 @@ def available_printers() -> list[str]:
         from PySide6.QtPrintSupport import QPrinterInfo
         return [p.printerName() for p in QPrinterInfo.availablePrinters()]
     except Exception:
+        # Frozen Windows builds have no visible stderr (console=False), so a
+        # silent [] here used to mean "printer not detected" with no trace.
+        # Log it — detection outcome logging in autodetect adds the names.
+        _log.warning("available_printers() failed — reporting no printers",
+                     exc_info=True)
         return []
 
 

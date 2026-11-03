@@ -809,6 +809,70 @@ def test_detect_printer_picks_any_brand_not_citizen_only():
     with _mock.patch("factory.hardware.qtprint.available_printers",
                       return_value=["Zebra ZD421", "Citizen CL-S621II"]):
         assert Auto.detect_printer() == "Citizen CL-S621II"
+    # Citizen CT-S receipt family (queue named without "citizen").
+    with _mock.patch("factory.hardware.qtprint.available_printers",
+                      return_value=["Office Laser", "CT-S621"]):
+        assert Auto.detect_printer() == "CT-S621"
+    # Star/Epson receipt printers used for box stickers.
+    with _mock.patch("factory.hardware.qtprint.available_printers",
+                      return_value=["Office Laser", "Star TSP143"]):
+        assert Auto.detect_printer() == "Star TSP143"
+
+
+def test_detect_printer_ignores_extra_virtual_queues():
+    """Alternate/localized PDF queues never count as real printers."""
+    from factory.hardware import autodetect as Auto
+    with _mock.patch("factory.hardware.qtprint.available_printers",
+                      return_value=["Save as PDF", "Adobe PDF", "HP LaserJet Pro"]):
+        assert Auto.detect_printer() == "HP LaserJet Pro"
+    with _mock.patch("factory.hardware.qtprint.available_printers",
+                      return_value=["Adobe PDF", "Foxit Reader PDF Printer"]):
+        assert Auto.detect_printer() is None
+
+
+def test_detect_printer_matches_bare_model_names():
+    """Floor queues named with only the model number (no brand words).
+
+    Seen on the floor: a queue called "S621Z" (no "citizen"/"cl-s621"
+    in it) and Zebra ZD621 queues without "Zebra" — both must match.
+    """
+    from factory.hardware import autodetect as Auto
+    with _mock.patch("factory.hardware.qtprint.available_printers",
+                      return_value=["Office Laser", "S621Z"]):
+        assert Auto.detect_printer() == "S621Z"
+    with _mock.patch("factory.hardware.qtprint.available_printers",
+                      return_value=["Office Laser", "ZD621"]):
+        assert Auto.detect_printer() == "ZD621"
+
+
+def test_scanner_attempts_without_landing():
+    """Input with no landed scan reads differently from a dead wedge."""
+    HWStatus.reset_scanner_session()
+    try:
+        cfg = _live_cfg()
+        d = HWStatus.device_status("scanner", cfg)
+        assert d["state"] == "idle" and d["detail"] == "wedge · no scan yet", d
+        assert "hint" not in d, d
+        HWStatus.note_scan_attempt()
+        HWStatus.note_scan_attempt()
+        d = HWStatus.device_status("scanner", cfg)
+        assert d["state"] == "idle", d
+        assert "none landed" in d["detail"], d
+        assert "hint" in d, d  # points at the error line, not the cable
+        HWStatus.note_scan()
+        d = HWStatus.device_status("scanner", cfg)
+        assert d["state"] == "active", d
+    finally:
+        HWStatus.reset_scanner_session()
+
+
+def test_scanner_session_resets_on_logout():
+    HWStatus.note_scan()
+    HWStatus.note_scan_attempt()
+    HWStatus.reset_scanner_session()
+    assert HWStatus.scanner_activity() == (0, None)
+    assert HWStatus.scanner_attempts() == 0
+    assert not HWStatus.scanner_input_without_landing()
 
 
 def test_detect_printer_falls_back_to_only_real_printer():
@@ -888,14 +952,32 @@ def test_live_status_renamed_queue_reads_not_found():
     assert specs[1]["detail"] == "not found", specs
 
 
-def test_live_status_usb_gone_reads_not_found():
-    """Queue persists but no USB printer attached (the unplug repro)."""
+def test_live_status_usb_gone_stays_ready_with_note():
+    """Queue present but no USB printer class (network/shared queue).
+
+    Regression: the live check used to flip a correctly-detected printer
+    back to setup/"not found" within one poll tick whenever no USBPRINT
+    device was enumerated — so network/shared queues could never show
+    ready. The queue list is authoritative now; the USB scan is advisory
+    (an actually-unplugged USB printer fails explicitly at print time).
+    """
     cfg = _live_cfg(scale_port="COM4", printer_name="Citizen X")
     a, b, c, d, e, f = _live_mocks(["COM4"], ["Citizen X"], False)
     with a, b, c, d, e, f:
         specs = HWStatus.station_live_status("packaging", cfg)
     assert specs[0]["state"] == "ready", specs
+    assert specs[1]["state"] == "ready", specs
+    assert "USB" in (specs[1].get("hint") or ""), specs
+
+
+def test_live_status_missing_queue_names_seen_printers():
+    """Queue gone: the hint names what the OS actually reports."""
+    cfg = _live_cfg(scale_port="COM4", printer_name="Citizen X")
+    a, b, c, d, e, f = _live_mocks(["COM4"], ["Office Laser"], True)
+    with a, b, c, d, e, f:
+        specs = HWStatus.station_live_status("packaging", cfg)
     assert specs[1]["state"] == "setup", specs
+    assert "Office Laser" in (specs[1].get("hint") or ""), specs
 
 
 def test_live_status_unknowable_keeps_last_verdict():
@@ -1029,12 +1111,14 @@ if __name__ == "__main__":
     test_autodetect_forgets_devices_that_stopped_answering()
     test_autodetect_keeps_env_pinned_config_when_nothing_answers()
     test_detect_printer_picks_any_brand_not_citizen_only()
+    test_detect_printer_ignores_extra_virtual_queues()
     test_detect_printer_falls_back_to_only_real_printer()
     test_detect_printer_never_picks_virtual_or_ambiguous()
     test_live_status_ready_when_everything_attached()
     test_live_status_unplugged_scale_reads_not_found()
     test_live_status_renamed_queue_reads_not_found()
-    test_live_status_usb_gone_reads_not_found()
+    test_live_status_usb_gone_stays_ready_with_note()
+    test_live_status_missing_queue_names_seen_printers()
     test_live_status_unknowable_keeps_last_verdict()
     test_sysfs_usb_printer_scan()
     test_autodetect_concurrent_runs_do_not_clobber()

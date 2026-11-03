@@ -174,6 +174,11 @@ def main():
                 DA.logout()
             except Exception:
                 pass
+            try:
+                from factory.hardware import status as _HWStatus
+                _HWStatus.reset_scanner_session()
+            except Exception:
+                pass
             if not logged_out:
                 break  # window closed (X) -> exit for real
     finally:

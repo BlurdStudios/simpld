@@ -643,6 +643,10 @@ class DispatchPage(QWidget):
         text = self.scan.text()
         if not (text or "").strip():
             return self.say("Scan the box QR again.", ok=False, kind="warning")
+        # Input reached the box (wedge typed + Enter, or manual submit) whether
+        # or not it validates — the scanner pill tracks this separately from
+        # landed scans, so "wedge dead" and "scans failing" read differently.
+        HWStatus.note_scan_attempt()
         try:
             ct = DA.scan_into_order(self.order_id, text)
         except (ValueError, PermissionError) as e:

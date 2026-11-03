@@ -23,12 +23,15 @@ never blocks while ports are probed.
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 import threading
 
 from . import config as _config
 from . import devices as _devices
+
+_log = logging.getLogger("simpld.hardware")
 
 # One detection at a time, process-wide. Every station strip can ask to detect;
 # without this two worker threads would probe the same COM ports at once and
@@ -49,16 +52,31 @@ PROBE_TIMEOUT = 0.5         # serial read timeout
 # the same queue it always did. Generic words ("label", "barcode",
 # "thermal") catch custom-named queues; anything still unmatched falls back
 # to the only real printer when there is exactly one (see detect_printer).
-PRINTER_HINTS = ("citizen", "cl-s621", "cl-s6", "cls-621",
+# "ct-s" covers the Citizen CT-S receipt family (driver queues named
+# "CT-S621" contain no "citizen" substring); "tsp"/"tm-t"/"epson tm" cover
+# Star/Epson receipt printers sometimes used for box stickers. "s621" /
+# "zd621" / "621ii" cover bare driver names that carry only the model
+# number (e.g. a queue named "S621Z" or "ZD621" with no brand in it —
+# seen on the floor where the Citizen queue is not called "CL-S621II").
+PRINTER_HINTS = ("citizen", "cl-s621", "cl-s6", "cls-621", "s621", "zd621",
+                 "621ii", "ct-s", "ct s",
                  "zebra", "tsc", "datamax", "honeywell", "brother", "dymo",
                  "sato", "cab", "godex", "postek", "intermec", "bixolon",
-                 "label", "barcode", "thermal")
+                 "tsp", "tm-t", "epson tm", "star micronics",
+                 "cognitive", "fargo", "magicard",
+                 "label", "barcode", "thermal", "receipt", "sticker")
 
 # Queues that are never a label printer, even as a last resort (Windows
 # always has at least one of these; picking one would "print" stickers
-# into a PDF file and report success).
-VIRTUAL_PRINTER_HINTS = ("print to pdf", "xps document writer", "onenote",
-                         "fax")
+# into a PDF file and report success). Substring list is intentionally
+# broad and English-plus-generic: localized Windows builds rename these
+# queues, and an unlisted virtual queue would otherwise count as "real"
+# and block the single-real-printer fallback (or get picked by it).
+VIRTUAL_PRINTER_HINTS = ("print to pdf", "save as pdf", "print as pdf",
+                         "adobe pdf", "foxit", "cutepdf", "pdf creator",
+                         "pdf printer", "pdf writer",
+                         "xps document writer", "xps", "onenote",
+                         "send to onenote", "fax", "webex")
 
 
 # ---- weigh machine --------------------------------------------------------
@@ -144,19 +162,30 @@ def detect_printer(save: bool = True) -> str | None:
     when there is exactly one. Virtual queues are never picked, and an
     ambiguous list with no hint match stays unconfigured (fail closed —
     set the exact queue name instead of misprinting to the office laser).
+
+    The seen queue names and the outcome are logged (simpld.hardware) so a
+    "not found" pill on the floor can be diagnosed from simpld.log instead
+    of guessing.
     """
     from .qtprint import available_printers
 
     names = available_printers()
+    _log.info("detect_printer: OS reports %d printer(s): %r",
+              len(names), names if len(names) <= 8 else names[:8] + ["…"])
     if not names:
+        _log.info("detect_printer: no printers enumerated — returning None")
         return None
     for needle in PRINTER_HINTS:
         for name in names:
             if needle in name.casefold():
+                _log.info("detect_printer: hint %r matched %r", needle, name)
                 return name
     real = [n for n in names if not _is_virtual_printer(n)]
     if len(real) == 1:
+        _log.info("detect_printer: single real printer fallback -> %r", real[0])
         return real[0]
+    _log.info("detect_printer: no hint match, %d real printer(s) %r — "
+              "staying unconfigured (fail closed)", len(real), real)
     return None
 
 
