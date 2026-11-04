@@ -219,12 +219,15 @@ back. `--prune` deletes older installers from the folder after publishing.
   mirror (`SIMPLD_UPDATE_REPO` overrides it); releases in the private repo are
   invisible to installed copies by design.
 - **Log shows `certificate verify failed` but the browser works.** That PC's
-  Windows certificate store is broken (stale roots, AV interception) — the
-  browser uses its own certificates, the app used to use the store. Since
-  1.4.1 the app pins update downloads to CA certificates shipped with it,
-  so this heals itself on upgrade; install that version once via USB. For
-  an immediate trust override without upgrading, point `SSL_CERT_FILE` at a
-  valid CA bundle file.
+  Windows certificate store is stale (or its antivirus does HTTPS scanning
+  with a proxy CA the app bundle doesn't know). Since 1.6.4 the updater
+  retries once with the Windows certificate store automatically, which
+  covers antivirus interception — and the SHA-256 check still guards every
+  install either way. If both fail, the error now says what to check: the
+  PC date/time (dead CMOS batteries break all certificate validation),
+  pausing antivirus HTTPS scanning, or pointing `SSL_CERT_FILE` at a valid
+  CA bundle file. For an immediate trust override without upgrading, point
+  `SSL_CERT_FILE` at a valid CA bundle.
 - **Tag build fails: `RELEASE_MIRROR_TOKEN is not set`.** Complete
   *Release mirror setup* above, then re-run the tag build.
 - **Update prompt appears, install fails at UAC.** The Windows account needs

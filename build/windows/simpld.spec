@@ -108,6 +108,10 @@ hiddenimports = [
     "PySide6.QtPrintSupport",  # function-level import in factory/slip_pdf.py
     "PySide6.QtSvg",  # QSS / imageformat fallback path
     "PySide6.QtNetwork",  # pulled by Qt print / TLS plugin chain
+    # certifi: the updater pins update downloads to its CA bundle; the frozen
+    # app must always be able to import it, else every update check fails
+    # closed on floor PCs with broken cert stores.
+    "certifi",
     "serial",
     "qrcode",
     "PIL",

@@ -18,6 +18,16 @@ if not exist "dist\Simpld\_internal\PySide6\plugins\platforms\qwindows.dll" (
 )
 echo Qt plugins OK: qwindows.dll present.
 
+REM Fail the build if certifi's CA bundle is missing — the updater pins
+REM update downloads to it, and without it every check fails closed on
+REM floor PCs with broken Windows certificate stores.
+if not exist "dist\Simpld\_internal\certifi\cacert.pem" (
+  echo FATAL: certifi cacert.pem missing in dist\Simpld\_internal\certifi\ — update downloads would fail. 1>&2
+  echo Check the certifi hiddenimport and hook in build\windows\simpld.spec. 1>&2
+  exit /b 1
+)
+echo CA bundle OK: certifi cacert.pem present.
+
 REM Version from factory/version.py - single source of truth for the app,
 REM the exe metadata and the installer. Read it at top level, before the
 REM if block below is parsed, so %APPVER% expands to the real value.

@@ -57,6 +57,7 @@ import ssl
 import subprocess
 import sys
 import tempfile
+import contextlib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -215,18 +216,23 @@ def read_sha256_file(path: str) -> str:
 # --------------------------------------------------------------------------
 
 def _tls_context(explicit_ca: str = "") -> "ssl.SSLContext | None":
-    """TLS trust for update downloads. Never the PC's store alone.
+    """Primary TLS trust for update downloads (the fallback lives in
+    _urlopen_resilient, not here).
 
-    Floor PCs have broken Windows certificate stores (stale roots, AV
-    interception) while their browsers work fine — so GitHub downloads pin
-    to a CA bundle shipped with the app instead:
+    Floor PCs have broken Windows certificate stores (stale roots) while
+    their browsers work fine — so GitHub downloads primarily pin to a CA
+    bundle shipped with the app instead:
 
     1. an explicitly passed anchor (the LAN channel's packager cert) wins;
     2. else `SSL_CERT_FILE` (OpenSSL convention) when it names a real file;
     3. else the bundled `certifi` Mozilla roots;
     4. else None (system defaults — same as before, never a crash).
 
-    Verification is always on; only the *source* of trust changes.
+    Verification is always on; only the *source* of trust changes. When the
+    pinned bundle rejects a GitHub handshake (typically antivirus HTTPS
+    scanning, whose proxy CA is in the Windows store but not in the
+    bundle), _urlopen_resilient retries once with system defaults before
+    giving up with an actionable error.
     """
     cafile = (explicit_ca or "").strip()
     kind = "LAN trust anchor"
@@ -248,17 +254,95 @@ def _tls_context(explicit_ca: str = "") -> "ssl.SSLContext | None":
         raise UpdateError(f"cannot load {kind}: {exc}")
 
 
+def _is_cert_failure(exc: BaseException) -> bool:
+    """True when this transport error is a certificate-verification failure.
+
+    urllib surfaces TLS handshake failures as URLError wrapping the real
+    ssl error in `.reason`, so both shapes are recognised.
+    """
+    cur: BaseException | None = exc
+    for _ in range(3):
+        if cur is None:
+            return False
+        if isinstance(cur, ssl.SSLCertVerificationError):
+            return True
+        cur = getattr(cur, "reason", None)
+    return "certificate verify failed" in str(exc).lower()
+
+
+def _cert_hint(host: str, exc: Exception) -> str:
+    """Actionable message for a certificate failure (never fatal)."""
+    return (f"cannot verify the certificate of {host} ({exc}). "
+            "Check the PC date/time, pause antivirus HTTPS scanning, or set "
+            "SSL_CERT_FILE to a valid CA bundle file. "
+            "Simpl'd keeps running the current version.")
+
+
+@contextlib.contextmanager
+def _urlopen_resilient(url_or_req, *, timeout: float,
+                       ca_cert: str = ""):
+    """Open a URL, retrying once with system certs on pinned-bundle rejection.
+
+    Primary trust is the pinned bundle (bundled CAs / SSL_CERT_FILE / LAN
+    anchor). If THAT handshake fails certificate verification and no
+    explicit anchor was given (the GitHub channel), retry once with the
+    system store: factory PCs often run antivirus HTTPS scanning whose
+    proxy CA lives in the Windows store but not in the pinned bundle —
+    the browser works there while pinned verification fails with
+    "certificate verify failed". Verification stays ON in both attempts,
+    and the SHA-256 check on the downloaded installer is the integrity
+    anchor either way, so a network attacker gains nothing. LAN downloads
+    keep their explicit packager anchor with no fallback (fail closed).
+    """
+    first = _tls_context(ca_cert)
+    try:
+        with urllib.request.urlopen(url_or_req, timeout=timeout,
+                                    context=first) as resp:
+            yield resp
+            return
+    except urllib.error.HTTPError:
+        raise
+    except Exception as exc:
+        if ((ca_cert or "").strip() or first is None
+                or not _is_cert_failure(exc)):
+            raise
+        try:
+            host = urllib.parse.urlparse(
+                url_or_req.full_url
+                if hasattr(url_or_req, "full_url")
+                else str(url_or_req)).hostname or "the update server"
+        except Exception:
+            host = "the update server"
+        log.warning("update download: pinned CA bundle rejected %s (%s); "
+                    "retrying once with system certificates "
+                    "(antivirus HTTPS scanning?)", host, exc)
+    try:
+        with urllib.request.urlopen(url_or_req, timeout=timeout,
+                                    context=None) as resp:
+            yield resp
+    except Exception as exc2:
+        if _is_cert_failure(exc2):
+            try:
+                host = urllib.parse.urlparse(
+                    url_or_req.full_url
+                    if hasattr(url_or_req, "full_url")
+                    else str(url_or_req)).hostname or "the update server"
+            except Exception:
+                host = "the update server"
+            raise UpdateError(_cert_hint(host, exc2)) from exc2
+        raise
+
+
 def _http_get(url: str, *, timeout: float = HTTP_TIMEOUT,
               ca_cert: str = "", max_bytes: int = 1024 * 1024) -> bytes:
     """GET a URL; every transport problem becomes UpdateError (safe to log)."""
-    context = _tls_context(ca_cert)
     req = urllib.request.Request(url, headers={
         "User-Agent": USER_AGENT,
         "Accept": "application/json, */*",
     })
     try:
-        with urllib.request.urlopen(req, timeout=timeout,
-                                    context=context) as resp:
+        with _urlopen_resilient(req, timeout=timeout,
+                                ca_cert=ca_cert) as resp:
             return resp.read(max_bytes)
     except urllib.error.HTTPError as exc:
         raise UpdateError(f"HTTP {exc.code} from {url.split('?')[0]}")
@@ -490,11 +574,10 @@ def download_and_verify(info: UpdateInfo, dest_dir: str | None = None,
                     if progress:
                         progress(done, total)
         else:
-            context = _tls_context(info.ca_cert)
             req = urllib.request.Request(info.url, headers={
                 "User-Agent": USER_AGENT})
-            with urllib.request.urlopen(req, timeout=30,
-                                        context=context) as resp, \
+            with _urlopen_resilient(req, timeout=30,
+                                   ca_cert=info.ca_cert) as resp, \
                     open(target, "wb") as dst:
                 try:
                     total = int(resp.headers.get("Content-Length") or -1)

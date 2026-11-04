@@ -454,3 +454,27 @@ def test_tls_context_ignores_missing_ssl_cert_file(monkeypatch):
     monkeypatch.setenv("SSL_CERT_FILE", "/nonexistent/ca-bundle.pem")
     ctx = U._tls_context("")  # falls through to bundled CAs, never crashes
     assert ctx is None or isinstance(ctx, ssl.SSLContext)
+
+
+def test_is_cert_failure_shapes():
+    import ssl as _ssl
+    assert U._is_cert_failure(
+        _ssl.SSLCertVerificationError("certificate verify failed"))
+    wrapped = urllib.error.URLError(
+        _ssl.SSLCertVerificationError("certificate verify failed"))
+    assert U._is_cert_failure(wrapped)
+    assert not U._is_cert_failure(ConnectionError("refused"))
+    assert not U._is_cert_failure(
+        urllib.error.HTTPError("u", 404, "not found", {}, None))
+
+
+def test_http_get_cert_failure_fail_closed_with_hint(lan_updates):
+    """Self-signed server + no anchor: pinned bundle AND system store both
+    reject, so the check fails closed with an actionable message (date/AV
+    hint) instead of a bare stack trace — and never installs anything."""
+    base = f"https://127.0.0.1:{lan_updates['port']}"
+    with pytest.raises(U.UpdateError) as ei:
+        U._http_get(base + "/updates/latest.json", ca_cert="")
+    msg = str(ei.value).lower()
+    assert "certificate" in msg
+    assert "date" in msg or "antivirus" in msg
