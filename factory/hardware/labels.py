@@ -148,41 +148,56 @@ def _qr_image(text: str, px: int = 340):
 def _table_base(wt, ab_rows: set[int], weight_first: int,
                 width_mm: float = LABEL_WIDTH_MM,
                 height_mm: float = LABEL_HEIGHT_MM, dpi: int = LABEL_DPI,
-                weight_span: int = 3):
+                weight_span: int = 3, c_spans: list[tuple[int, int]] | None = None):
     """Blank bordered canvas + grid geometry shared by both stickers.
 
     Columns: A (row labels) | B (values) | C (right box: Roll No# or QR).
-    Bands (header/Job/Date) run full width with only the C divider; the A|B
-    split exists solely in the Gross/Core/Net rows (ab_rows); the C box is
-    one merged cell with no horizontal lines through it. weight_span is how
-    many rows tall the A|B split runs (3 for the carton weights, 4 for the
-    reel Gross/Core/Net/Pieces block).
+    The top bands (header, job name) run full width; c_spans lists the
+    (start, end) row-index spans the C divider covers (end-exclusive,
+    default the whole grid) so it can skip full-width bands like the job
+    name row while still splitting the header (COMPANY | J) above it.
+    ab_rows holds the boundary indexes whose horizontal stops at C (merging
+    the right box across rows); other boundaries run full width. The A|B
+    split exists solely in the weight block (weight_first + weight_span
+    rows); the C box is one merged cell with no horizontal lines through
+    it. weight_span is how many rows tall the A|B split runs (3 for the
+    carton weights, 4 for the reel Gross/Core/Net/Pieces block).
     """
     from PIL import Image, ImageDraw
     W, H = label_px(width_mm, height_mm, dpi)
     img = Image.new("RGB", (W, H), "white")
     d = ImageDraw.Draw(img)
-    d.rectangle([0, 0, W - 1, H - 1], outline="black", width=3)
+    # Main (outer) border visibly thicker than the inner grid: ~0.70mm vs
+    # ~0.25mm, dpi-scaled (6px vs 2px @203dpi). Grid insets follow the
+    # outer width so inner lines meet its inner edge cleanly.
+    outer = max(4, int(round(0.70 / 25.4 * dpi)))
+    lw = max(1, int(round(0.25 / 25.4 * dpi)))
+    m = outer
+    d.rectangle([0, 0, W - 1, H - 1], outline="black", width=outer)
     n = len(wt)
     tot = sum(wt)
-    ys = [2]
+    ys = [m]
     for w_ in wt:
-        ys.append(ys[-1] + (H - 4) * w_ / tot)
-    ys[-1] = H - 2
+        ys.append(ys[-1] + (H - 2 * m) * w_ / tot)
+    ys[-1] = H - m
     # columns A | B | C
-    xA, xB, xC = 2, 2 + (W - 4) * 0.27, 2 + (W - 4) * 0.70
-    xE = W - 2
-    lw = 2
+    xA, xB, xC = m, m + (W - 2 * m) * 0.27, m + (W - 2 * m) * 0.70
+    xE = W - m
     # full-width horizontals; weight-row dividers stop at C (merged right box)
     for i in range(1, n):
         y = ys[i]
         if i in ab_rows:
             d.line([(xA, y), (xC, y)], fill="black", width=lw)
         else:
-            d.line([(2, y), (xE, y)], fill="black", width=lw)
-    # C divider runs the full height; B divider spans the weight block
-    # (weight_span rows so the 4-row reel block works too).
-    d.line([(xC, ys[0]), (xC, ys[n])], fill="black", width=lw)
+            d.line([(xA, y), (xE, y)], fill="black", width=lw)
+    # C divider covers c_spans (skipping full-width bands); B divider
+    # spans the weight block (weight_span rows so the 4-row reel block
+    # works too).
+    for cs, ce in (c_spans if c_spans is not None else [(0, n)]):
+        cs = max(0, min(n, cs))
+        ce = max(cs, min(n, ce))
+        if ce > cs:
+            d.line([(xC, ys[cs]), (xC, ys[ce])], fill="black", width=lw)
     d.line([(xB, ys[weight_first]), (xB, ys[min(n, weight_first + weight_span)])],
            fill="black", width=lw)
     rows = [(ys[i], ys[i + 1]) for i in range(n)]
@@ -190,33 +205,43 @@ def _table_base(wt, ab_rows: set[int], weight_first: int,
     return img, d, rows, cols
 
 
-# Row weights: header, job, date, pieces, gross, core, net. No C.Name / shift /
-# supervisor on the sticker — customer lives on the dispatch order only.
-# Row weights: header, job+date, gross, core, net, pieces. 6x2 main grid:
-# the date sits beside the job name, No of Pieces sits below Net Wt with the
-# same label|value split as the weights, and the right box holds the roll
-# number centered across the 4 weight/pieces rows. No reel count — a reel
-# sticker is always exactly one reel.
-REEL_ROWS = [0.115, 0.135, 0.15, 0.15, 0.20, 0.25]
+def _job_head(job_no, job_code: str = "") -> str:
+    """Sticker header identity: J number + batch code (J:4170 12DEC).
+
+    Blank codes (legacy jobs) print just the J number — no trailing space.
+    """
+    code = str(job_code or "").strip().upper()
+    head = f"J:{job_no}"
+    return f"{head} {code}" if code else head
+
+
+# Row weights: header, full-width job name, gross+date, core, net, pieces.
+# The job name owns its own full-width row; the date sits beside Gross Wt
+# in the right area, and the Roll No# box spans only core..pieces (smaller
+# than before). No reel count — a reel sticker is always exactly one reel.
+REEL_ROWS = [0.115, 0.12, 0.15, 0.15, 0.205, 0.26]
 
 
 def render_reel(job: dict, reel: dict, width_mm=LABEL_WIDTH_MM,
                 height_mm=LABEL_HEIGHT_MM, dpi=LABEL_DPI):
     """Type-1 single-reel sticker (NO QR). Bordered table per the old label."""
-    img, d, rows, cols = _table_base(REEL_ROWS, {3, 4, 5}, 2, width_mm,
-                                     height_mm, dpi, weight_span=4)
+    img, d, rows, cols = _table_base(REEL_ROWS, {4, 5}, 2, width_mm,
+                                     height_mm, dpi, weight_span=4,
+                                     c_spans=[(0, 1), (2, 6)])
     A, B, C, E = cols["A"], cols["B"], cols["C"], cols["E"]
     (r0a, r0b), (r1a, r1b), (r2a, r2b) = rows[0], rows[1], rows[2]
     (r3a, r3b), (r4a, r4b), (r5a, r5b) = rows[3], rows[4], rows[5]
     _cell_text(d, (A, r0a, C, r0b), COMPANY, 34)
-    _cell_text(d, (C, r0a, E, r0b), f"J:{job['job_no']}", 34, right=True)
-    _cell_text(d, (A, r1a, C, r1b), f"Job Name:{job['job_name']}", 30)
-    # Date sits beside the job name (DD-MM-YY). The month period stays
-    # DB-only (roll_period/roll_code) and never prints on the sticker.
-    _cell_text(d, (C, r1a, E, r1b),
-               f"Date:{fmt_date_ddmmyy(reel['created_at'])}", 26)
+    _cell_text(d, (C, r0a, E, r0b),
+               _job_head(job.get("job_no", ""), job.get("job_code")),
+               30, right=True)
+    _cell_text(d, (A, r1a, E, r1b), f"Job Name:{job['job_name']}", 30)
     _cell_text(d, (A, r2a, B, r2b), "Gross Wt:", 30)
     _cell_text(d, (B, r2a, C, r2b), f"{reel['gross']:.3f} Kg", 40)
+    # Date sits beside Gross Wt (DD-MM-YY). The month period stays
+    # DB-only (roll_period/roll_code) and never prints on the sticker.
+    _cell_text(d, (C, r2a, E, r2b),
+               f"Date:{fmt_date_ddmmyy(reel['created_at'])}", 24)
     _cell_text(d, (A, r3a, B, r3b), "Core Wt:", 30)
     _cell_text(d, (B, r3a, C, r3b), f"{reel['core']:.3f} Kg", 36)
     _cell_text(d, (A, r4a, B, r4b), "Net Wt:", 30)
@@ -235,8 +260,8 @@ def render_reel(job: dict, reel: dict, width_mm=LABEL_WIDTH_MM,
     # centered. The floor reads the bare reel number; the month-qualified
     # roll_code stays in the DB and only surfaces on evidence documents
     # (the slip), never on this sticker.
-    mid = r2a + (r5b - r2a) * 0.25
-    _cell_text(d, (C, r2a, E, mid), "Roll No#", 26, center=True)
+    mid = r3a + (r5b - r3a) * 0.25
+    _cell_text(d, (C, r3a, E, mid), "Roll No#", 26, center=True)
     _cell_text(d, (C, mid, E, r5b), str(reel.get("prod_seq") or reel["roll_no"]),
                120, center=True)
     return img
@@ -287,20 +312,18 @@ def render_weight_carton(detail: dict, width_mm=LABEL_WIDTH_MM,
     carton; old cartons keep render_carton unchanged.
     """
     img, d, rows, cols = _table_base(
-        [0.14, 0.16, 0.14, 0.56],
-        set(), 3, width_mm, height_mm, dpi)
+        [0.14, 0.15, 0.13, 0.58],
+        set(), 3, width_mm, height_mm, dpi, c_spans=[(0, 1), (2, 4)])
     A, B, C, E = cols["A"], cols["B"], cols["C"], cols["E"]
     (r0a, r0b), (r1a, r1b), (r2a, r2b) = rows[0], rows[1], rows[2]
     (r3a, r3b) = rows[3]
     _cell_text(d, (A, r0a, C, r0b), COMPANY, 34)
-    _cell_text(d, (C, r0a, E, r0b), f"J:{detail['job_no']}", 34, right=True)
-    _cell_text(d, (A, r1a, C, r1b), f"Job Name:{detail['job_name']}", 30)
-    _cell_text(d, (C, r1a, E, r1b),
-               f"Date:{fmt_date_ddmmyy(detail['packed_at'])}", 26)
-    # No Bundle line (not required on the sticker). Weight-only boxes carry
-    # no reels, so the second band names the content instead of a bundle.
+    _cell_text(d, (C, r0a, E, r0b),
+               _job_head(detail.get("job_no", ""), detail.get("job_code")),
+               30, right=True)
+    _cell_text(d, (A, r1a, E, r1b), f"Job Name:{detail['job_name']}", 30)
     _cell_text(d, (A, r2a, C, r2b),
-               "Rolls:—", 28)
+               f"Date:{fmt_date_ddmmyy(detail['packed_at'])}", 26)
     _cell_text(d, (C, r2a, E, r2b), "BOX", 26)
     _cell_text(d, (A, r3a, B, r3b), "Box Wt:", 30)
     _cell_text(d, (B, r3a, C, r3b), f"{detail['total_gross']:.3f} Kg", 40)
@@ -333,52 +356,56 @@ def render_carton(detail: dict, width_mm=LABEL_WIDTH_MM,
     """
     if is_weight_only(detail):
         return render_weight_carton(detail, width_mm, height_mm, dpi)
-    # 7-row grid: header (COMPANY|J), Job Name|Date, Tare|No of Reels,
-    # Rolls, Gross, Core, Net. The date sits beside the job name, No of
-    # Reels sits one row up beside the tare (right column reads J, Date,
-    # No of Reels, then the QR), and the QR + box number spans the Rolls +
-    # 3 weight rows (4x1) with a bigger box number. No bundle anywhere.
+    # 8-row grid: header (COMPANY|J), full-width Job Name, Date|No of Reels,
+    # Tare, Rolls, Gross, Core, Net. The date moved one row down beside No
+    # of Reels (the QR box starts at the tare row, so it is smaller). The
+    # QR + box number spans the tare + Rolls + 3 weight rows with a bigger
+    # box number. No bundle anywhere.
     img, d, rows, cols = _table_base(
-        [0.11, 0.125, 0.11, 0.10, 0.15, 0.14, 0.265],
-        {4, 5, 6}, 4, width_mm, height_mm, dpi)
+        [0.10, 0.11, 0.105, 0.10, 0.095, 0.13, 0.125, 0.235],
+        {4, 5, 6, 7}, 5, width_mm, height_mm, dpi, weight_span=3,
+        c_spans=[(0, 1), (2, 8)])
     A, B, C, E = cols["A"], cols["B"], cols["C"], cols["E"]
     (r0a, r0b), (r1a, r1b), (r2a, r2b) = rows[0], rows[1], rows[2]
-    (r3a, r3b), (r4a, r4b), (r5a, r5b), (r6a, r6b) = rows[3], rows[4], rows[5], rows[6]
+    (r3a, r3b), (r4a, r4b), (r5a, r5b), (r6a, r6b), (r7a, r7b) = rows[3], rows[4], rows[5], rows[6], rows[7]
     rolls = ",".join(str(r.get("prod_seq") or r["roll_no"]) for r in detail.get("reels", []))
     _cell_text(d, (A, r0a, C, r0b), COMPANY, 34)
-    _cell_text(d, (C, r0a, E, r0b), f"J:{detail['job_no']}", 34, right=True)
-    _cell_text(d, (A, r1a, C, r1b), f"Job Name:{detail['job_name']}", 30)
-    _cell_text(d, (C, r1a, E, r1b),
+    _cell_text(d, (C, r0a, E, r0b),
+               _job_head(detail.get("job_no", ""), detail.get("job_code")),
+               30, right=True)
+    _cell_text(d, (A, r1a, E, r1b), f"Job Name:{detail['job_name']}", 30)
+    _cell_text(d, (A, r2a, C, r2b),
                f"Date:{fmt_date_ddmmyy(detail['packed_at'])}", 26)
+    _cell_text(d, (C, r2a, E, r2b), f"No of Reels:{detail['num_reels']}", 24)
     # No Bundle line (not required). The tare (empty-box weight) prints here
     # so the floor can verify it stays constant (e.g. 1.400 Kg) regardless
     # of how many reels are inside. Rolls move to their own row below so
-    # the QR can span four rows. Rolls stay for traceability.
+    # the QR can span five rows. Rolls stay for traceability.
     try:
         _bw_txt = f"{float(detail.get('box_wt') or 0):.3f}"
     except (TypeError, ValueError):
         _bw_txt = "—"
-    _cell_text(d, (A, r2a, C, r2b), f"Tare:{_bw_txt} Kg", 26)
-    _cell_text(d, (C, r2a, E, r2b), f"No of Reels:{detail['num_reels']}", 24)
-    _cell_text(d, (A, r3a, C, r3b), f"Rolls:{rolls or '—'}", 26)
-    _cell_text(d, (A, r4a, B, r4b), "Gross Wt:", 30)
-    _cell_text(d, (B, r4a, C, r4b), f"{detail['total_gross']:.3f} Kg", 40)
-    _cell_text(d, (A, r5a, B, r5b), "Core Wt:", 30)
-    _cell_text(d, (B, r5a, C, r5b), f"{detail['total_core']:.3f} Kg", 36)
-    _cell_text(d, (A, r6a, B, r6b), "Net Wt:", 30)
-    _cell_text(d, (B, r6a, C, r6b), f"{detail['total_net']:.3f} Kg", 40)
-    # right box: QR on top, carton no below (spans Rolls + weight rows = 4x1)
-    qr_px = max(80, min(300, int(min(E - C - 12, (r6b - r3a) * 0.62))))
+    _cell_text(d, (A, r3a, C, r3b), f"Tare:{_bw_txt} Kg", 26)
+    _cell_text(d, (A, r4a, C, r4b), f"Rolls:{rolls or '—'}", 26)
+    _cell_text(d, (A, r5a, B, r5b), "Gross Wt:", 30)
+    _cell_text(d, (B, r5a, C, r5b), f"{detail['total_gross']:.3f} Kg", 40)
+    _cell_text(d, (A, r6a, B, r6b), "Core Wt:", 30)
+    _cell_text(d, (B, r6a, C, r6b), f"{detail['total_core']:.3f} Kg", 36)
+    _cell_text(d, (A, r7a, B, r7b), "Net Wt:", 30)
+    _cell_text(d, (B, r7a, C, r7b), f"{detail['total_net']:.3f} Kg", 40)
+    # right box: QR on top, carton no below (spans tare + Rolls + weight
+    # rows = 5x1)
+    qr_px = max(80, min(300, int(min(E - C - 12, (r7b - r3a) * 0.62))))
     qr = _qr_image(detail["qr"], px=qr_px)
     if qr is not None:
         qx = int(C + (E - C - qr.size[0]) / 2)
         img.paste(qr, (qx, int(r3a + 6)))
-        _cell_text(d, (C, r3a + 6 + qr.size[1], E, r6b),
+        _cell_text(d, (C, r3a + 6 + qr.size[1], E, r7b),
                    _box_display_no(detail), 44, center=True)
     else:
-        mid = r3a + (r6b - r3a) * 0.28
+        mid = r3a + (r7b - r3a) * 0.28
         _cell_text(d, (C, r3a, E, mid), "Box No#", 26)
-        _cell_text(d, (C, mid, E, r6b), _box_display_no(detail), 90)
+        _cell_text(d, (C, mid, E, r7b), _box_display_no(detail), 90)
     return img
 
 
@@ -485,7 +512,10 @@ def render_client_box(detail: dict, width_mm: float = WIDE_WIDTH_MM,
     left, right = px(5), W - px(5)
     top, bottom = px(5), H - px(5)
     line = max(2, px(0.22))
-    d.rectangle([left, top, right, bottom], outline="black", width=max(3, line))
+    # Main (outer) border visibly thicker than the inner grid (~0.70mm vs
+    # ~0.22mm, dpi-scaled).
+    d.rectangle([left, top, right, bottom], outline="black",
+                width=max(5, int(round(0.70 / 25.4 * dpi))))
 
     # ---- top band: logo + company title ----
     band_bot = px(25)

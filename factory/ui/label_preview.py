@@ -286,6 +286,16 @@ def _open_queue(parent, queue_name: str) -> None:
                             f"Could not open the queue:\n{e}")
 
 
+def _job_head_txt(job: dict) -> str:
+    """Dialog header identity: J number + batch code (blank-safe)."""
+    try:
+        code = str(job.get("job_code") or "").strip().upper()
+    except Exception:
+        code = ""
+    head = f"J:{job['job_no']}"
+    return f"{head} {code}" if code else head
+
+
 def reel_label_text(job: dict, reel: dict) -> str:
     # Visual identity is the per-product bare number when present (P0
     # per-product monthly counting); the month-qualified roll_code stays in
@@ -295,8 +305,9 @@ def reel_label_text(job: dict, reel: dict) -> str:
     ident = str(reel.get("prod_seq") or reel["roll_no"])
     pieces = _pieces_txt(job)
     return (
-        f"{COMPANY}   J:{job['job_no']}\n"
-        f"Job Name:{job['job_name']}  |  Date:{fmt_date_ddmmyy(reel['created_at'])}\n"
+        f"{COMPANY}   {_job_head_txt(job)}\n"
+        f"Job Name:{job['job_name']}\n"
+        f"Date:{fmt_date_ddmmyy(reel['created_at'])}  |  "
         f"Gross Wt:  {reel['gross']:.3f} Kg   |  Roll No# {ident}\n"
         f"Core Wt:   {reel['core']:.3f} Kg   |\n"
         f"Net Wt:    {reel['net']:.3f} Kg   |\n"
@@ -318,18 +329,19 @@ def carton_label_text(detail: dict) -> str:
         _box_no = bare_carton_no(detail['carton_no'])
     if int(detail.get("num_reels") or 0) == 0:
         return (
-            f"{COMPANY}   J:{detail['job_no']}\n"
-            f"Job Name:{detail['job_name']}  |  Date:{fmt_date_ddmmyy(detail['packed_at'])}\n"
-            f"Rolls:—  |  BOX\n"
+            f"{COMPANY}   {_job_head_txt(detail)}\n"
+            f"Job Name:{detail['job_name']}\n"
+            f"Date:{fmt_date_ddmmyy(detail['packed_at'])}  |  BOX\n"
             f"Box Wt:  {detail['total_gross']:.3f} Kg\n"
             f"QR:{detail['qr']}\n"
             f"Box No:{_box_no}"
         )
     rolls = ",".join(str(r.get("prod_seq") or r["roll_no"]) for r in detail["reels"])
     return (
-        f"{COMPANY}   J:{detail['job_no']}\n"
-        f"Job Name:{detail['job_name']}  |  Date:{fmt_date_ddmmyy(detail['packed_at'])}\n"
-        f"Tare:{_bw} Kg  |  No of Reels:{detail['num_reels']}\n"
+        f"{COMPANY}   {_job_head_txt(detail)}\n"
+        f"Job Name:{detail['job_name']}\n"
+        f"Date:{fmt_date_ddmmyy(detail['packed_at'])}  |  No of Reels:{detail['num_reels']}\n"
+        f"Tare:{_bw} Kg\n"
         f"Rolls:{rolls}\n"
         f"Total Gross: {detail['total_gross']:.3f} Kg\n"
         f"Total Core:  {detail['total_core']:.3f} Kg\n"
@@ -693,7 +705,9 @@ class PackingSlipDialog(QDialog):
             QMessageBox.warning(self, "Packing slip", f"Connection issue: {msg}")
             self._slip = None
             return
-        self.setWindowTitle(f"Packing Slip — J:{self._slip['job_no']} (A4)")
+        _code = str(self._slip.get("job_code") or "").strip().upper()
+        self.setWindowTitle(f"Packing Slip — J:{self._slip['job_no']}"
+                            + (f" [{_code}]" if _code else "") + " (A4)")
         self.setMinimumSize(1020, 640)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 16, 16, 16)
@@ -763,6 +777,10 @@ class PackingSlipDialog(QDialog):
         if t.get("legacy_cartons"):
             tot_text += (f"  ·  {t['legacy_cartons']} legacy reel-linked box(es)"
                          " (rolls in table, weights in reel totals only)")
+        for b in self._slip.get("batches") or []:
+            tot_text += (f"  |  {b.get('label') or '?'}:"
+                         f" {int(b.get('reels') or 0)} reels"
+                         f" · {int(b.get('boxes') or 0)} boxes")
         wpr = self._slip.get("wrappers_per_reel")
         tot_text += f"  |  No of Pieces: {int(wpr)}" if wpr is not None \
             else "  |  No of Pieces: unknown"
@@ -912,6 +930,233 @@ class PackingSlipDialog(QDialog):
         toast(self, "Slip saved as PDF.")
 
 
+class OrderPackingDialog(QDialog):
+    """Order packing summary — every loaded box with its batch code,
+    bare rolls and weights, plus per-batch roll counts in the totals.
+
+    Left: loaded-box table from the summary. Right: exact print preview
+    (same painter as the printer/PDF output). Prints on a normal office
+    printer via the printer box, or saves a PDF. Live view over the
+    order's current loads (the frozen dispatch slip stays the completion
+    record).
+    """
+
+    def __init__(self, parent, order_id: int):
+        super().__init__(parent)
+        self._order_id = order_id
+        try:
+            self._summary = DA.order_packing_summary(order_id)
+        except ValueError as e:
+            QMessageBox.warning(self, "Packing summary", str(e))
+            self._summary = None
+            return
+        except Exception as e:
+            try:
+                msg, _kind = DA.describe_error(e)
+            except Exception:
+                msg = str(e)
+            QMessageBox.warning(self, "Packing summary", f"Connection issue: {msg}")
+            self._summary = None
+            return
+        self.setWindowTitle(f"Packing summary — {self._summary['order_no']} (A4)")
+        self.setMinimumSize(1020, 640)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 16, 16, 16)
+        lay.setSpacing(10)
+        ht = QLabel(f"Packing summary — {self._summary['order_no']}"
+                    f" → {self._summary['customer']}")
+        ht.setProperty("dialog", "title")
+        ht.setWordWrap(True)
+        lay.addWidget(ht)
+
+        from PySide6.QtWidgets import (QSplitter, QTableWidget, QTableWidgetItem,
+                                       QHeaderView, QAbstractItemView, QScrollArea,
+                                       QComboBox, QFileDialog, QFrame, QWidget)
+        from PySide6.QtGui import QPixmap
+        split = QSplitter(Qt.Horizontal)
+        split.setHandleWidth(8)
+        lay.addWidget(split, 1)
+
+        # ---- left: loaded boxes ----
+        left = QFrame()
+        left.setProperty("card", True)
+        ll = QVBoxLayout(left)
+        ll.setContentsMargins(12, 12, 12, 12)
+        ll.setSpacing(8)
+        cap = QLabel("Loaded boxes")
+        cap.setProperty("field", "caption")
+        ll.addWidget(cap)
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(
+            ["Box No", "Batch", "Rolls", "Reels", "Gross · kg", "Net · kg"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(36)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setShowGrid(False)
+        self.table.setAlternatingRowColors(True)
+        self.table.setFocusPolicy(Qt.NoFocus)
+        for r in self._summary["rows"]:
+            i = self.table.rowCount()
+            self.table.insertRow(i)
+            self.table.setItem(i, 0, QTableWidgetItem(str(r.get("box_no"))))
+            self.table.setItem(i, 1, QTableWidgetItem(str(r.get("job_code") or "—")))
+            self.table.setItem(i, 2, QTableWidgetItem(str(r.get("rolls") or "—")))
+            self.table.setItem(i, 3, QTableWidgetItem(str(int(r.get("num_reels") or 0))))
+            self.table.setItem(i, 4, QTableWidgetItem(f"{float(r.get('gross') or 0):.3f}"))
+            self.table.setItem(i, 5, QTableWidgetItem(f"{float(r.get('net') or 0):.3f}"))
+        ll.addWidget(self.table, 1)
+        t = self._summary["totals"]
+        tot_text = (f"Boxes: {int(t.get('boxes') or 0)}"
+                    f"  ·  Rolls: {int(t.get('rolls') or 0)}"
+                    f"  ·  Gross {float(t.get('gross') or 0):.3f}"
+                    f"  ·  Net {float(t.get('net') or 0):.3f} Kg")
+        for b in self._summary.get("batches") or []:
+            tot_text += (f"  |  {b.get('label') or '?'}:"
+                         f" {int(b.get('boxes') or 0)} boxes"
+                         f" · {int(b.get('rolls') or 0)} rolls"
+                         f" · {float(b.get('net') or 0):.3f} Kg")
+        tot = QLabel(tot_text)
+        tot.setProperty("count", True)
+        tot.setWordWrap(True)
+        ll.addWidget(tot)
+        split.addWidget(left)
+
+        # ---- right: print preview (same art as printer/PDF) ----
+        right = QFrame()
+        right.setProperty("card", True)
+        rl = QVBoxLayout(right)
+        rl.setContentsMargins(12, 12, 12, 12)
+        rl.setSpacing(8)
+        cap2 = QLabel("Print preview (A4)")
+        cap2.setProperty("field", "caption")
+        rl.addWidget(cap2)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        holder = QWidget()
+        vl = QVBoxLayout(holder)
+        vl.setSpacing(10)
+        try:
+            from factory import slip_pdf as _SP
+            pages = _SP.preview_order_images(self._summary)
+        except Exception:
+            pages = []
+        if not pages:
+            empty = QLabel("Nothing loaded on this order yet — no summary to print.")
+            empty.setProperty("empty", True)
+            empty.setWordWrap(True)
+            vl.addWidget(empty)
+        for img in pages:
+            ql = QLabel()
+            ql.setPixmap(QPixmap.fromImage(img).scaledToWidth(
+                460, Qt.SmoothTransformation))
+            ql.setAlignment(Qt.AlignCenter)
+            vl.addWidget(ql)
+        vl.addStretch(1)
+        scroll.setWidget(holder)
+        rl.addWidget(scroll, 1)
+        split.addWidget(right)
+        split.setSizes([420, 560])
+
+        # ---- bottom: printer + outputs ----
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(QLabel("Printer:"))
+        self.printer_combo = QComboBox()
+        self.printer_combo.setMinimumHeight(44)
+        self.printer_combo.setMinimumWidth(220)
+        try:
+            from PySide6.QtPrintSupport import QPrinterInfo
+            names = [p.printerName() for p in QPrinterInfo.availablePrinters()]
+        except Exception:
+            names = []
+        if names:
+            self.printer_combo.addItems(names)
+        else:
+            self.printer_combo.addItem("(no printer found — Save PDF instead)")
+            self.printer_combo.setEnabled(False)
+        row.addWidget(self.printer_combo, 1)
+        b_print = QPushButton("Print")
+        style_button(b_print, "primary")
+        b_queue = QPushButton("Queue")
+        style_button(b_queue, "secondary")
+        b_queue.setToolTip("Show pending print jobs for this printer.")
+        b_pdf = QPushButton("Save PDF")
+        style_button(b_pdf, "secondary")
+        b_close = QPushButton("Close")
+        style_button(b_close, "secondary")
+        for b in (b_print, b_queue, b_pdf, b_close):
+            b.setMinimumHeight(44)
+            row.addWidget(b)
+        self._btn_print = b_print
+        lay.addLayout(row)
+        b_close.clicked.connect(self.accept)
+        b_print.clicked.connect(self.do_print)
+        b_queue.clicked.connect(lambda: _open_queue(self, self._queue_name()))
+        b_pdf.clicked.connect(self.do_pdf)
+
+    def _queue_name(self) -> str:
+        try:
+            if not self.printer_combo.isEnabled():
+                return ""
+            return str(self.printer_combo.currentText() or "").strip()
+        except Exception:
+            return ""
+
+    def _out_path(self, ext: str) -> str:
+        import os
+        safe = "".join(c for c in str(self._summary.get("order_no") or "order")
+                       if c.isalnum() or c in ("-", "_")) or "order"
+        try:
+            from factory.db import app_data_dir
+            return os.path.join(app_data_dir(), f"packing_summary_{safe}.{ext}")
+        except Exception:
+            base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            return os.path.join(base, "data", f"packing_summary_{safe}.{ext}")
+
+    def do_print(self):
+        from factory import slip_pdf as SP
+        if not getattr(self, "_summary", None):
+            return QMessageBox.warning(
+                self, "Print", "Summary not loaded. Refresh and try again.")
+        name = self.printer_combo.currentText()
+        if not self.printer_combo.isEnabled():
+            return QMessageBox.warning(self, "Print", "No printer found. Use Save PDF.")
+        if not _preflight(self._queue_name(), self):
+            return
+        try:
+            with _printing_state(self._btn_print):
+                ok = SP.print_order_summary(self, self._summary,
+                                            printer_name=name)
+        except Exception as e:
+            return QMessageBox.warning(self, "Print", f"Could not print:\n{e}")
+        if not ok:
+            return QMessageBox.warning(
+                self, "Print", "Could not print. Check the printer and try again.")
+        from factory.ui.toast import toast
+        toast(self, "Packing summary sent to the printer.")
+
+    def do_pdf(self):
+        from PySide6.QtWidgets import QFileDialog
+        from factory import slip_pdf as SP
+        if not getattr(self, "_summary", None):
+            return QMessageBox.warning(
+                self, "Save PDF", "Summary not loaded. Refresh and try again.")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save packing summary PDF", self._out_path("pdf"),
+            "PDF (*.pdf)")
+        if not path:
+            return
+        try:
+            SP.save_order_pdf(self._summary, path)
+        except Exception as e:
+            return QMessageBox.warning(self, "Save PDF", f"Could not save:\n{e}")
+        from factory.ui.toast import toast
+        toast(self, "Packing summary saved as PDF.")
+
+
 class DispatchSlipDialog(QDialog):
     """Dispatch slip — the whole order details, printed at completion.
 
@@ -984,9 +1229,9 @@ class DispatchSlipDialog(QDialog):
         ll.addWidget(cap)
         unit = str(self._slip.get("piece_unit") or "reel")
         coil_word = "Wrappers" if unit.lower() == "wrapper" else "Coils"
-        self.table = QTableWidget(0, 6)
+        self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
-            ["Box No", "Box", coil_word, "Pieces", "Gross · kg", "Net · kg"])
+            ["Box No", "Batch", "Box", coil_word, "Pieces", "Gross · kg", "Net · kg"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(36)
@@ -999,16 +1244,23 @@ class DispatchSlipDialog(QDialog):
             i = self.table.rowCount()
             self.table.insertRow(i)
             self.table.setItem(i, 0, QTableWidgetItem(str(r.get("box_no"))))
-            self.table.setItem(i, 1, QTableWidgetItem(str(r.get("carton_no") or "")))
-            self.table.setItem(i, 2, QTableWidgetItem(str(int(r.get("num_reels") or 0))))
-            self.table.setItem(i, 3, QTableWidgetItem(f"{int(r.get('pieces') or 0):,}"))
-            self.table.setItem(i, 4, QTableWidgetItem(f"{float(r.get('gross') or 0):.3f}"))
-            self.table.setItem(i, 5, QTableWidgetItem(f"{float(r.get('net') or 0):.3f}"))
+            self.table.setItem(i, 1, QTableWidgetItem(
+                str(r.get("job_code") or "—")))
+            self.table.setItem(i, 2, QTableWidgetItem(str(r.get("carton_no") or "")))
+            self.table.setItem(i, 3, QTableWidgetItem(str(int(r.get("num_reels") or 0))))
+            self.table.setItem(i, 4, QTableWidgetItem(f"{int(r.get('pieces') or 0):,}"))
+            self.table.setItem(i, 5, QTableWidgetItem(f"{float(r.get('gross') or 0):.3f}"))
+            self.table.setItem(i, 6, QTableWidgetItem(f"{float(r.get('net') or 0):.3f}"))
         ll.addWidget(self.table, 1)
         tot_text = (f"Boxes: {int(self._slip.get('loaded_boxes') or 0)}"
                     f"  ·  Pieces: {int(self._slip.get('loaded_pieces') or 0):,}"
                     f"  ·  Net {float(self._slip.get('loaded_net') or 0):.3f} Kg"
                     f"  ·  Gross {float(self._slip.get('loaded_gross') or 0):.3f} Kg")
+        for b in self._slip.get("batches") or []:
+            tot_text += (f"  |  {b.get('label') or '?'}:"
+                         f" {int(b.get('boxes') or 0)} box"
+                         f" · {int(b.get('pieces') or 0):,} pcs"
+                         f" · {float(b.get('net') or 0):.3f} Kg")
         tot = QLabel(tot_text)
         tot.setProperty("count", True)
         tot.setWordWrap(True)
@@ -1059,9 +1311,13 @@ class DispatchSlipDialog(QDialog):
         b_queue.setToolTip("Show pending print jobs for this printer.")
         b_pdf = QPushButton("Save PDF")
         style_button(b_pdf, "secondary")
+        b_packing = QPushButton("Packing")
+        style_button(b_packing, "secondary")
+        b_packing.setToolTip("Order packing summary: every loaded box with its"
+                             " batch code, rolls and per-batch roll counts.")
         b_close = QPushButton("Close")
         style_button(b_close, "secondary")
-        for b in (b_print, b_queue, b_pdf, b_close):
+        for b in (b_print, b_queue, b_pdf, b_packing, b_close):
             b.setMinimumHeight(44)
             row.addWidget(b)
         self._btn_print = b_print
@@ -1070,6 +1326,7 @@ class DispatchSlipDialog(QDialog):
         b_print.clicked.connect(self.do_print)
         b_queue.clicked.connect(lambda: _open_queue(self, self._queue_name()))
         b_pdf.clicked.connect(self.do_pdf)
+        b_packing.clicked.connect(self.open_packing)
 
     def _queue_name(self) -> str:
         try:
@@ -1155,3 +1412,6 @@ class DispatchSlipDialog(QDialog):
         if (not os.path.exists(path)) or os.path.getsize(path) == 0:
             return QMessageBox.warning(self, "Save PDF", "PDF was not written (empty or missing file).")
         toast(self, "Dispatch slip saved as PDF.")
+
+    def open_packing(self):
+        OrderPackingDialog(self, self._order_id).exec()

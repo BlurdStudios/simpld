@@ -49,7 +49,8 @@ def seed_sample_data(path: str | None = None, admin_username: str = "",
             return {"jobs": S.list_jobs(path=path), "order": None}
     finally:
         c.close()
-    j1 = S.create_job("APPY FIZZ-160ML (SEP.28) BODY", size_mm=160, core_wt=0.280, path=path)
+    j1 = S.create_job("APPY FIZZ-160ML (SEP.28) BODY", size_mm=160, core_wt=0.280, path=path,
+                    job_code="SEED-A")
     for g in (11.380, 11.120, 10.960, 12.050, 11.240, 11.510):
         S.create_reel(j1["id"], gross=g, core=0.280, shift="DAY", supervisor="RAMESH", path=path)
     loose = S.loose_reels(j1["id"], path=path)
@@ -63,7 +64,8 @@ def seed_sample_data(path: str | None = None, admin_username: str = "",
         order = S.create_dispatch_order("PARLE AGRO HYD", j1["id"], 4, path=path)
     except ValueError:
         pass
-    j2 = S.create_job("BAILLEY-1LTR (SEP.36C)", size_mm=200, core_wt=0.720, path=path)
+    j2 = S.create_job("BAILLEY-1LTR (SEP.36C)", size_mm=200, core_wt=0.720, path=path,
+                    job_code="SEED-B")
     for g in (19.060, 19.340, 19.440, 18.720, 17.820):
         S.create_reel(j2["id"], gross=g, core=0.720, shift="DAY", supervisor="", path=path)
     return {"jobs": [j1, j2], "order": order}

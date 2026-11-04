@@ -345,12 +345,15 @@ def get_job_by_id(job_id: int) -> dict | None:
         c.close()
 
 
-def create_job_for_product(product_id: int, core_wt: float = 0.5) -> dict:
+def create_job_for_product(product_id: int, core_wt: float = 0.5,
+                           job_code: str = "") -> dict:
     if backend() == "lan":
         return _lan_client().create_job_for_product(product_id,
-                                                    core_wt=core_wt)
+                                                    core_wt=core_wt,
+                                                    job_code=job_code)
     from . import services as _svc
-    return _svc.create_job_for_product(product_id, core_wt=core_wt)
+    return _svc.create_job_for_product(product_id, core_wt=core_wt,
+                                       job_code=job_code)
 
 
 def set_job_status(job_id: int, status: str) -> None:
@@ -645,6 +648,15 @@ def dispatch_slip(order_id: int) -> dict:
         return _lan_client().dispatch_slip(order_id)
     from . import services as _svc
     return _svc.get_dispatch_slip(order_id)
+
+
+def order_packing_summary(order_id: int) -> dict:
+    """Packing summary for one order (every loaded box + per-batch roll
+    counts). Same dict locally and over LAN; renderers take it as-is."""
+    if backend() == "lan":
+        return _lan_client().order_packing_summary(order_id)
+    from . import services as _svc
+    return _svc.order_packing_summary(order_id)
 
 
 def mark_dispatch_slip_printed(order_id: int) -> dict:

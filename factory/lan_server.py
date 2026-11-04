@@ -454,27 +454,31 @@ def _h_get_job(args: dict, actor: dict, dbp: str) -> dict | None:
     return _svc.get_job_by_no(_v_int(args, "job_no", minimum=1), dbp)  # type: ignore[arg-type]
 
 
-@_op("create_job", "job.manage", ("job_name", "size_mm", "core_wt"))
+@_op("create_job", "job.manage", ("job_name", "size_mm", "core_wt", "job_code"))
 def _h_create_job(args: dict, actor: dict, dbp: str) -> dict:
-    _need(args, "create_job", frozenset({"job_name", "size_mm", "core_wt"}))
+    _need(args, "create_job", frozenset({"job_name", "size_mm", "core_wt", "job_code"}))
     name = _v_str(args, "job_name", max_len=256)
     size = _v_float(args, "size_mm", required=False, minimum=0,
                     maximum=10_000, default=0) or 0
     core = _v_float(args, "core_wt", required=False, minimum=0.01,
                     maximum=500, default=0.5) or 0.5
+    code = _v_opt_str(args, "job_code", max_len=32, default="", upper=True)
     assert name is not None
-    return _svc.create_job(name, size_mm=size, core_wt=core, path=dbp)
+    return _svc.create_job(name, size_mm=size, core_wt=core, path=dbp,
+                           job_code=code or "")
 
 
-@_op("create_job_for_product", "job.manage", ("product_id", "core_wt"))
+@_op("create_job_for_product", "job.manage", ("product_id", "core_wt", "job_code"))
 def _h_create_job_fp(args: dict, actor: dict, dbp: str) -> dict:
     _need(args, "create_job_for_product",
-          frozenset({"product_id", "core_wt"}))
+          frozenset({"product_id", "core_wt", "job_code"}))
     pid = _v_int(args, "product_id", minimum=1)
     core = _v_float(args, "core_wt", required=False, minimum=0.01,
                     maximum=500, default=0.5) or 0.5
+    code = _v_opt_str(args, "job_code", max_len=32, default="", upper=True)
     assert pid is not None
-    return _svc.create_job_for_product(pid, core_wt=core, path=dbp)
+    return _svc.create_job_for_product(pid, core_wt=core, path=dbp,
+                                       job_code=code or "")
 
 
 @_op("set_job_status", "job.manage", ("job_id", "status"))
@@ -844,6 +848,12 @@ def _h_complete(args: dict, actor: dict, dbp: str) -> dict:
 def _h_dispatch_slip(args: dict, actor: dict, dbp: str) -> dict:
     _need(args, "dispatch_slip", frozenset({"order_id"}))
     return _svc.get_dispatch_slip(_v_int(args, "order_id", minimum=1), dbp)  # type: ignore[arg-type]
+
+
+@_op("order_packing_summary", "report.read", ("order_id",))
+def _h_order_packing(args: dict, actor: dict, dbp: str) -> dict:
+    _need(args, "order_packing_summary", frozenset({"order_id"}))
+    return _svc.order_packing_summary(_v_int(args, "order_id", minimum=1), dbp)  # type: ignore[arg-type]
 
 
 @_op("mark_dispatch_slip_printed", "dispatch.mutate", ("order_id",))

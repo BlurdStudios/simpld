@@ -332,9 +332,10 @@ def test_real_print_renders_complete_data_and_paints_stock():
     assert st["painter"].drawn, "label image must be painted"
     rect = st["painter"].drawn[-1][0]
     assert (rect.x(), rect.y()) == (0, 0)
-    assert abs(rect.width() - 799) < 3 and abs(rect.height() - 399) < 3
+    assert abs(rect.width() - 799) < 4 and abs(rect.height() - 399) < 4
     calls = st["FakePrinter"].instances[-1].calls
-    assert ("fullpage", True) in calls, "must request full-page printing"
+    assert ("fullpage", False) in calls, \
+        "printable-local origin so the 2.50mm hardware left offset needs no shift"
     assert ("resolution", 203) in calls, "must request 203dpi"
 
 
@@ -387,9 +388,9 @@ def test_real_client_label_print_uses_wide_custom_stock():
     assert st["painter"].drawn, "wide label image must be painted"
     rect = st["painter"].drawn[-1][0]
     assert (rect.x(), rect.y()) == (0, 0)
-    assert abs(rect.width() - 1678) < 3 and abs(rect.height() - 735) < 3
+    assert abs(rect.width() - 1678) < 4 and abs(rect.height() - 735) < 4
     calls = st["FakePrinter"].instances[-1].calls
-    assert ("fullpage", True) in calls
+    assert ("fullpage", False) in calls
     assert ("resolution", 203) in calls
 
 

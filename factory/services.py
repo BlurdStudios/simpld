@@ -363,8 +363,20 @@ def next_job_no(c: sqlite3.Connection) -> int:
     return int(m) + 1
 
 
+def _job_code(v: object) -> str:
+    """Normalize a batch code: stripped, upper-cased, max 32 chars.
+
+    Blank stays blank (legacy jobs / API callers without a code). The
+    New-Job dialog requires a code; the service keeps older callers and
+    tests working.
+    """
+    code = str(v or "").strip().upper()
+    return code[:32]
+
+
 def create_job(job_name: str, size_mm: float = 0, core_wt: float = 0.5,
-               path: str | None = None, actor: dict | None = None) -> dict:
+               path: str | None = None, actor: dict | None = None,
+               job_code: str = "") -> dict:
     """Legacy API kept for seed/existing callers/tests.
 
     Catalog side-effect only: ensures a product row for the name with
@@ -384,6 +396,7 @@ def create_job(job_name: str, size_mm: float = 0, core_wt: float = 0.5,
     sm = _finite_weight(size_mm or 0, "Size")
     if sm < 0:
         raise ValueError("Size must be >= 0")
+    code = _job_code(job_code)
     c = get_conn(path)
     c.isolation_level = None
     try:
@@ -396,13 +409,13 @@ def create_job(job_name: str, size_mm: float = 0, core_wt: float = 0.5,
             wv = w["wrappers_per_reel"] if w else None
             uv = (w["unit"] if w and w["unit"] else ("pieces" if wv is not None else "")) or ""
             cur = c.execute(
-                "INSERT INTO jobs(job_no, job_name, size_mm, core_wt, product_id,"
+                "INSERT INTO jobs(job_no, job_name, job_code, size_mm, core_wt, product_id,"
                 " product_name, wrappers_per_reel, unit, status, created_at)"
-                " VALUES(?,?,?,?,?,?,?,?, 'open', ?)",
-                (jn, nm, float(sm), float(cw), pid, nm, wv, uv, now_iso()),
+                " VALUES(?,?,?,?,?,?,?,?,?, 'open', ?)",
+                (jn, nm, code, float(sm), float(cw), pid, nm, wv, uv, now_iso()),
             )
             jid = cur.lastrowid
-            _audit(c, resolved, "create_job", "job", jid, f"J:{jn} {nm}")
+            _audit(c, resolved, "create_job", "job", jid, f"J:{jn} {nm} [{code}]")
             c.execute("COMMIT")
         except Exception:
             try:
@@ -416,13 +429,15 @@ def create_job(job_name: str, size_mm: float = 0, core_wt: float = 0.5,
 
 
 def create_job_for_product(product_id: int, core_wt: float = 0.5,
-                           path: str | None = None, actor: dict | None = None) -> dict:
+                           path: str | None = None, actor: dict | None = None,
+                           job_code: str = "") -> dict:
     """New packaging job from the products master. Snapshots name + wrappers
     so later catalog edits cannot rewrite history. Core behavior unchanged."""
     resolved = _job_actor(path)
     cw = _finite_weight(core_wt, "Core weight")
     if cw <= 0:
         raise ValueError("Core weight must be > 0")
+    code = _job_code(job_code)
     c = get_conn(path)
     c.isolation_level = None
     try:
@@ -434,14 +449,14 @@ def create_job_for_product(product_id: int, core_wt: float = 0.5,
             p = dict(p)
             jn = _alloc_job_no(c)
             cur = c.execute(
-                "INSERT INTO jobs(job_no, job_name, size_mm, core_wt, product_id,"
+                "INSERT INTO jobs(job_no, job_name, job_code, size_mm, core_wt, product_id,"
                 " product_name, wrappers_per_reel, unit, status, created_at)"
-                " VALUES(?,?, 0, ?,?,?,?,?, 'open', ?)",
-                (jn, p["name"], float(cw), p["id"], p["name"],
+                " VALUES(?,?,?, 0, ?,?,?,?,?, 'open', ?)",
+                (jn, p["name"], code, float(cw), p["id"], p["name"],
                  p["wrappers_per_reel"], p.get("unit") or "", now_iso()),
             )
             jid = cur.lastrowid
-            _audit(c, resolved, "create_job", "job", jid, f"J:{jn} {p['name']}")
+            _audit(c, resolved, "create_job", "job", jid, f"J:{jn} {p['name']} [{code}]")
             c.execute("COMMIT")
         except Exception:
             try:
@@ -1026,11 +1041,12 @@ def production_history(path: str | None = None) -> list[dict]:
         # this SQLite build ("2nd ORDER BY term does not match any column"),
         # so keep the compound select nameless inside and sort outside.
         rows = c.execute("""
-            SELECT kind, id, reference, job_no, job_name, net_weight, shift,
+            SELECT kind, id, reference, job_no, job_name, job_code, net_weight, shift,
                    status, box, recorded_at, roll_period, roll_code, box_period,
                    print_status, print_count, full_ref FROM (
                 SELECT 'Reel' AS kind, r.id AS id, r.roll_no AS reference,
                        j.job_no AS job_no, j.job_name AS job_name,
+                       j.job_code AS job_code,
                        r.net AS net_weight, r.shift AS shift,
                        r.status AS status,
                        COALESCE(ct.carton_no, '') AS box,
@@ -1046,6 +1062,7 @@ def production_history(path: str | None = None) -> list[dict]:
                 UNION ALL
                 SELECT 'Box' AS kind, ct.id AS id, ct.carton_no AS reference,
                        j.job_no AS job_no, j.job_name AS job_name,
+                       j.job_code AS job_code,
                        ct.total_net AS net_weight, ct.shift AS shift,
                        ct.status AS status, ct.carton_no AS box,
                        ct.packed_at AS recorded_at,
@@ -1391,7 +1408,7 @@ def carton_detail(carton_id: int, path: str | None = None) -> dict:
     c = get_conn(path)
     try:
         ct = c.execute(
-            "SELECT ct.*, j.job_no, j.job_name, j.size_mm FROM cartons ct"
+            "SELECT ct.*, j.job_no, j.job_name, j.job_code, j.size_mm FROM cartons ct"
             " JOIN jobs j ON j.id=ct.job_id WHERE ct.id=?", (carton_id,)).fetchone()
         if not ct:
             raise ValueError("Box not found")
@@ -1417,11 +1434,11 @@ def ready_stock(job_id: int | None = None, path: str | None = None) -> list[dict
     try:
         if job_id:
             rows = c.execute(
-                "SELECT ct.*, j.job_no, j.job_name FROM cartons ct JOIN jobs j ON j.id=ct.job_id"
+                "SELECT ct.*, j.job_no, j.job_name, j.job_code FROM cartons ct JOIN jobs j ON j.id=ct.job_id"
                 " WHERE ct.status='Ready' AND ct.job_id=? ORDER BY ct.packed_at DESC", (job_id,)).fetchall()
         else:
             rows = c.execute(
-                "SELECT ct.*, j.job_no, j.job_name FROM cartons ct JOIN jobs j ON j.id=ct.job_id"
+                "SELECT ct.*, j.job_no, j.job_name, j.job_code FROM cartons ct JOIN jobs j ON j.id=ct.job_id"
                 " WHERE ct.status='Ready' ORDER BY ct.packed_at DESC").fetchall()
         out = []
         for r in rows:
@@ -1483,7 +1500,7 @@ def find_carton(scan_text: str, path: str | None = None) -> dict | None:
     c = get_conn(path)
     try:
         r = c.execute(
-            "SELECT ct.*, j.job_no, j.job_name FROM cartons ct JOIN jobs j ON j.id=ct.job_id"
+            "SELECT ct.*, j.job_no, j.job_name, j.job_code FROM cartons ct JOIN jobs j ON j.id=ct.job_id"
             " WHERE ct.carton_no=?", (cn,)).fetchone()
         return dict(r) if r else None
     finally:
@@ -1643,25 +1660,66 @@ def create_dispatch_order(customer: str, job_id: int, required_bundles: int | No
 
 
 def _order_items(c: sqlite3.Connection, order_id: int) -> list[sqlite3.Row]:
-    """Loaded cartons with their client box number, in scan order."""
+    """Loaded cartons with their client box number, in scan order.
+
+    Each row also carries its own batch identity (box_job_no, job_code)
+    and wrappers (job_wpr) from the carton's own job, so mixed-batch
+    orders count and group correctly.
+    """
     return c.execute(
-        "SELECT ct.*, di.scanned_at, di.client_box_no FROM dispatch_items di"
-        " JOIN cartons ct ON ct.id=di.carton_id WHERE di.order_id=?"
+        "SELECT ct.*, di.scanned_at, di.client_box_no,"
+        " j.job_no AS box_job_no, j.job_code, j.product_id AS box_product_id,"
+        " j.product_name AS box_product_name, j.wrappers_per_reel AS job_wpr"
+        " FROM dispatch_items di"
+        " JOIN cartons ct ON ct.id=di.carton_id"
+        " JOIN jobs j ON j.id=ct.job_id WHERE di.order_id=?"
         " ORDER BY di.id", (order_id,)).fetchall()
+
+
+def _row_wpr(row, fallback: int | None = None) -> int:
+    """Wrappers-per-reel for one loaded row: its own job first."""
+    try:
+        if "job_wpr" in row.keys() and row["job_wpr"] not in (None, ""):
+            return int(row["job_wpr"] or 0)
+    except Exception:
+        pass
+    return int(fallback or 0)
 
 
 def _piece_counts(items: list, unit: str = "reel",
                   wrappers_per_reel: int | None = None) -> int:
     """Order pieces.
 
-    `wrapper` (new orders): each linked coil contributes the job's
-    wrappers_per_reel, so a 3-coil box is 3 × wrappers. `reel` (legacy piece
+    `wrapper` (new orders): each linked coil contributes wrappers_per_reel, so a 3-coil box is 3 × wrappers. `reel` (legacy piece
     orders): one linked reel = one piece, preserving old targets/history.
+
+    Mixed-batch orders count each box with its own job's wrappers, so
+    batches packed under different snapshots still total correctly.
     """
     if str(unit or "reel").lower() == "wrapper":
-        w = int(wrappers_per_reel or 0)
-        return sum(int(x["num_reels"] or 0) * w for x in items)
+        return sum(int(x["num_reels"] or 0) * _row_wpr(x, wrappers_per_reel)
+                   for x in items)
     return sum(int(x["num_reels"] or 0) for x in items)
+
+
+def _same_product(a: dict, b: dict) -> bool:
+    """True when two job rows are the same product (batch-agnostic).
+
+    Compares product_id when both sides carry one, else the snapshotted
+    product_name. Anything unidentifiable falls back to strict job
+    identity so a scan can never cross products by accident.
+    """
+    try:
+        aid, bid = a.get("product_id"), b.get("product_id")
+        if aid is not None and bid is not None:
+            return int(aid) == int(bid)
+        an = str(a.get("product_name") or a.get("job_name") or "").strip().upper()
+        bn = str(b.get("product_name") or b.get("job_name") or "").strip().upper()
+        if an and bn:
+            return an == bn
+        return int(a.get("id")) == int(b.get("id"))
+    except Exception:
+        return False
 
 
 def _unit_word(unit: str) -> str:
@@ -1678,12 +1736,12 @@ def list_orders(status: str | None = None, path: str | None = None) -> list[dict
     try:
         if status:
             rows = c.execute(
-                "SELECT o.*, j.job_no, j.job_name, j.wrappers_per_reel"
+                "SELECT o.*, j.job_no, j.job_name, j.job_code, j.wrappers_per_reel"
                 " FROM dispatch_orders o JOIN jobs j ON j.id=o.job_id"
                 " WHERE o.status=? ORDER BY o.id DESC", (status,)).fetchall()
         else:
             rows = c.execute(
-                "SELECT o.*, j.job_no, j.job_name, j.wrappers_per_reel"
+                "SELECT o.*, j.job_no, j.job_name, j.job_code, j.wrappers_per_reel"
                 " FROM dispatch_orders o JOIN jobs j ON j.id=o.job_id"
                 " ORDER BY o.id DESC").fetchall()
         out = []
@@ -1726,7 +1784,7 @@ def order_progress(order_id: int, path: str | None = None) -> dict:
     c = get_conn(path)
     try:
         o = c.execute(
-            "SELECT o.*, j.job_no, j.job_name, j.wrappers_per_reel"
+            "SELECT o.*, j.job_no, j.job_name, j.job_code, j.wrappers_per_reel"
             " FROM dispatch_orders o JOIN jobs j ON j.id=o.job_id"
             " WHERE o.id=?", (order_id,)).fetchone()
         if not o:
@@ -1779,7 +1837,12 @@ def order_progress(order_id: int, path: str | None = None) -> dict:
 
 def _dispatch_slip_rows(c: sqlite3.Connection, order_id: int,
                         unit: str, wpr: int) -> list[dict]:
-    """One row per loaded box, in scan order, for the dispatch slip."""
+    """One row per loaded box, in scan order, for the dispatch slip.
+
+    Each row carries its own batch identity (box_job_no, job_code) and
+    counts pieces with its own job's wrappers, so mixed-batch orders add
+    up correctly.
+    """
     rows = []
     for i, it in enumerate(_order_items(c, order_id), 1):
         box_no = it["client_box_no"]
@@ -1787,12 +1850,22 @@ def _dispatch_slip_rows(c: sqlite3.Connection, order_id: int,
             box_no = i
         n_reels = int(it["num_reels"] or 0)
         if str(unit or "reel").lower() == "wrapper":
-            pieces = n_reels * int(wpr or 0)
+            pieces = n_reels * _row_wpr(it, wpr)
         else:
             pieces = n_reels
+        try:
+            code = str(it["job_code"] or "").strip().upper()
+        except Exception:
+            code = ""
+        try:
+            bno = int(it["box_job_no"])
+        except Exception:
+            bno = 0
         rows.append({
             "box_no": int(box_no),
             "carton_no": bare_carton_no(it["carton_no"]),
+            "job_code": code,
+            "box_job_no": bno,
             "num_reels": n_reels,
             "pieces": pieces,
             "gross": round(float(it["total_gross"] or 0), 3),
@@ -1800,6 +1873,25 @@ def _dispatch_slip_rows(c: sqlite3.Connection, order_id: int,
             "scanned_at": it["scanned_at"],
         })
     return rows
+
+
+def _slip_batches(rows: list[dict]) -> list[dict]:
+    """Per-batch subtotals in first-seen order: how much of the dispatch
+    came from each job code (12DEC vs 14DEC stock)."""
+    groups: dict[str, dict] = {}
+    for r in rows:
+        code = str(r.get("job_code") or "").strip().upper()
+        key = code if code else f"J:{r.get('box_job_no') or '?'}"
+        g = groups.get(key)
+        if g is None:
+            g = {"job_code": code, "label": code or f"J:{r.get('box_job_no') or '?'}",
+                 "boxes": 0, "pieces": 0, "gross": 0.0, "net": 0.0}
+            groups[key] = g
+        g["boxes"] += 1
+        g["pieces"] += int(r.get("pieces") or 0)
+        g["gross"] = round(g["gross"] + float(r.get("gross") or 0), 3)
+        g["net"] = round(g["net"] + float(r.get("net") or 0), 3)
+    return list(groups.values())
 
 
 def _build_dispatch_slip(c: sqlite3.Connection, o: dict) -> dict:
@@ -1823,6 +1915,7 @@ def _build_dispatch_slip(c: sqlite3.Connection, o: dict) -> dict:
         "batch_no": o.get("batch_no") or "",
         "job_no": o.get("job_no"),
         "job_name": o.get("job_name"),
+        "job_code": str(o.get("job_code") or "").strip().upper(),
         "piece_unit": unit,
         "pieces_word": _unit_word(unit),
         "required_bundles": int(o.get("required_bundles") or 0),
@@ -1832,6 +1925,7 @@ def _build_dispatch_slip(c: sqlite3.Connection, o: dict) -> dict:
         "loaded_pieces": sum(r["pieces"] for r in rows),
         "loaded_net": round(sum(r["net"] for r in rows), 3),
         "loaded_gross": round(sum(r["gross"] for r in rows), 3),
+        "batches": _slip_batches(rows),
         "status": o.get("status"),
         "order_date": o.get("order_date"),
         "completed_at": o.get("completed_at"),
@@ -1848,7 +1942,7 @@ def dispatch_slip_data(order_id: int, path: str | None = None) -> dict:
     c = get_conn(path)
     try:
         o = c.execute(
-            "SELECT o.*, j.job_no, j.job_name, j.wrappers_per_reel"
+            "SELECT o.*, j.job_no, j.job_name, j.job_code, j.wrappers_per_reel"
             " FROM dispatch_orders o JOIN jobs j ON j.id=o.job_id"
             " WHERE o.id=?", (order_id,)).fetchone()
         if not o:
@@ -1856,6 +1950,92 @@ def dispatch_slip_data(order_id: int, path: str | None = None) -> dict:
         slip = _build_dispatch_slip(c, dict(o))
         slip["frozen"] = False
         return slip
+    finally:
+        c.close()
+
+
+def order_packing_summary(order_id: int, path: str | None = None) -> dict:
+    """Packing summary for one dispatch order: every loaded box with its
+    batch code, bare rolls and weights, plus per-batch roll counts.
+
+    Read-only and live (the frozen dispatch slip stays the completion
+    record; this is the printable packing view over it). Works for
+    mixed-batch orders: rows carry each box's own job code.
+    """
+    from .slip_pdf import batch_totals
+    c = get_conn(path)
+    try:
+        o = c.execute(
+            "SELECT o.*, j.job_no, j.job_name, j.job_code"
+            " FROM dispatch_orders o JOIN jobs j ON j.id=o.job_id"
+            " WHERE o.id=?", (order_id,)).fetchone()
+        if not o:
+            raise ValueError("Order not found")
+        o = dict(o)
+        items = _order_items(c, o["id"])
+        ids = [int(x["id"]) for x in items]
+        rolls_map: dict[int, list[int]] = {}
+        if ids:
+            ph = ",".join("?" for _ in ids)
+            for rr in c.execute(
+                    "SELECT ci.carton_id, r.roll_no, r.prod_seq FROM carton_items ci"
+                    " JOIN reels r ON r.id=ci.reel_id"
+                    f" WHERE ci.carton_id IN ({ph}) ORDER BY ci.carton_id, r.id",
+                    tuple(ids)).fetchall():
+                n = rr["prod_seq"] if rr["prod_seq"] is not None else rr["roll_no"]
+                rolls_map.setdefault(int(rr["carton_id"]), []).append(int(n))
+        rows = []
+        for i, it in enumerate(items, 1):
+            box_no = it["client_box_no"]
+            if box_no is None:
+                box_no = i
+            n_reels = int(it["num_reels"] or 0)
+            bare = ", ".join(str(n) for n in sorted(rolls_map.get(int(it["id"]), [])))
+            try:
+                code = str(it["job_code"] or "").strip().upper()
+            except Exception:
+                code = ""
+            try:
+                bno = int(it["box_job_no"])
+            except Exception:
+                bno = 0
+            rows.append({
+                "kind": "Box",
+                "box_no": int(box_no),
+                "carton_no": bare_carton_no(it["carton_no"]),
+                "job_code": code,
+                "box_job_no": bno,
+                "num_reels": n_reels,
+                "rolls": bare,
+                "gross": round(float(it["total_gross"] or 0), 3),
+                "core": round(float(it["total_core"] or 0), 3),
+                "net": round(float(it["total_net"] or 0), 3),
+                "scanned_at": it["scanned_at"],
+            })
+        batches = batch_totals(rows)
+        return {
+            "order_id": o["id"],
+            "order_no": o["order_no"],
+            "customer": o["customer"],
+            "customer_po": o.get("customer_po") or "",
+            "po_date": o.get("po_date") or "",
+            "batch_no": o.get("batch_no") or "",
+            "job_no": o.get("job_no"),
+            "job_name": o.get("job_name"),
+            "job_code": str(o.get("job_code") or "").strip().upper(),
+            "status": o.get("status"),
+            "order_date": o.get("order_date"),
+            "completed_at": o.get("completed_at"),
+            "rows": rows,
+            "batches": batches,
+            "totals": {
+                "boxes": len(rows),
+                "rolls": sum(r["num_reels"] for r in rows),
+                "gross": round(sum(r["gross"] for r in rows), 3),
+                "core": round(sum(r["core"] for r in rows), 3),
+                "net": round(sum(r["net"] for r in rows), 3),
+            },
+        }
     finally:
         c.close()
 
@@ -1879,7 +2059,7 @@ def get_dispatch_slip(order_id: int, path: str | None = None) -> dict:
             slip["frozen"] = True
             return slip
         o = c.execute(
-            "SELECT o.*, j.job_no, j.job_name, j.wrappers_per_reel"
+            "SELECT o.*, j.job_no, j.job_name, j.job_code, j.wrappers_per_reel"
             " FROM dispatch_orders o JOIN jobs j ON j.id=o.job_id"
             " WHERE o.id=?", (order_id,)).fetchone()
         if not o:
@@ -1946,7 +2126,13 @@ def _freeze_dispatch_slip_locked(c: sqlite3.Connection, order_id: int) -> dict:
 
 def scan_into_order(order_id: int, scan_text: str, path: str | None = None,
                     actor: dict | None = None) -> dict:
-    """Loading-bay scan. Validates product match + duplicates. Returns carton."""
+    """Loading-bay scan. Validates product match + duplicates. Returns carton.
+
+    An order accepts boxes from any job (batch) of the same product, so
+    one dispatch can load from several dated stocks (e.g. 12DEC + 14DEC
+    jobs): only a different product is rejected. Each box counts with its
+    own job's wrappers-per-reel.
+    """
     resolved = _dispatch_actor(path)
     cn = parse_scan(scan_text)
     if not cn:
@@ -1967,10 +2153,21 @@ def scan_into_order(order_id: int, scan_text: str, path: str | None = None,
             ct = dict(ct)
             if ct["status"] != "Ready":
                 raise ValueError(f"Box {bare_carton_no(ct['carton_no'])} is already {ct['status']}.")
-            if ct["job_id"] != o["job_id"]:
-                j = c.execute("SELECT job_no, job_name FROM jobs WHERE id=?", (ct["job_id"],)).fetchone()
+            oj = c.execute(
+                "SELECT id, job_no, job_name, job_code, product_id, product_name,"
+                " wrappers_per_reel FROM jobs WHERE id=?", (o["job_id"],)).fetchone()
+            bj = c.execute(
+                "SELECT id, job_no, job_name, job_code, product_id, product_name,"
+                " wrappers_per_reel FROM jobs WHERE id=?", (ct["job_id"],)).fetchone()
+            if oj is None or bj is None:
+                raise ValueError("Order or box job missing — contact admin.")
+            oj, bj = dict(oj), dict(bj)
+            if not _same_product(oj, bj):
                 raise ValueError(
-                    f"Product mismatch! Box {bare_carton_no(ct['carton_no'])} is J:{j['job_no']} {j['job_name']}. Order needs another job.")
+                    f"Product mismatch! Box {bare_carton_no(ct['carton_no'])} is"
+                    f" J:{bj['job_no']} {bj['job_name']}"
+                    f" [{(bj.get('job_code') or '').strip() or 'no code'}]."
+                    f" Order needs {oj['job_name']}.")
             dup = c.execute("SELECT order_id FROM dispatch_items WHERE carton_id=?", (ct["id"],)).fetchone()
             if dup:
                 if dup["order_id"] == order_id:
@@ -1980,14 +2177,12 @@ def scan_into_order(order_id: int, scan_text: str, path: str | None = None,
             rp = o["required_pieces"]
             rq = o["required_weight_kg"]
             unit = str(o["piece_unit"] or "reel")
-            job = c.execute("SELECT wrappers_per_reel FROM jobs WHERE id=?",
-                            (o["job_id"],)).fetchone()
-            wpr = int((job["wrappers_per_reel"] if job else 0) or 0)
-            if rp is not None and unit == "wrapper" and wpr <= 0:
+            box_wpr = int(bj.get("wrappers_per_reel") or 0)
+            if rp is not None and unit == "wrapper" and box_wpr <= 0:
                 raise ValueError(
-                    "This order counts wrappers, but its job has no wrappers-per-reel "
-                    "count. Set it on the product/job before loading boxes.")
-            pieces_before = _piece_counts(items, unit, wpr)
+                    "This box's job has no wrappers-per-reel count."
+                    " Set it on the product/job before loading boxes.")
+            pieces_before = _piece_counts(items, unit, int(oj.get("wrappers_per_reel") or 0))
             net_before = round(sum(float(x["total_net"] or 0) for x in items), 3)
             if rp is not None:
                 # Piece-based order: stop once the target is reached. The
@@ -2023,7 +2218,7 @@ def scan_into_order(order_id: int, scan_text: str, path: str | None = None,
             except sqlite3.IntegrityError:
                 raise ValueError(f"Box {bare_carton_no(ct['carton_no'])} already scanned (duplicate).")
             loaded_now = pieces_before + (
-                int(ct["num_reels"] or 0) * wpr if unit == "wrapper"
+                int(ct["num_reels"] or 0) * box_wpr if unit == "wrapper"
                 else int(ct["num_reels"] or 0))
             loaded_net_now = round(net_before + float(ct["total_net"] or 0), 3)
             if rq is not None:

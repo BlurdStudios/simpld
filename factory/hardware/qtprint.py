@@ -5,7 +5,11 @@ OS-installed driver (the same printer name shown in any Print dialog), via
 Qt PrintSupport (QPrinter/QPainter). No EPL/ZPL command bytes are invented
 or sent — the existing full-resolution label art from
 factory.hardware.labels (render_reel / render_carton, 100 x 50 mm fixed
-stock at 203 dpi, zero margins) is painted 1:1 onto the label page.
+stock at 203 dpi) is fitted to the driver's printable rect. The CL-S621
+hardware enforces ~2.50mm left / ~1.38mm right unprintable area with no
+borderless option, so the art scales to the printable width (800 dots fit
+into 769) instead of being refused or clipped; wrong stock (tens of mm
+off) still fails via the ±1.0mm page-size check.
 
 Data contract: pass the COMPLETE rendering inputs, not a truncated summary:
 - print_reel_label({"job": job_row, "reel": reel_row})
@@ -24,6 +28,19 @@ import logging as _logging
 
 LABEL_WIDTH_MM = LabelArt.LABEL_WIDTH_MM    # 100 (fixed 100x50 stock)
 LABEL_HEIGHT_MM = LabelArt.LABEL_HEIGHT_MM  # 50  (fixed 100x50 stock)
+
+# Citizen CL-S621 @203dpi cannot hit 100.0x50.0mm exactly: 100mm =
+# 799.21 dots, 50mm = 399.61 dots, and the driver rounds UP to 800x400
+# dots = 100.10x50.05mm (20-dot/2.50mm left origin + 11-dot/1.38mm right
+# margin are hardware unprintable, not a user setting — there is no
+# borderless option). Size checks therefore use a ±1.0mm tolerance and
+# the page is fit to the printable rect instead of refused.
+SIZE_TOL_MM = 1.0
+# A stale Seagull USER form (101.6x152.4mm + margins) surfaces as a
+# 104.1x152.4mm ticket while GDI already reports 100.10x50.05. Detect it
+# specifically so the error points at the registry fix instead of stock.
+_STALE_W_MM = 104.1
+_STALE_H_MM = 152.4
 
 _log = _logging.getLogger("simpld.hardware")
 
@@ -117,7 +134,12 @@ class QtCitizenCLS621(PrinterInterface):
 
     @staticmethod
     def _margins_mm(eff_layout) -> float:
-        """Largest absolute margin in mm (0 for the required borderless layout)."""
+        """Largest absolute margin in mm (informational only).
+
+        The CL-S621 enforces ~2.50mm left / ~1.38mm right hardware
+        unprintable area with no borderless option, so this is logged and
+        fitted — never a fatal error.
+        """
         try:
             from PySide6.QtGui import QPageLayout
             m = eff_layout.margins(QPageLayout.Millimeter)
@@ -130,6 +152,24 @@ class QtCitizenCLS621(PrinterInterface):
                        abs(m.right()), abs(m.bottom()))
         except Exception:
             return 0.0
+
+    @staticmethod
+    def _quantized_mm(width_mm: float, height_mm: float,
+                      dpi: int) -> tuple[float, float]:
+        """Dot-quantized request size (driver rounds UP to whole dots).
+
+        100.0mm @203dpi = 799.21 dots -> driver reports 800 dots =
+        100.10mm; 50.0mm -> 400 dots = 50.05mm. Requesting the quantized
+        size makes the printed page match bit-for-bit instead of relying
+        on the driver to round our fractional request.
+        """
+        import math
+        try:
+            wd = math.ceil(float(width_mm) / 25.4 * int(dpi) - 1e-9)
+            hd = math.ceil(float(height_mm) / 25.4 * int(dpi) - 1e-9)
+            return wd / int(dpi) * 25.4, hd / int(dpi) * 25.4
+        except Exception:
+            return float(width_mm), float(height_mm)
 
     def _submit(self, pil_img, doc_name: str,
                 width_mm: float = LABEL_WIDTH_MM,
@@ -161,7 +201,10 @@ class QtCitizenCLS621(PrinterInterface):
             printer.setPrinterName(self.printer_name)
             printer.setDocName(doc_name)
             try:
-                printer.setFullPage(True)
+                # Printable-local origin: (0,0) is the printable top-left,
+                # so the 2.50mm hardware left origin is handled by Qt and
+                # the label is never clipped by a paper-edge offset.
+                printer.setFullPage(False)
             except Exception:
                 pass
             try:
@@ -174,22 +217,41 @@ class QtCitizenCLS621(PrinterInterface):
             # against Qt/driver changes instead of trusting the request.
             orient = (QPageLayout.Portrait if width_mm >= height_mm
                       else QPageLayout.Landscape)
-            size = QPageSize(QSizeF(width_mm, height_mm),
+            q_w, q_h = self._quantized_mm(width_mm, height_mm, dpi)
+            size = QPageSize(QSizeF(q_w, q_h),
                              QPageSize.Millimeter)
             layout = QPageLayout(size, orient, QMarginsF(0, 0, 0, 0))
             printer.setPageLayout(layout)
             eff = printer.pageLayout()
             ew, eh = self._effective_mm(eff)
-            if abs(ew - width_mm) > 1.0 or abs(eh - height_mm) > 1.0:
+            if abs(ew - width_mm) > SIZE_TOL_MM or abs(eh - height_mm) > SIZE_TOL_MM:
+                if (abs(ew - _STALE_W_MM) < 2.0 and abs(eh - _STALE_H_MM) < 2.0):
+                    raise RuntimeError(
+                        f"Printer {self.printer_name!r} reports a "
+                        f"{ew:.1f}x{eh:.1f}mm page, not the "
+                        f"{width_mm:.1f}x{height_mm:.1f}mm stock — the "
+                        f"driver's USER form is stale (still 101.6x152.4mm "
+                        f"with margins, surfacing as 104.1x152.4mm). Update "
+                        f"'User Form: Data' to 100000x50000um with 0 "
+                        f"margins, then re-check")
                 raise RuntimeError(
                     f"Printer {self.printer_name!r} reports a "
                     f"{ew:.1f}x{eh:.1f}mm page, not the "
                     f"{width_mm:.1f}x{height_mm:.1f}mm stock — set that exact "
                     f"custom paper size in the printer driver")
-            if self._margins_mm(eff) > 0.25:
-                raise RuntimeError(
-                    f"Printer {self.printer_name!r} enforces non-zero margins — "
-                    f"enable borderless/full-bleed (zero margins) in the driver")
+            # Hardware unprintable area (CL-S621: ~2.50mm left origin,
+            # ~1.38mm right) is normal — there is no borderless option.
+            # Warn at most; the paint step below fits to printable.
+            try:
+                mg = self._margins_mm(eff)
+            except Exception:
+                mg = 0.0
+            if mg > 0.25:
+                _log.warning(
+                    "Printer %r reports %.2fmm margins "
+                    "(hardware unprintable, e.g. CL-S621 2.50mm left origin) "
+                    "— fitting the label to the printable area",
+                    self.printer_name, mg)
         except RuntimeError:
             raise
         except Exception as e:
@@ -200,30 +262,40 @@ class QtCitizenCLS621(PrinterInterface):
                 f"Printer {self.printer_name!r} refused the job — check it is "
                 f"online with the right label stock loaded")
         try:
-            # Paint 1:1 onto the fixed 100x50mm stock at the printer's
-            # own resolution, origin (0,0), zero margins by construction.
+            # Fit the full label art to the printable rect (printable-local
+            # origin, so the hardware left offset needs no manual shift).
+            # Zero-margin drivers stay 1:1; the CL-S621 squeezes 800 dots
+            # into its 769-dot printable width (~3.8%) instead of clipping
+            # the border — the size check above still rejects wrong stock
+            # (tens of mm off), this only absorbs hardware unprintable.
             res = int(printer.resolution() or dpi)
-            w_px = int(width_mm / 25.4 * res)
-            h_px = int(height_mm / 25.4 * res)
             try:
                 pr = printer.pageRect(QPrinter.DevicePixel)
-                # Driver rounding slop: hardware margins are already verified
-                # <=0.25mm above and painting is at origin (0,0) full-page, so
-                # a sub-0.5mm shortfall in the *reported* printable rect is not
-                # real clipping (the Citizen reports 797px here vs 799px of
-                # label). Wrong stock is tens of mm short and still fails.
-                slop = max(4, int(round(0.5 / 25.4 * res)))
-                if pr.width() < w_px - slop or pr.height() < h_px - slop:
-                    raise RuntimeError(
-                        f"Printer {self.printer_name!r} printable area is "
-                        f"{pr.width()}x{pr.height()}px < label {w_px}x{h_px}px — "
-                        f"check the {width_mm:.1f}x{height_mm:.1f}mm stock and "
-                        f"borderless setting (refusing to clip)")
-            except RuntimeError:
-                raise
+                pw, ph = int(pr.width()), int(pr.height())
+            except Exception:
+                pw = ph = 0
+            if pw <= 0 or ph <= 0:
+                w_px = int(round(q_w / 25.4 * res))
+                h_px = int(round(q_h / 25.4 * res))
+                painter.drawImage(QRectF(0, 0, w_px, h_px), qimg)
+            else:
+                w_px = int(round(q_w / 25.4 * res))
+                h_px = int(round(q_h / 25.4 * res))
+                if abs(pw - w_px) > max(4, int(round(0.5 / 25.4 * res))) or \
+                        abs(ph - h_px) > max(4, int(round(0.5 / 25.4 * res))):
+                    _log.info(
+                        "Printer %r printable %dx%dpx vs label %dx%dpx — "
+                        "scaling art to printable (hardware margins)",
+                        self.printer_name, pw, ph, w_px, h_px)
+                painter.drawImage(QRectF(0, 0, pw, ph), qimg)
+        except Exception as e:
+            try:
+                painter.end()
             except Exception:
                 pass
-            painter.drawImage(QRectF(0, 0, w_px, h_px), qimg)
+            if isinstance(e, RuntimeError):
+                raise
+            raise RuntimeError(f"Label print failed on {self.printer_name!r}: {e}")
         except Exception as e:
             try:
                 painter.end()

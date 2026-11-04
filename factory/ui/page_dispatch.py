@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QCombo
                                QAbstractItemView, QSpinBox, QSizePolicy)
 from PySide6.QtCore import Qt
 from factory import data_access as DA
-from factory.db import bare_carton_no
+from factory.db import bare_carton_no, job_label
 from factory.hardware import mock as HW
 from factory.hardware import devices as DEV
 from factory.hardware import status as HWStatus
@@ -193,9 +193,9 @@ class DispatchPage(QWidget):
         root.addLayout(scan)
 
         # ---- loaded table ----
-        self.table = QTableWidget(0, 6)
+        self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
-            ["Client box", "Box", "Reels", "Pieces", "Net · kg", "Scanned"])
+            ["Client box", "Batch", "Box", "Reels", "Pieces", "Net · kg", "Scanned"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(44)
@@ -369,13 +369,19 @@ class DispatchPage(QWidget):
             self.table.insertRow(r)
             box_no = int(it.get("client_box_no") or (r + 1))
             n = int(it.get("num_reels") or 0)
-            pieces = n * wpr if unit == "wrapper" else 0
+            try:
+                iw = int(it.get("job_wpr") or 0) or wpr
+            except (TypeError, ValueError):
+                iw = wpr
+            pieces = n * iw if unit == "wrapper" else 0
             self.table.setItem(r, 0, QTableWidgetItem(str(box_no)))
-            self.table.setItem(r, 1, QTableWidgetItem(bare_carton_no(it.get("carton_no") or "")))
-            self.table.setItem(r, 2, QTableWidgetItem(str(n) if n else "—"))
-            self.table.setItem(r, 3, QTableWidgetItem(f"{pieces:,}" if pieces else "—"))
-            self.table.setItem(r, 4, QTableWidgetItem(f"{float(it.get('total_net') or 0):.3f}"))
-            self.table.setItem(r, 5, QTableWidgetItem(str(it.get("scanned_at") or "")[:16]))
+            self.table.setItem(r, 1, QTableWidgetItem(
+                str(it.get("job_code") or "—")))
+            self.table.setItem(r, 2, QTableWidgetItem(bare_carton_no(it.get("carton_no") or "")))
+            self.table.setItem(r, 3, QTableWidgetItem(str(n) if n else "—"))
+            self.table.setItem(r, 4, QTableWidgetItem(f"{pieces:,}" if pieces else "—"))
+            self.table.setItem(r, 5, QTableWidgetItem(f"{float(it.get('total_net') or 0):.3f}"))
+            self.table.setItem(r, 6, QTableWidgetItem(str(it.get("scanned_at") or "")[:16]))
         self.table.blockSignals(False)
         for o in self._rows:
             if o["id"] == self.order_id:
@@ -407,7 +413,7 @@ class DispatchPage(QWidget):
                 counts = f"loaded {prog.get('loaded', 0)}/{int(o.get('required_bundles') or 0)} boxes"
             self._alert = alert
             text = (f"{o['order_no']} → {o['customer']} · "
-                    f"J:{o.get('job_no','')} {o.get('job_name','')} · "
+                    f"{job_label(o)} · "
                     f"{counts} · {o['status']}")
             if alert:
                 text += f" · {alert[0]}"
@@ -500,7 +506,7 @@ class DispatchPage(QWidget):
                 have = (f"{boxes} box{'es' if boxes != 1 else ''} · "
                         f"{coils} coil{'s' if coils != 1 else ''} · "
                         f"{_compact_pcs(pcs)} pcs")
-            label = f"J:{j['job_no']} — {j['job_name']} [{have}]"
+            label = f"{job_label(j)} [{have}]"
             combo.addItem(label, userData=j["id"])
             combo.setItemData(combo.count() - 1, label,
                               Qt.ItemDataRole.ToolTipRole)
@@ -536,7 +542,9 @@ class DispatchPage(QWidget):
         need_kg.setMinimumWidth(180)
         f.addRow("Kg required (net):", need_kg)
         note = QLabel("Piece products order in wrappers; kg products order in net kg. "
-                      "The sticker numbers boxes 1..N as they are scanned.")
+                      "The sticker numbers boxes 1..N as they are scanned. "
+                      "Boxes from any batch (job code) of this product can load"
+                      " on one order — the slip totals each batch separately.")
         note.setWordWrap(True)
         note.setProperty("hint", True)
         f.addRow("", note)

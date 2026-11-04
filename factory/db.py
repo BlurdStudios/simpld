@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   job_no INTEGER UNIQUE NOT NULL,
   job_name TEXT NOT NULL,
+  job_code TEXT NOT NULL DEFAULT '',
   size_mm REAL DEFAULT 0,
   core_wt REAL NOT NULL DEFAULT 0.5,
   product_id INTEGER REFERENCES products(id),
@@ -441,6 +442,18 @@ def _ensure_per_product_counters(c) -> None:
                       (mx, per, pid, kind))
 
 
+def _ensure_job_code(c) -> None:
+    """Batch code per job (e.g. 12DEC): typed at creation, printed on
+    stickers and used to group dispatch loads by batch.
+
+    Additive only; existing jobs keep '' (unknown batch). Fresh DBs get
+    the column from SCHEMA.
+    """
+    cols = {r["name"] for r in c.execute("PRAGMA table_info(jobs)").fetchall()}
+    if cols and "job_code" not in cols:
+        c.execute("ALTER TABLE jobs ADD COLUMN job_code TEXT NOT NULL DEFAULT ''")
+
+
 def _ensure_job_targets(c) -> None:
     """Packaging targets per job: reels / boxes / net-kg / pieces.
 
@@ -802,6 +815,7 @@ def init_db(path: str | None = None) -> str:
             _ensure_license_clients(c)
             _ensure_per_product_counters(c)
             _ensure_job_targets(c)
+            _ensure_job_code(c)
             _ensure_dispatch_po_weight(c)
             _ensure_product_unit(c)
             bad = c.execute("PRAGMA foreign_key_check").fetchall()
@@ -856,6 +870,25 @@ def bare_carton_no(carton_no) -> str:
     if head[:1].upper() == "C" and tail.isdigit():
         return str(int(tail))
     return s
+
+
+def job_label(job: dict) -> str:
+    """One-line job identity with batch code: J:4167 [12DEC] — NAME.
+
+    Blank codes (legacy jobs) read J:4167 — NAME with no empty brackets.
+    """
+    try:
+        code = str((job or {}).get("job_code") or "").strip().upper()
+    except Exception:
+        code = ""
+    try:
+        no = (job or {}).get("job_no", "")
+        name = (job or {}).get("job_name", "")
+    except Exception:
+        return ""
+    if code:
+        return f"J:{no} [{code}] — {name}"
+    return f"J:{no} — {name}"
 
 
 def full_roll_label(reel: dict) -> str:

@@ -31,15 +31,83 @@ SECTION_H_MM = 2 * RH_MM  # section bar + column header
 FOOTER_RESERVE_MM = 12.0  # footer line lives in the bottom 8mm + gap
 TOTALS_GAP_MM = 3.0
 TOTALS_LINE_MM = 6.0
-TOTALS_LINES = 4  # reel totals, box totals, legacy totals, bundles
+TOTALS_LINES = 5  # reel totals, box totals, legacy totals, bundles, batches
+# Order packing summary totals: grand totals + batches (2 lines).
+ORDER_TOTALS_LINES = 2
 _BODY_USABLE_MM = PRINTABLE_H_MM - TOP_H_MM - FOOTER_RESERVE_MM
 
 # Table column fractions of the printable width. Must sum to 1.0.
 COL_FR = [0.30, 0.15, 0.13, 0.12, 0.30]
 
+# Packing-slip tables carry a batch-code column (6 columns): the day
+# report keeps the 5-column COL_FR above.
+SLIP_COL_FR = [0.11, 0.27, 0.14, 0.12, 0.12, 0.24]
+
+# Order packing summary (7 columns, mirrors the old slip + Code + Rolls).
+ORDER_COL_FR = [0.10, 0.10, 0.22, 0.10, 0.16, 0.14, 0.18]
+
 
 def _row_kind(r: dict) -> str:
     return r.get("kind", "Box" if r.get("weight_only") else "Reel")
+
+
+def batch_totals(rows: list[dict]) -> list[dict]:
+    """Per-batch subtotals in first-seen order: how much came from each
+    job code (12DEC vs 14DEC stock).
+
+    Job-slip rows carry kind (Reel/Box); order-summary rows are all Box.
+    Returns [{label, job_code, reels, boxes, rolls, gross, net}]: reels
+    counts reel rows, boxes counts box rows, rolls sums box num_reels.
+    """
+    groups: dict[str, dict] = {}
+    for r in rows:
+        try:
+            code = str(r.get("job_code") or "").strip().upper()
+        except Exception:
+            code = ""
+        key = code or f"J:{r.get('box_job_no') or r.get('job_no') or '?'}"
+        g = groups.get(key)
+        if g is None:
+            g = {"label": code or key, "job_code": code, "reels": 0,
+                 "boxes": 0, "rolls": 0, "gross": 0.0, "net": 0.0}
+            groups[key] = g
+        if _row_kind(r) == "Reel":
+            g["reels"] += 1
+        else:
+            g["boxes"] += 1
+            try:
+                g["rolls"] += int(r.get("num_reels") or 0)
+            except (TypeError, ValueError):
+                pass
+        try:
+            g["gross"] = round(g["gross"] + float(r.get("gross") or 0), 3)
+            g["net"] = round(g["net"] + float(r.get("net") or 0), 3)
+        except (TypeError, ValueError):
+            pass
+    return list(groups.values())
+
+
+def job_batch_line(slip: dict) -> str:
+    """One-line batch summary for the job slip: rolls weighed + boxes
+    packed per code. Paint ellipsizes when many batches share a job."""
+    parts = []
+    for b in slip.get("batches") or []:
+        parts.append(f"{b.get('label') or '?'}"
+                     f" ({int(b.get('reels') or 0)} reels"
+                     f" · {int(b.get('boxes') or 0)} boxes)")
+    return "Batches: " + ("; ".join(parts) if parts else "—")
+
+
+def order_batch_line(summary: dict) -> str:
+    """One-line batch summary for the order packing summary: boxes,
+    rolls inside and net weight per code."""
+    parts = []
+    for b in summary.get("batches") or []:
+        parts.append(f"{b.get('label') or '?'}"
+                     f" ({int(b.get('boxes') or 0)} boxes"
+                     f" · {int(b.get('rolls') or 0)} rolls"
+                     f" · {float(b.get('net') or 0):.3f} Kg)")
+    return "Batches: " + ("; ".join(parts) if parts else "—")
 
 
 def totals_height_mm(slip: dict) -> float:
@@ -141,6 +209,7 @@ def get_slip(job_id: int, path: str | None = None) -> dict:
 
     reel_rows: list[dict] = []
     custs = set()
+    code = str(job.get("job_code") or "").strip().upper()
     for r in reels:
         cust = (r.get("customer", "") or "").strip().upper()
         if cust:
@@ -152,6 +221,7 @@ def get_slip(job_id: int, path: str | None = None) -> dict:
             "roll_code": (r.get("roll_code") or ""),
             "roll_label": _roll_label(r, job["job_no"]),
             "job_no": job["job_no"],
+            "job_code": code,
             "num_reels": 1,
             "weight_only": False,
             "gross": round(float(r["gross"]), 3),
@@ -178,6 +248,8 @@ def get_slip(job_id: int, path: str | None = None) -> dict:
             "carton_no": ct["carton_no"],
             "bundle_no": int(ct["bundle_no"]),
             "box_period": (ct.get("box_period") or ""),
+            "job_no": job["job_no"],
+            "job_code": code,
             "num_reels": int(ct.get("num_reels") or 0),
             "weight_only": not linked,
             "linked": linked,
@@ -218,6 +290,7 @@ def get_slip(job_id: int, path: str | None = None) -> dict:
     return {
         "job_no": job["job_no"],
         "job_name": job["job_name"],
+        "job_code": code,
         "customer": next(iter(custs)) if len(custs) == 1 else "",
         "wrappers_per_reel": job.get("wrappers_per_reel"),
         "product_name": job.get("product_name", "") or "",
@@ -225,6 +298,7 @@ def get_slip(job_id: int, path: str | None = None) -> dict:
         "box_rows": box_rows,
         "legacy_linked": legacy_linked,
         "rows": out_rows,
+        "batches": batch_totals(out_rows),
         "totals": totals,
     }
 
@@ -333,8 +407,10 @@ def paint_page(p, area, dpi: int, slip: dict, page_rows: list[dict],
     f_head, f_row, f_bold = _font(dpi, 10), _font(dpi, 9), _font(dpi, 9, True)
     # header bands (match old captions; DATE blank for handwriting).
     # Long customer / job names are ellipsized, never overflow the border.
+    _code = str(slip.get("job_code") or "").strip().upper()
+    _head = f"Jobno: {slip['job_no']}" + (f" [{_code}]" if _code else "")
     text(QRectF(x, y, W, 6 * mm),
-         f"Jobno: {slip['job_no']}     C.Name.: {slip['customer']}     DATE:", f_head)
+         f"{_head}     C.Name.: {slip['customer']}     DATE:", f_head)
     y += 6 * mm
     text(QRectF(x, y, W, 6 * mm), f"Job Name: {slip['job_name']}", f_head)
     y += 6 * mm
@@ -343,9 +419,9 @@ def paint_page(p, area, dpi: int, slip: dict, page_rows: list[dict],
     text(QRectF(x, y, W, 6 * mm), wline, f_head)
     y += 8 * mm
 
-    # table columns (fractions of printable width; sum == 1.0, last column
-    # is wide because member-roll identities are long)
-    fr = list(COL_FR)
+    # table columns (fractions of printable width; sum == 1.0 — the
+    # batch-code column first, then the old five).
+    fr = list(SLIP_COL_FR)
     xs = [x]
     for w_ in fr[:-1]:
         xs.append(xs[-1] + W * w_)
@@ -378,8 +454,8 @@ def paint_page(p, area, dpi: int, slip: dict, page_rows: list[dict],
         hline(y)
         return top
 
-    REEL_HEAD = ("Roll identity", "GROSS WT", "CORE WT", "NET WT", "In Box")
-    BOX_HEAD = ("Box No.", "Bundle", "BOX WT", "Type", "Rolls / Note")
+    REEL_HEAD = ("Code", "Roll identity", "GROSS WT", "CORE WT", "NET WT", "In Box")
+    BOX_HEAD = ("Code", "Box No.", "Bundle", "BOX WT", "Type", "Rolls")
     top = y
     cur_sec: str | None = None
     # Grid segments: vertical rules run through each section's column
@@ -424,19 +500,20 @@ def paint_page(p, area, dpi: int, slip: dict, page_rows: list[dict],
     for r in page_rows:
         kind = _row_kind(r)
         open_section(kind)
+        code = str(r.get("job_code") or "").strip().upper() or "—"
         if kind == "Reel":
             in_box = bare_carton_no(r.get("carton_no")) or "loose"
-            cells = [str(r.get("roll_label") or r.get("roll_no")),
+            cells = [code, str(r.get("roll_label") or r.get("roll_no")),
                      f"{r['gross']:.3f}",
                      f"{r['core']:.2f}", f"{r['net']:.3f}", str(in_box)]
         else:
-            refs = r.get("roll_refs") or r.get("rolls") or ""
-            cells = [bare_carton_no(r.get("carton_no", "")), str(r.get("bundle_no", "")),
+            bare_rolls = str(r.get("rolls") or "").replace(",", ", ").strip()
+            cells = [code, bare_carton_no(r.get("carton_no", "")), str(r.get("bundle_no", "")),
                      f"{r['gross']:.3f}",
                      "legacy" if r.get("linked") else "indep.",
-                     refs if r.get("linked") else "weighed box"]
+                     bare_rolls if r.get("linked") else "weighed box"]
         for j, val in enumerate(cells):
-            a = Qt.AlignHCenter | Qt.AlignVCenter if j in (0, 1, 3, 4) else Qt.AlignRight | Qt.AlignVCenter
+            a = Qt.AlignHCenter | Qt.AlignVCenter if j in (0, 1, 2, 4, 5) else Qt.AlignRight | Qt.AlignVCenter
             text(QRectF(xs[j] + 1, y, xs[j + 1] - xs[j] - 2, rh), val, f_row, a)
         y += rh
         hline(y)
@@ -444,7 +521,7 @@ def paint_page(p, area, dpi: int, slip: dict, page_rows: list[dict],
         if seg_top is not None:
             segments.append((seg_top, y))
         for (y0, y1) in segments:
-            for j in range(1, 5):
+            for j in range(1, 6):
                 vline(xs[j], y0, y1)
             vline(x, y0, y1)
             vline(right, y0, y1)
@@ -464,6 +541,7 @@ def paint_page(p, area, dpi: int, slip: dict, page_rows: list[dict],
             f"  ·  Stored Wt {t.get('legacy_box_wt', 0.0):.3f}Kgs"
             "  (listed separately, not added)",
             f"Total boxes:  {t['bundles']}",
+            job_batch_line(slip),
         ]
         if t.get("legacy_cartons"):
             lines.append(
@@ -944,6 +1022,282 @@ def print_day_report(parent, report: dict, printer_name: str | None = None) -> b
             if i and not pr.newPage():
                 raise RuntimeError("Printer rejected a new page.")
             _paint_day_report_page(p, area, dpi, report, rows, i + 1, len(pages))
+        if getattr(p, "hasError", None) is not None:
+            try:
+                if p.hasError():
+                    raise RuntimeError("Print device reported an error.")
+            except RuntimeError:
+                raise
+            except Exception:
+                pass
+    finally:
+        p.end()
+    try:
+        from PySide6.QtPrintSupport import QPrinter as _QP
+        if pr.printerState() == _QP.PrinterState.Error:
+            raise RuntimeError("Printer reports an error state.")
+    except RuntimeError:
+        raise
+    except Exception:
+        pass
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Order packing summary (one dispatch order across batches). Same A4
+# geometry model as paint_page (own 7-column grid mirroring the old slip +
+# Code + Rolls), self-contained so the job-slip layout is never touched.
+# ---------------------------------------------------------------------------
+
+ORDER_HEAD = ("Code", "Box No.", "Rolls", "No of Reels",
+              "GROSS WT", "CORE WT", "NET WT")
+
+
+def _order_totals_height_mm(summary: dict) -> float:
+    return TOTALS_GAP_MM + ORDER_TOTALS_LINES * TOTALS_LINE_MM
+
+
+def _order_body_height_mm(page_rows: list[dict]) -> float:
+    # One Boxes section header + column header per page + one row each.
+    if not page_rows:
+        return 0.0
+    return SECTION_H_MM + len(page_rows) * RH_MM
+
+
+def order_page_fits_mm(summary: dict, page_rows: list[dict]) -> bool:
+    """Numeric fit check for the order summary's last page."""
+    return (_order_body_height_mm(page_rows) + _order_totals_height_mm(summary)
+            <= _BODY_USABLE_MM + 1e-9)
+
+
+def order_paginate(summary: dict) -> list[list[dict]]:
+    """Split order boxes into pages that physically fit (same height math
+    as paginate, with the two-line order-totals block on the last page)."""
+    rows = list(summary.get("rows") or [])
+    if not rows:
+        return [[]]
+    totals_h = _order_totals_height_mm(summary)
+    pages: list[list[dict]] = []
+    i, n = 0, len(rows)
+    while i < n:
+        rest_h = _order_body_height_mm(rows[i:])
+        if rest_h + totals_h <= _BODY_USABLE_MM:
+            pages.append(rows[i:])
+            break
+        cur: list[dict] = []
+        used = SECTION_H_MM
+        while i < n:
+            need = RH_MM
+            if cur and used + need > _BODY_USABLE_MM + 1e-9:
+                break
+            cur.append(rows[i])
+            used += need
+            i += 1
+        if not cur:  # single row never overflows (guard against no progress)
+            cur.append(rows[i])
+            i += 1
+        pages.append(cur)
+    return pages
+
+
+def paint_order_page(p, area, dpi: int, summary: dict,
+                     page_rows: list[dict], page_no: int, page_count: int):
+    """Draw one A4 order-packing-summary page (same device-pixel model as
+    paint_page, self-contained)."""
+    from PySide6.QtCore import Qt, QRectF
+    from PySide6.QtGui import QFontMetrics
+    mm = dpi / 25.4
+    x, y, W, H = area.x(), area.y(), area.width(), area.height()
+    right = x + W - 1
+
+    def text(r, s, font, align=Qt.AlignLeft | Qt.AlignVCenter):
+        p.setFont(font)
+        s = "" if s is None else str(s)
+        try:
+            fm = QFontMetrics(font)
+            avail = int(r.width() - 2)
+            if avail > 10 and fm.horizontalAdvance(s) > avail:
+                s = fm.elidedText(s, Qt.ElideRight, avail)
+        except Exception:
+            pass
+        p.save()
+        try:
+            p.setClipRect(r)
+            p.drawText(r, align | Qt.TextSingleLine, s)
+        finally:
+            p.restore()
+
+    text(QRectF(x, y, W, 10 * mm), "PACKING SUMMARY", _font(dpi, 15, True),
+         Qt.AlignHCenter | Qt.AlignVCenter)
+    y += 12 * mm
+    f_head, f_row, f_bold = _font(dpi, 10), _font(dpi, 9), _font(dpi, 9, True)
+    _code = str(summary.get("job_code") or "").strip().upper()
+    _ahead = f"Job: J:{summary.get('job_no')}" + (f" [{_code}]" if _code else "")
+    text(QRectF(x, y, W, 6 * mm),
+         f"Order: {summary.get('order_no')}     Customer: {summary.get('customer')}", f_head)
+    y += 6 * mm
+    text(QRectF(x, y, W, 6 * mm),
+         f"{_ahead} {summary.get('job_name')}     Batch: {summary.get('batch_no') or '—'}", f_head)
+    y += 6 * mm
+    text(QRectF(x, y, W, 6 * mm),
+         f"PO: {summary.get('customer_po') or '—'}     Date: {summary.get('order_date') or ''}", f_head)
+    y += 8 * mm
+
+    fr = list(ORDER_COL_FR)
+    xs = [x]
+    for w_ in fr[:-1]:
+        xs.append(xs[-1] + W * w_)
+    xs.append(x + W)
+    rh = RH_MM * mm
+    f_sec = _font(dpi, 9, True)
+
+    def hline(y0, x0=None, x1=None):
+        p.drawLine(int(x0 if x0 is not None else x), int(y0),
+                   int(x1 if x1 is not None else right), int(y0))
+
+    def vline(x0, y0, y1):
+        p.drawLine(int(x0), int(y0), int(x0), int(y1))
+
+    suffix = "  (cont'd)" if page_no > 1 else ""
+    text(QRectF(x, y, W, rh), "Boxes" + suffix, f_sec,
+         Qt.AlignLeft | Qt.AlignVCenter)
+    y += rh
+    hline(y)
+    top = y
+    for j, h in enumerate(ORDER_HEAD):
+        text(QRectF(xs[j] + 1, y, xs[j + 1] - xs[j] - 2, rh), h, f_bold,
+             Qt.AlignHCenter | Qt.AlignVCenter)
+    y += rh
+    hline(top)
+    hline(y)
+    seg_top = top
+
+    if not page_rows:
+        text(QRectF(x, y, W, 8 * mm),
+             "No boxes loaded on this order yet.", f_row)
+        y += 8 * mm
+        hline(y)
+
+    for r in page_rows:
+        code = str(r.get("job_code") or "").strip().upper() or "—"
+        cells = [code, str(r.get("carton_no") or ""),
+                 str(r.get("rolls") or "—"), str(int(r.get("num_reels") or 0)),
+                 f"{float(r.get('gross') or 0):.3f}",
+                 f"{float(r.get('core') or 0):.2f}",
+                 f"{float(r.get('net') or 0):.3f}"]
+        for j, val in enumerate(cells):
+            a = Qt.AlignHCenter | Qt.AlignVCenter if j in (0, 1, 2, 3) \
+                else Qt.AlignRight | Qt.AlignVCenter
+            text(QRectF(xs[j] + 1, y, xs[j + 1] - xs[j] - 2, rh), val, f_row, a)
+        y += rh
+        hline(y)
+    for j in range(1, 7):
+        vline(xs[j], seg_top, y)
+    vline(x, seg_top, y)
+    vline(right, seg_top, y)
+
+    if page_no == page_count:
+        t = summary.get("totals") or {}
+        y += TOTALS_GAP_MM * mm
+        lines = [
+            f"TOTAL Gross: {float(t.get('gross') or 0):.3f}Kgs"
+            f"  ·  Core {float(t.get('core') or 0):.3f}Kgs"
+            f"  ·  Net {float(t.get('net') or 0):.3f}Kgs"
+            f"  ·  {int(t.get('boxes') or 0)} boxes"
+            f"  ·  {int(t.get('rolls') or 0)} rolls",
+            order_batch_line(summary),
+        ]
+        for line in lines:
+            text(QRectF(x, y, W, TOTALS_LINE_MM * mm), line, f_bold)
+            y += TOTALS_LINE_MM * mm
+
+    text(QRectF(x, area.y() + H - 8 * mm, W, 6 * mm),
+         f"Page Nos.: {page_no} \\{page_count}", _font(dpi, 9, True),
+         Qt.AlignRight | Qt.AlignVCenter)
+
+
+def preview_order_images(summary: dict, dpi: int = 100):
+    """Render order-summary A4 pages to QImages (same paint code)."""
+    from PySide6.QtGui import QImage, QPainter
+    from PySide6.QtCore import QRectF, Qt
+    pages = order_paginate(summary)
+    out = []
+    w = int(210 / 25.4 * dpi)
+    h = int(297 / 25.4 * dpi)
+    m = 14 / 25.4 * dpi
+    for i, rows in enumerate(pages):
+        img = QImage(w, h, QImage.Format.Format_RGB32)
+        img.fill(Qt.white)
+        p = QPainter(img)
+        try:
+            paint_order_page(p, QRectF(m, m, w - 2 * m, h - 2 * m), dpi,
+                             summary, rows, i + 1, len(pages))
+        finally:
+            p.end()
+        out.append(img)
+    return out
+
+
+def save_order_pdf(summary: dict, path: str) -> str:
+    """Render an order packing summary to an A4 PDF. Raises on failure."""
+    from PySide6.QtPrintSupport import QPrinter
+    from PySide6.QtGui import QPainter
+    from PySide6.QtCore import QRectF
+    pages = order_paginate(summary)
+    pr = _printer()
+    pr.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+    pr.setOutputFileName(path)
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    p = QPainter(pr)
+    try:
+        if not p.isActive():
+            raise RuntimeError("Could not start PDF painter (QPainter not active).")
+        dpi = pr.resolution()
+        raw = pr.pageRect(QPrinter.Unit.DevicePixel)
+        area = QRectF(0, 0, raw.width(), raw.height())
+        for i, rows in enumerate(pages):
+            if i and not pr.newPage():
+                raise RuntimeError("Printer rejected a new PDF page.")
+            paint_order_page(p, area, dpi, summary, rows, i + 1, len(pages))
+        if getattr(p, "hasError", None) is not None:
+            try:
+                if p.hasError():
+                    raise RuntimeError("PDF paint device reported an error.")
+            except RuntimeError:
+                raise
+            except Exception:
+                pass
+    finally:
+        p.end()
+    if (not os.path.exists(path)) or os.path.getsize(path) == 0:
+        raise RuntimeError("PDF was not written (empty or missing file).")
+    return path
+
+
+def print_order_summary(parent, summary: dict,
+                        printer_name: str | None = None) -> bool:
+    """Print an order packing summary on a normal office printer."""
+    from PySide6.QtPrintSupport import QPrinterInfo
+    from PySide6.QtGui import QPainter
+    from PySide6.QtCore import QRectF
+    pages = order_paginate(summary)
+    pr = _printer()
+    if printer_name:
+        for info in QPrinterInfo.availablePrinters():
+            if info.printerName() == printer_name:
+                pr.setPrinterName(printer_name)
+                break
+    p = QPainter(pr)
+    try:
+        if not p.isActive():
+            raise RuntimeError("Could not start the print job (QPainter not active).")
+        dpi = pr.resolution()
+        raw = pr.pageRect(QPrinter.Unit.DevicePixel)
+        area = QRectF(0, 0, raw.width(), raw.height())
+        for i, rows in enumerate(pages):
+            if i and not pr.newPage():
+                raise RuntimeError("Printer rejected a new page.")
+            paint_order_page(p, area, dpi, summary, rows, i + 1, len(pages))
         if getattr(p, "hasError", None) is not None:
             try:
                 if p.hasError():

@@ -327,16 +327,19 @@ class LanClient:
                          request_id=request_id)
 
     def create_job(self, job_name: str, size_mm: float = 0,
-                   core_wt: float = 0.5,
+                   core_wt: float = 0.5, job_code: str = "",
                    request_id: str | None = None) -> dict:
         return self.call("create_job",
                          {"job_name": job_name, "size_mm": size_mm,
-                          "core_wt": core_wt}, request_id=request_id)
+                          "core_wt": core_wt, "job_code": job_code},
+                         request_id=request_id)
 
     def create_job_for_product(self, product_id: int, core_wt: float = 0.5,
+                               job_code: str = "",
                                request_id: str | None = None) -> dict:
         return self.call("create_job_for_product",
-                         {"product_id": product_id, "core_wt": core_wt},
+                         {"product_id": product_id, "core_wt": core_wt,
+                          "job_code": job_code},
                          request_id=request_id)
 
     def set_job_status(self, job_id: int, status: str,
@@ -478,6 +481,11 @@ class LanClient:
     def dispatch_slip(self, order_id: int,
                       request_id: str | None = None) -> dict:
         return self.call("dispatch_slip", {"order_id": order_id},
+                         request_id=request_id)
+
+    def order_packing_summary(self, order_id: int,
+                              request_id: str | None = None) -> dict:
+        return self.call("order_packing_summary", {"order_id": order_id},
                          request_id=request_id)
 
     def mark_dispatch_slip_printed(self, order_id: int,

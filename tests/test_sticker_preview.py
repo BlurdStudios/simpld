@@ -122,7 +122,10 @@ def test_box_preview_needs_loose_reels_then_renders_art():
     wt = S.carton_detail(S.pack_weight_carton(job["id"], 10.5, path=p)["id"], path=p)
     assert wt["reels"] == [] and wt["num_reels"] == 0 and wt["box_wt"] == 0.0
     assert "Bundle" not in carton_label_text(wt), carton_label_text(wt)
-    assert "Rolls:" in carton_label_text(wt)
+    # Weight-only sticker: full-width job name, Date beside the BOX marker
+    # (the old "Rolls:—" band gave way to the date row).
+    assert "BOX" in carton_label_text(wt)
+    assert "Date:" in carton_label_text(wt)
     for sticker in (detail, wt):
         img = L.render_carton(sticker)
         assert img.size == (799, 399), img.size

@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QCombo
                                QStackedWidget)
 from PySide6.QtCore import Qt
 from factory import data_access as DA
-from factory.db import bare_carton_no
+from factory.db import bare_carton_no, job_label
 from factory.hardware import mock as HW
 from factory.hardware import devices as DEV
 from factory.hardware import labels as LabelArt
@@ -197,6 +197,7 @@ class NewJobDialogMixin:
                                        QLineEdit)
         select_id = None
         t_unit_val = ""
+        t_code_val = ""
         while True:
             d = QDialog(parent)
             d.setWindowTitle("New job")
@@ -256,6 +257,14 @@ class NewJobDialogMixin:
             hl.addWidget(add_btn)
             hl.addWidget(wrap_btn)
             f.addRow("Product:", row)
+            # Batch code: required free text (e.g. 12DEC) identifying this
+            # production run. Prints on stickers and groups dispatch loads
+            # so the floor can tell how much came from which batch.
+            t_code = QLineEdit()
+            t_code.setText(t_code_val)
+            t_code.setPlaceholderText("e.g. 12DEC")
+            t_code.setMinimumWidth(180)
+            f.addRow("Job code:", t_code)
             # One target at creation: the product's own unit (pieces or kg).
             # Reels/boxes needed are derived from it (pieces ÷ wrappers,
             # kg ÷ typical reel net) — never typed.
@@ -295,8 +304,9 @@ class NewJobDialogMixin:
                 QMessageBox.warning(parent, "Cannot save job",
                                     "Select a product first (or add it once, then reuse it).")
                 continue
-            # Retain typed target across validation failures.
+            # Retain typed target + code across validation failures.
             t_unit_val = t_unit.text()
+            t_code_val = t_code.text()
             try:
                 prods = {p["id"]: p for p in DA.list_products()}
             except Exception:
@@ -321,8 +331,14 @@ class NewJobDialogMixin:
                 QMessageBox.warning(parent, "Cannot save job",
                                     "Target must be blank or a positive number.")
                 continue
+            code = (t_code_val or "").strip().upper()
+            if not code:
+                QMessageBox.warning(parent, "Cannot save job",
+                                    "Job code required (e.g. 12DEC) — it marks this batch"
+                                    " on stickers and dispatch slips.")
+                continue
             try:
-                job = DA.create_job_for_product(pid)
+                job = DA.create_job_for_product(pid, job_code=code)
             except PermissionError as e:
                 QMessageBox.warning(parent, "Cannot save job", str(e))
                 return None
@@ -891,6 +907,7 @@ class PackagingPage(QWidget, NewJobDialogMixin):
             pseq, gseq, per = 1, 1, current_period()
         cn = carton_no_for(per, gseq)
         detail = {"job_no": job["job_no"], "job_name": job["job_name"],
+                  "job_code": job.get("job_code") or "",
                   "packed_at": now_iso(),
                   "num_reels": len(nexts), "carton_no": cn,
                   "prod_seq": pseq,
@@ -916,7 +933,7 @@ class PackagingPage(QWidget, NewJobDialogMixin):
             self.job_id = None
             return self.say(f"Connection issue: {self._backend_error(e)}", ok=False)
         for j in jobs:
-            self.job_combo.addItem(f"J:{j['job_no']} — {j['job_name']}",
+            self.job_combo.addItem(job_label(j),
                                    userData=j["id"])
             if select_no and j["job_no"] == select_no:
                 self.job_combo.setCurrentIndex(self.job_combo.count() - 1)
@@ -1029,11 +1046,11 @@ class PackagingPage(QWidget, NewJobDialogMixin):
             st = DA.job_stats(job["id"])
         except Exception:
             self.job_info.setText(
-                f"J:{job['job_no']} {job['job_name']} — connection issue.")
+                f"{job_label(job)} — connection issue.")
             return
         w = job.get("wrappers_per_reel")
         wtxt = _unit_label(job)
-        base = (f"J:{job['job_no']} {job['job_name']} ({wtxt})  ·  "
+        base = (f"{job_label(job)} ({wtxt})  ·  "
                 f"Loose {st.get('loose', 0)}  ·  Ready {st.get('ready_cartons', 0)}")
         # Target = the product's own unit only; reels/boxes needed are
         # derived (pieces ÷ wrappers, kg ÷ typical reel net). Vivid

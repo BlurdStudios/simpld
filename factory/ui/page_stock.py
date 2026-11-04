@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushB
                                QTableWidget, QTableWidgetItem, QHeaderView, QLineEdit,
                                QMessageBox, QAbstractItemView)
 from factory import data_access as DA
-from factory.db import bare_carton_no
+from factory.db import bare_carton_no, job_label
 from factory.hardware import mock as HW
 from factory.ui.label_preview import CartonLabelDialog, PackingSlipDialog, VerifyDialog
 from factory.ui.styles import style_button
@@ -127,14 +127,15 @@ class StockPage(QWidget):
         if q:
             rows = [r for r in rows if q in r["carton_no"].upper()
                     or q == bare_carton_no(r["carton_no"])
-                    or q in str(r["job_no"]) or q in r["job_name"].upper()]
+                    or q in str(r["job_no"]) or q in r["job_name"].upper()
+                    or q in str(r.get("job_code") or "").upper()]
         self._rows = rows
         self.table.setRowCount(0)
         for r in rows:
             i = self.table.rowCount()
             self.table.insertRow(i)
             self.table.setItem(i, 0, QTableWidgetItem(bare_carton_no(r["carton_no"])))
-            self.table.setItem(i, 1, QTableWidgetItem(f"J:{r['job_no']} {r['job_name']}"))
+            self.table.setItem(i, 1, QTableWidgetItem(job_label(r)))
             self.table.setItem(i, 2, QTableWidgetItem(str(r["bundle_no"])))
             self.table.setItem(i, 3, QTableWidgetItem(
                 str(r["num_reels"]) if r["num_reels"] else "—"))

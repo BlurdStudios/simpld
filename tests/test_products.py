@@ -165,9 +165,11 @@ def test_jobs_page_shows_snapshot_offscreen():
     from factory.ui.pages_misc import JobsPage
     pg = JobsPage()
     pg.refresh()
-    assert pg.table.columnCount() == 6
-    assert "Pieces" in pg.table.horizontalHeaderItem(2).text()
-    assert pg.table.item(0, 2).text() == "16500", "snapshot visible in Jobs UI"
+    assert pg.table.columnCount() == 7
+    assert pg.table.horizontalHeaderItem(1).text() == "Code"
+    assert pg.table.item(0, 1).text() == "—", "codeless job shows a dash"
+    assert "Pieces" in pg.table.horizontalHeaderItem(3).text()
+    assert pg.table.item(0, 3).text() == "16500", "snapshot visible in Jobs UI"
     assert j["job_name"] == "UI PROD JOB"
     pg.close()
     app.closeAllWindows()

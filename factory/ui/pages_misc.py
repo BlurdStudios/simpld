@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushB
                                QTabBar, QDialog, QComboBox, QDateEdit)
 from PySide6.QtCore import Qt, QDate
 from factory import data_access as DA
-from factory.db import bare_carton_no
+from factory.db import bare_carton_no, job_label
 from factory.ui.styles import style_button, status_color
 from factory.ui.label_preview import PackingSlipDialog
 
@@ -54,9 +54,9 @@ class JobsPage(QWidget):
             bar.addWidget(b)
         bar.addStretch(1)
         lay.addLayout(bar)
-        self.table = QTableWidget(0, 6)
+        self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
-            ["Job No", "Job Name", "Pieces/reel", "Status", "Reels", "Ready"])
+            ["Job No", "Code", "Job Name", "Pieces/reel", "Status", "Reels", "Ready"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(44)
@@ -113,7 +113,9 @@ class JobsPage(QWidget):
             i = self.table.rowCount()
             self.table.insertRow(i)
             self.table.setItem(i, 0, QTableWidgetItem(str(j["job_no"])))
-            self.table.setItem(i, 1, QTableWidgetItem(j["job_name"]))
+            self.table.setItem(i, 1, QTableWidgetItem(
+                str(j.get("job_code") or "—")))
+            self.table.setItem(i, 2, QTableWidgetItem(j["job_name"]))
             w = j.get("wrappers_per_reel")
             u = str(j.get("unit") or "").strip().lower()
             if u == "kg":
@@ -124,16 +126,16 @@ class JobsPage(QWidget):
                 txt, tip = "set…", "Legacy product without a count — click Set pieces"
             item = QTableWidgetItem(txt)
             item.setToolTip(tip)
-            self.table.setItem(i, 2, item)
+            self.table.setItem(i, 3, item)
             from PySide6.QtGui import QColor as _QColor
             _st = QTableWidgetItem(j["status"])
             try:
                 _st.setForeground(_QColor(status_color(str(j.get("status") or ""))))
             except Exception:
                 pass
-            self.table.setItem(i, 3, _st)
-            self.table.setItem(i, 4, QTableWidgetItem(str(st["reels"])))
-            self.table.setItem(i, 5, QTableWidgetItem(str(st["ready_cartons"])))
+            self.table.setItem(i, 4, _st)
+            self.table.setItem(i, 5, QTableWidgetItem(str(st["reels"])))
+            self.table.setItem(i, 6, QTableWidgetItem(str(st["ready_cartons"])))
         self.empty.setVisible(len(rows) == 0)
         self._update_buttons()
 
@@ -254,7 +256,7 @@ class HistoryPage(QWidget):
                         target = f"{int(o['required_bundles'])} boxes"
                         loaded = f"{int(o.get('loaded') or 0)}"
                     rows.append([o["order_no"], o["customer"],
-                                 f"J:{o['job_no']} {o['job_name']}",
+                                 job_label(o),
                                  target, loaded, o["status"], o["order_date"]])
             else:
                 headers = ["Type", "Reference", "Full ID", "Job", "Wt · kg", "Shift",
@@ -270,7 +272,7 @@ class HistoryPage(QWidget):
                     pst = str(r.get("print_status") or "pending")
                     label = f"Printed ×{n}" if pst == "printed" and n > 0 else "Pending"
                     rows.append([r["kind"], ref, full,
-                                 f"J:{r['job_no']} {r['job_name']}", f"{r['net_weight']:.3f}", r["shift"],
+                                 job_label(r), f"{r['net_weight']:.3f}", r["shift"],
                                  r["status"], label, bare_carton_no(r["box"]) or "—", r["recorded_at"][:16]])
         except Exception as e:
             self.count.setText(f"Connection issue — {_err_text(e)}")
