@@ -376,10 +376,10 @@ class DispatchPage(QWidget):
             pieces = n * iw if unit == "wrapper" else 0
             self.table.setItem(r, 0, QTableWidgetItem(str(box_no)))
             self.table.setItem(r, 1, QTableWidgetItem(
-                str(it.get("job_code") or "—")))
+                str(it.get("job_code") or "")))
             self.table.setItem(r, 2, QTableWidgetItem(bare_carton_no(it.get("carton_no") or "")))
-            self.table.setItem(r, 3, QTableWidgetItem(str(n) if n else "—"))
-            self.table.setItem(r, 4, QTableWidgetItem(f"{pieces:,}" if pieces else "—"))
+            self.table.setItem(r, 3, QTableWidgetItem(str(n) if n else ""))
+            self.table.setItem(r, 4, QTableWidgetItem(f"{pieces:,}" if pieces else ""))
             self.table.setItem(r, 5, QTableWidgetItem(f"{float(it.get('total_net') or 0):.3f}"))
             self.table.setItem(r, 6, QTableWidgetItem(str(it.get("scanned_at") or "")[:16]))
         self.table.blockSignals(False)

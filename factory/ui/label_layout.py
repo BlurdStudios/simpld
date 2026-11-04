@@ -598,18 +598,20 @@ class LabelLayoutDialog(QDialog):
         body.addWidget(self.canvas, 7)
 
         side = QVBoxLayout()
-        side.setSpacing(8)
+        side.setSpacing(6)
 
         def _form(box) -> QFormLayout:
-            """Form rows that never squeeze or overlap at 400px panel width."""
+            """Form rows that never squeeze or overlap at 340px panel width."""
             f = QFormLayout(box)
             f.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
             f.setRowWrapPolicy(QFormLayout.DontWrapRows)
             f.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
             f.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+            f.setHorizontalSpacing(6)
+            f.setVerticalSpacing(4)
             return f
 
-        # stock group
+        # stock group (advanced — fixed 100x50 media rarely changes)
         stock_box = QGroupBox("Stock")
         sf = _form(stock_box)
         self.stock_w = QDoubleSpinBox()
@@ -630,9 +632,8 @@ class LabelLayoutDialog(QDialog):
         self.preset_combo.addItems([p[0] for p in L.PRESETS])
         self.preset_combo.currentTextChanged.connect(self._preset_changed)
         sf.addRow("Preset", self.preset_combo)
-        side.addWidget(stock_box)
 
-        # margins group
+        # margins group (essential — the visual drag writes here)
         marg_box = QGroupBox("Margins")
         mf = _form(marg_box)
         self.m_left = QDoubleSpinBox()
@@ -645,7 +646,8 @@ class LabelLayoutDialog(QDialog):
             sp.setSingleStep(0.5)
         self.m_left.valueChanged.connect(lambda v: self._margin_changed("l", v))
         self.m_top.valueChanged.connect(lambda v: self._margin_changed("t", v))
-        self.m_right.valueChanged.connect(lambda v: self._margin_changed("r", v))
+        self.m_right.valueChanged.connect(
+            lambda v: self._margin_changed("r", v))
         self.m_bottom.valueChanged.connect(
             lambda v: self._margin_changed("b", v))
         mf.addRow("Left", self.m_left)
@@ -671,9 +673,8 @@ class LabelLayoutDialog(QDialog):
             quick.addWidget(b)
         quick.addStretch(1)
         mf.addRow("Quick", quick)
-        side.addWidget(marg_box)
 
-        # result group
+        # result group (compact readout + sample coils)
         res_box = QGroupBox("Result")
         rf = _form(res_box)
         self.content_lbl = QLabel("—")
@@ -688,7 +689,6 @@ class LabelLayoutDialog(QDialog):
         self.coils_spin.setValue(3)
         self.coils_spin.valueChanged.connect(lambda _v: self._refresh_preview())
         rf.addRow("Sample coils", self.coils_spin)
-        side.addWidget(res_box)
 
         # driver group (read-only probe + repair)
         drv_box = QGroupBox("Driver")
@@ -707,9 +707,8 @@ class LabelLayoutDialog(QDialog):
         drv_row.addWidget(self.btn_probe)
         drv_row.addWidget(self.btn_repair)
         df.addLayout(drv_row)
-        side.addWidget(drv_box)
 
-        # options group
+        # options group (advanced — aspect/fit/overlays)
         opt_box = QGroupBox("Options")
         of = QVBoxLayout(opt_box)
         self.aspect_cb = QCheckBox("Lock aspect ratio")
@@ -732,9 +731,38 @@ class LabelLayoutDialog(QDialog):
             lambda on: (setattr(self.canvas, "_show_grid", bool(on)),
                         self.canvas.update()))
         of.addWidget(self.grid_cb)
-        side.addWidget(opt_box)
 
-        # actions
+        # ---- visible side: hint + essentials; stock/options hide behind
+        # ---- one Advanced toggle so Save never needs scrolling to reach.
+        hint = QLabel("Drag the blue box on the canvas — numbers follow.")
+        hint.setWordWrap(True)
+        hint.setProperty("hint", True)
+        side.addWidget(hint)
+        side.addWidget(marg_box)
+        side.addWidget(res_box)
+        side.addWidget(drv_box)
+
+        self.adv_btn = QPushButton("Advanced ▸  stock · DPI · fit · overlays")
+        style_button(self.adv_btn, "secondary")
+        self.adv_btn.setCheckable(True)
+        self.adv_btn.setChecked(False)
+        adv_widget = QWidget()
+        adv_lay = QVBoxLayout(adv_widget)
+        adv_lay.setContentsMargins(0, 0, 0, 0)
+        adv_lay.setSpacing(6)
+        adv_lay.addWidget(stock_box)
+        adv_lay.addWidget(opt_box)
+        adv_widget.setVisible(False)
+        self.adv_btn.toggled.connect(
+            lambda on: (adv_widget.setVisible(bool(on)),
+                        self.adv_btn.setText(
+                            "Advanced ▾  stock · DPI · fit · overlays" if on
+                            else "Advanced ▸  stock · DPI · fit · overlays")))
+        side.addWidget(self.adv_btn)
+        side.addWidget(adv_widget)
+        self._adv_widget = adv_widget
+
+        # actions (no Save/Cancel here — they live in the fixed footer)
         act_box = QGroupBox("Actions")
         af = QVBoxLayout(act_box)
         self.btn_test = QPushButton("Print test label")
@@ -751,34 +779,23 @@ class LabelLayoutDialog(QDialog):
         prof_row.addWidget(self.btn_export)
         prof_row.addWidget(self.btn_import)
         af.addLayout(prof_row)
-        save_row = QHBoxLayout()
-        self.btn_save = QPushButton("Save")
-        style_button(self.btn_save, "accent")
-        self.btn_save.clicked.connect(self._save)
-        self.btn_cancel = QPushButton("Cancel")
-        style_button(self.btn_cancel, "secondary")
-        self.btn_cancel.clicked.connect(self.reject)
-        save_row.addWidget(self.btn_save)
-        save_row.addWidget(self.btn_cancel)
-        af.addLayout(save_row)
         side.addWidget(act_box)
         side.addStretch(1)
 
-        # Fixed-width scrollable panel: rows can scroll vertically on short
-        # windows but never squeeze horizontally, so labels and fields can
-        # never overlap however small the dialog gets.
+        # Compact scrollable panel: essentials fit without scrolling on a
+        # 720px window; advanced stays one click away, never in the way.
         side_holder = QWidget()
         side_holder.setLayout(side)
         for _cls in (QDoubleSpinBox, QSpinBox, QComboBox):
             for _w in side_holder.findChildren(_cls):
-                _w.setMinimumWidth(150)
+                _w.setMinimumWidth(110)
         scroll = QScrollArea()
         scroll.setWidget(side_holder)
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setFixedWidth(400)
+        scroll.setFixedWidth(340)
         body.addWidget(scroll, 0)
         outer.addLayout(body, 1)
 
@@ -788,6 +805,25 @@ class LabelLayoutDialog(QDialog):
         self.status.setFont(mono)
         self.status.setWordWrap(True)
         outer.addWidget(self.status)
+
+        # Fixed footer: Save/Cancel always visible, no scrolling to reach.
+        foot = QHBoxLayout()
+        foot.setSpacing(8)
+        foot.addStretch(1)
+        self.btn_cancel = QPushButton("Cancel")
+        style_button(self.btn_cancel, "secondary")
+        self.btn_cancel.clicked.connect(self.reject)
+        self.btn_cancel.setMinimumHeight(44)
+        self.btn_cancel.setMinimumWidth(120)
+        foot.addWidget(self.btn_cancel)
+        self.btn_save = QPushButton("Save")
+        style_button(self.btn_save, "accent")
+        self.btn_save.clicked.connect(self._save)
+        self.btn_save.setMinimumHeight(44)
+        self.btn_save.setMinimumWidth(160)
+        self.btn_save.setDefault(True)
+        foot.addWidget(self.btn_save)
+        outer.addLayout(foot)
 
         self._loading: dict | None = None
         self._printable: dict | None = None

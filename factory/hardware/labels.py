@@ -430,8 +430,8 @@ def _pcsstr(v) -> str:
     try:
         n = int(v)
     except (TypeError, ValueError):
-        return "—"
-    return str(n) if n > 0 else "—"
+        return ""
+    return str(n) if n > 0 else ""
 
 
 def _text_height(font) -> int:
@@ -610,7 +610,10 @@ def render_client_box(detail: dict, width_mm: float = WIDE_WIDTH_MM,
         d.line([(left, y), (right, y)], fill="black", width=line)
 
     head_font = _font(px(3.1), bold=True)
-    for i, label in enumerate(_WIDE_HEAD):
+    has_pcs = any(int(r.get("pieces") or 0) > 0 for r in rows)
+    head = (list(_WIDE_HEAD) if has_pcs or not rows
+            else [_WIDE_HEAD[0], "", *_WIDE_HEAD[2:]])
+    for i, label in enumerate(head):
         cw = xs[i + 1] - xs[i] - px(1.2)
         text, f = _fit_text_ellipsis(d, label, int(cw), px(3.1),
                                      bold=True, floor=px(1.9))
@@ -638,7 +641,7 @@ def render_client_box(detail: dict, width_mm: float = WIDE_WIDTH_MM,
     else:
         yc = body_top + body_row_h / 2
         for j in range(len(_WIDE_HEAD)):
-            d.text(((xs[j] + xs[j + 1]) / 2, yc), "—",
+            d.text(((xs[j] + xs[j + 1]) / 2, yc), "",
                    font=row_font, fill="black", anchor="mm")
 
     total_pieces = sum(int(r.get("pieces") or 0) for r in rows)

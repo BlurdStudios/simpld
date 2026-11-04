@@ -825,8 +825,9 @@ class PackingSlipDialog(QDialog):
                          f" {int(b.get('reels') or 0)} reels"
                          f" · {int(b.get('boxes') or 0)} boxes")
         wpr = self._slip.get("wrappers_per_reel")
-        tot_text += f"  |  No of Pieces: {int(wpr)}" if wpr is not None \
-            else "  |  No of Pieces: unknown"
+        # No piece count: omit the clause entirely (blank, no "unknown").
+        if wpr is not None:
+            tot_text += f"  |  No of Pieces: {int(wpr)}"
         tot = QLabel(tot_text)
         tot.setProperty("count", True)
         tot.setWordWrap(True)
@@ -1044,8 +1045,8 @@ class OrderPackingDialog(QDialog):
             i = self.table.rowCount()
             self.table.insertRow(i)
             self.table.setItem(i, 0, QTableWidgetItem(str(r.get("box_no"))))
-            self.table.setItem(i, 1, QTableWidgetItem(str(r.get("job_code") or "—")))
-            self.table.setItem(i, 2, QTableWidgetItem(str(r.get("rolls") or "—")))
+            self.table.setItem(i, 1, QTableWidgetItem(str(r.get("job_code") or "")))
+            self.table.setItem(i, 2, QTableWidgetItem(str(r.get("rolls") or "")))
             self.table.setItem(i, 3, QTableWidgetItem(str(int(r.get("num_reels") or 0))))
             self.table.setItem(i, 4, QTableWidgetItem(f"{float(r.get('gross') or 0):.3f}"))
             self.table.setItem(i, 5, QTableWidgetItem(f"{float(r.get('net') or 0):.3f}"))
@@ -1286,24 +1287,38 @@ class DispatchSlipDialog(QDialog):
         for r in self._slip.get("rows") or []:
             i = self.table.rowCount()
             self.table.insertRow(i)
+            pcs = int(r.get("pieces") or 0)
+            if unit.lower() != "wrapper":
+                pcs = 0
             self.table.setItem(i, 0, QTableWidgetItem(str(r.get("box_no"))))
             self.table.setItem(i, 1, QTableWidgetItem(
-                str(r.get("job_code") or "—")))
+                str(r.get("job_code") or "")))
             self.table.setItem(i, 2, QTableWidgetItem(str(r.get("carton_no") or "")))
             self.table.setItem(i, 3, QTableWidgetItem(str(int(r.get("num_reels") or 0))))
-            self.table.setItem(i, 4, QTableWidgetItem(f"{int(r.get('pieces') or 0):,}"))
+            self.table.setItem(i, 4, QTableWidgetItem(f"{pcs:,}" if pcs else ""))
             self.table.setItem(i, 5, QTableWidgetItem(f"{float(r.get('gross') or 0):.3f}"))
             self.table.setItem(i, 6, QTableWidgetItem(f"{float(r.get('net') or 0):.3f}"))
         ll.addWidget(self.table, 1)
-        tot_text = (f"Boxes: {int(self._slip.get('loaded_boxes') or 0)}"
-                    f"  ·  Pieces: {int(self._slip.get('loaded_pieces') or 0):,}"
-                    f"  ·  Net {float(self._slip.get('loaded_net') or 0):.3f} Kg"
-                    f"  ·  Gross {float(self._slip.get('loaded_gross') or 0):.3f} Kg")
+        if unit.lower() == "kg":
+            tot_text = (f"Boxes: {int(self._slip.get('loaded_boxes') or 0)}"
+                        f"  ·  Net {float(self._slip.get('loaded_net') or 0):.3f} Kg"
+                        f"  ·  Gross {float(self._slip.get('loaded_gross') or 0):.3f} Kg")
+        else:
+            tot_text = (f"Boxes: {int(self._slip.get('loaded_boxes') or 0)}"
+                        f"  ·  Pieces: {int(self._slip.get('loaded_pieces') or 0):,}"
+                        f"  ·  Net {float(self._slip.get('loaded_net') or 0):.3f} Kg"
+                        f"  ·  Gross {float(self._slip.get('loaded_gross') or 0):.3f} Kg")
         for b in self._slip.get("batches") or []:
-            tot_text += (f"  |  {b.get('label') or '?'}:"
-                         f" {int(b.get('boxes') or 0)} box"
-                         f" · {int(b.get('pieces') or 0):,} pcs"
-                         f" · {float(b.get('net') or 0):.3f} Kg")
+            bpcs = int(b.get("pieces") or 0) if unit.lower() == "wrapper" else 0
+            if bpcs:
+                tot_text += (f"  |  {b.get('label') or '?'}:"
+                             f" {int(b.get('boxes') or 0)} box"
+                             f" · {bpcs:,} pcs"
+                             f" · {float(b.get('net') or 0):.3f} Kg")
+            else:
+                tot_text += (f"  |  {b.get('label') or '?'}:"
+                             f" {int(b.get('boxes') or 0)} box"
+                             f" · {float(b.get('net') or 0):.3f} Kg")
         tot = QLabel(tot_text)
         tot.setProperty("count", True)
         tot.setWordWrap(True)

@@ -3,7 +3,7 @@
 Layout (portrait A4):
   PACKING SLIP (centered)
   Jobno: X   C.Name.: Y   DATE:        (DATE stays blank — handwritten on paper)
-  Job Name: ...   No of Pieces: N | unknown (job snapshot only, never invented)
+  Job Name: ...   No of Pieces: N | blank row (job snapshot only, never invented)
   Reels section: one row per recorded reel.
   Boxes section: one row per EVERY carton.
   Separate reel totals, box totals and legacy box totals on the last page.
@@ -174,7 +174,7 @@ def get_slip(job_id: int, path: str | None = None) -> dict:
     clearly distinct.
     Snapshot records only: identities/weights/roll/carton numbers come
     straight from the DB; nothing is invented. Pieces show only the
-    job's snapshot value, else "unknown".
+    job's snapshot value, else the row stays blank.
     """
     c = get_conn(path)
     try:
@@ -415,7 +415,10 @@ def paint_page(p, area, dpi: int, slip: dict, page_rows: list[dict],
     text(QRectF(x, y, W, 6 * mm), f"Job Name: {slip['job_name']}", f_head)
     y += 6 * mm
     wpr = slip.get("wrappers_per_reel")
-    wline = f"No of Pieces: {int(wpr)}" if wpr is not None else "No of Pieces: unknown"
+    # No piece count (kg products, legacy unknown): blank row — no caption,
+    # no "unknown" text. The geometry (TOP_H_MM) keeps the spacing so all
+    # slips align.
+    wline = f"No of Pieces: {int(wpr)}" if wpr is not None else ""
     text(QRectF(x, y, W, 6 * mm), wline, f_head)
     y += 8 * mm
 
@@ -500,7 +503,7 @@ def paint_page(p, area, dpi: int, slip: dict, page_rows: list[dict],
     for r in page_rows:
         kind = _row_kind(r)
         open_section(kind)
-        code = str(r.get("job_code") or "").strip().upper() or "—"
+        code = str(r.get("job_code") or "").strip().upper()
         if kind == "Reel":
             in_box = bare_carton_no(r.get("carton_no")) or "loose"
             cells = [code, str(r.get("roll_label") or r.get("roll_no")),
@@ -1179,9 +1182,12 @@ def paint_order_page(p, area, dpi: int, summary: dict,
         hline(y)
 
     for r in page_rows:
-        code = str(r.get("job_code") or "").strip().upper() or "—"
-        cells = [code, str(r.get("carton_no") or ""),
-                 str(r.get("rolls") or "—"), str(int(r.get("num_reels") or 0)),
+        # Box No. is the bare floor number (1..N per product/month), never
+        # the full scanned carton code. Code/Rolls are each box's own batch
+        # identity for traceability.
+        code = str(r.get("job_code") or "").strip().upper()
+        cells = [code, bare_carton_no(r.get("carton_no") or ""),
+                 str(r.get("rolls") or ""), str(int(r.get("num_reels") or 0)),
                  f"{float(r.get('gross') or 0):.3f}",
                  f"{float(r.get('core') or 0):.2f}",
                  f"{float(r.get('net') or 0):.3f}"]

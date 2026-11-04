@@ -20,7 +20,12 @@ def render_html(slip: dict) -> str:
     rows = slip.get("rows") or []
     batches = slip.get("batches") or []
     unit = str(slip.get("piece_unit") or "reel")
-    coil_word = "Wrappers" if unit.lower() == "wrapper" else ("Kg" if unit.lower() == "kg" else "Coils")
+    # Kg products have no piece count: the coil-count column stays "Coils"
+    # (never "Kg" — that column counts coils, not weight) and the Pieces
+    # column stays blank.
+    is_wrapper = unit.lower() == "wrapper"
+    is_kg = unit.lower() == "kg"
+    coil_word = "Wrappers" if is_wrapper else "Coils"
     rp = slip.get("required_pieces")
     rq = slip.get("required_weight_kg")
     if rp is not None:
@@ -35,14 +40,15 @@ def render_html(slip: dict) -> str:
         target = f"{int(slip.get('required_bundles') or 0)} boxes"
     body = []
     for r in rows:
-        code = str(r.get("job_code") or "").strip().upper() or "—"
+        code = str(r.get("job_code") or "").strip().upper()
+        pcs = int(r.get("pieces") or 0) if is_wrapper else 0
         body.append(
             "<tr>"
             f"<td>{_esc(r.get('box_no'))}</td>"
             f"<td>{_esc(code)}</td>"
             f"<td>{_esc(r.get('carton_no'))}</td>"
             f"<td>{int(r.get('num_reels') or 0)}</td>"
-            f"<td>{int(r.get('pieces') or 0):,}</td>"
+            f"<td>{f'{pcs:,}' if pcs else ''}</td>"
             f"<td>{float(r.get('gross') or 0):.3f}</td>"
             f"<td>{float(r.get('net') or 0):.3f}</td>"
             f"<td>{_esc(r.get('scanned_at'))}</td>"
@@ -51,11 +57,12 @@ def render_html(slip: dict) -> str:
         body.append('<tr><td colspan="8">No boxes.</td></tr>')
     batch_rows = []
     for b in batches:
+        bpcs = int(b.get("pieces") or 0) if is_wrapper else 0
         batch_rows.append(
             "<tr>"
             f"<td>{_esc(b.get('label') or '?')}</td>"
             f"<td>{int(b.get('boxes') or 0)}</td>"
-            f"<td>{int(b.get('pieces') or 0):,}</td>"
+            f"<td>{f'{bpcs:,}' if bpcs else ''}</td>"
             f"<td>{float(b.get('gross') or 0):.3f}</td>"
             f"<td>{float(b.get('net') or 0):.3f}</td>"
             "</tr>")
@@ -71,18 +78,24 @@ def render_html(slip: dict) -> str:
     stamp = ("Saved record — frozen at completion. Reprints are identical."
              if frozen else "Live view — order not completed yet.")
     printed = slip.get("print_count") or 0
+    if is_kg:
+        loaded_txt = f"{int(slip.get('loaded_boxes') or 0)} boxes"
+    else:
+        loaded_txt = (f"{int(slip.get('loaded_boxes') or 0)} boxes · "
+                      f"{int(slip.get('loaded_pieces') or 0):,} "
+                      f"{_esc(slip.get('pieces_word') or '')}")
     return f"""<html><body>
 <h1>Dispatch slip — {_esc(slip.get('order_no'))}</h1>
 <table border="1" cellspacing="0" cellpadding="4">
 <tr><td><b>Customer</b></td><td>{_esc(slip.get('customer'))}</td></tr>
 <tr><td><b>Customer PO</b></td><td>{_esc(slip.get('customer_po'))}</td></tr>
-<tr><td><b>PO date</b></td><td>{_esc(slip.get('po_date') or '—')}</td></tr>
+<tr><td><b>PO date</b></td><td>{_esc(slip.get('po_date') or '')}</td></tr>
 <tr><td><b>Batch</b></td><td>{_esc(slip.get('batch_no'))}</td></tr>
 <tr><td><b>Job</b></td><td>J:{_esc(slip.get('job_no'))} {_esc(slip.get('job_code') or '')} {_esc(slip.get('job_name'))}</td></tr>
 <tr><td><b>Order date</b></td><td>{_esc(slip.get('order_date'))}</td></tr>
 <tr><td><b>Completed</b></td><td>{_esc(slip.get('completed_at'))}</td></tr>
 <tr><td><b>Target</b></td><td>{_esc(target)}</td></tr>
-<tr><td><b>Loaded</b></td><td>{int(slip.get('loaded_boxes') or 0)} boxes · {int(slip.get('loaded_pieces') or 0):,} {_esc(slip.get('pieces_word') or '')}</td></tr>
+<tr><td><b>Loaded</b></td><td>{loaded_txt}</td></tr>
 <tr><td><b>Total net</b></td><td>{float(slip.get('loaded_net') or 0):.3f} kg</td></tr>
 <tr><td><b>Total gross</b></td><td>{float(slip.get('loaded_gross') or 0):.3f} kg</td></tr>
 </table>

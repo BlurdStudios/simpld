@@ -1849,8 +1849,11 @@ def _dispatch_slip_rows(c: sqlite3.Connection, order_id: int,
         if box_no is None:
             box_no = i
         n_reels = int(it["num_reels"] or 0)
-        if str(unit or "reel").lower() == "wrapper":
+        u = str(unit or "reel").lower()
+        if u == "wrapper":
             pieces = n_reels * _row_wpr(it, wpr)
+        elif u == "kg":
+            pieces = 0
         else:
             pieces = n_reels
         try:
