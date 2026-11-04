@@ -2475,6 +2475,158 @@ def set_company_logo(logo_b64: str, path: str | None = None,
         c.close()
 
 
+_ALLOWED_SETTING_PREFIXES = ("label.", "printer.")
+
+
+def set_setting(key: str, value: str, path: str | None = None,
+                actor: dict | None = None) -> dict:
+    """Admin-only generic settings write for label/printer keys.
+
+    Only label.* and printer.* keys are writable here (company_logo keeps
+    its own validated writer). Values are capped at 64 KB.
+    """
+    resolved = _settings_actor(path)
+    k = str(key or "").strip()
+    if not k or not k.startswith(_ALLOWED_SETTING_PREFIXES):
+        raise ValueError("Setting key must start with 'label.' or 'printer.'")
+    if len(k) > 128:
+        raise ValueError("Setting key is too long")
+    v = str(value if value is not None else "")
+    if len(v) > 65536:
+        raise ValueError("Setting value is too large")
+    c = get_conn(path)
+    c.isolation_level = None
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        try:
+            c.execute(
+                "INSERT INTO settings(key, value, updated_at) VALUES(?,?,?)"
+                " ON CONFLICT(key) DO UPDATE SET value=excluded.value,"
+                " updated_at=excluded.updated_at",
+                (k, v, now_iso()))
+            _audit(c, resolved, "set_setting", "setting", 0, k)
+            c.execute("COMMIT")
+        except Exception:
+            try:
+                c.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise
+        return {"ok": True, "key": k}
+    finally:
+        c.close()
+
+
+def get_label_layout(template_id: str,
+                     path: str | None = None) -> dict:
+    """Resolved label layout for one template (defaults fill missing keys)."""
+    from factory.hardware import layout as _layout
+    tid = str(template_id or "").strip().lower() or "reel"
+    c = get_conn(path)
+    try:
+        settings = {}
+        for k in ("stock_w_mm", "stock_h_mm", "dpi", "content_x_mm",
+                  "content_y_mm", "content_w_mm", "content_h_mm",
+                  "margin_locked", "units", "fit_mode"):
+            settings[f"label.{tid}.{k}"] = _setting_from(
+                c, f"label.{tid}.{k}", "")
+        return _layout.get_layout(tid, settings)
+    finally:
+        c.close()
+
+
+def save_label_layout(template_id: str, layout: dict,
+                      path: str | None = None,
+                      actor: dict | None = None) -> dict:
+    """Admin-only. Validate and persist one template layout."""
+    from factory.hardware import layout as _layout
+    resolved = _settings_actor(path)
+    tid = str(template_id or "").strip().lower() or "reel"
+    if tid not in _layout.DEFAULTS:
+        raise ValueError(f"Unknown template {tid!r}")
+    if not isinstance(layout, dict):
+        raise ValueError("Layout must be an object")
+    merged = dict(_layout.DEFAULTS[tid])
+    for k in merged:
+        if k in layout:
+            merged[k] = layout[k]
+    # Numeric sanity (same bounds as profile import).
+    import math as _math
+    for k in ("stock_w_mm", "stock_h_mm", "content_w_mm", "content_h_mm"):
+        try:
+            v = float(merged[k])
+        except (TypeError, ValueError):
+            raise ValueError(f"{k} must be a number")
+        if not _math.isfinite(v) or v <= 0 or v > 1000:
+            raise ValueError(f"{k} out of range: {merged[k]!r}")
+        merged[k] = round(v, 2)
+    for k in ("content_x_mm", "content_y_mm"):
+        try:
+            v = float(merged[k])
+        except (TypeError, ValueError):
+            raise ValueError(f"{k} must be a number")
+        if not _math.isfinite(v) or v < 0 or v > 1000:
+            raise ValueError(f"{k} out of range: {merged[k]!r}")
+        merged[k] = round(v, 2)
+    try:
+        dpi = int(float(merged.get("dpi") or 0))
+    except (TypeError, ValueError):
+        raise ValueError("dpi must be a number")
+    if dpi not in (152, 200, 203, 300, 400, 600):
+        raise ValueError(f"Unusual dpi: {dpi}")
+    merged["dpi"] = dpi
+    if str(merged.get("units") or "").strip().lower() not in ("mm", "inch"):
+        merged["units"] = "mm"
+    else:
+        merged["units"] = str(merged["units"]).strip().lower()
+    if str(merged.get("fit_mode") or "").strip().lower() not in ("reflow", "stretch"):
+        merged["fit_mode"] = "reflow"
+    else:
+        merged["fit_mode"] = str(merged["fit_mode"]).strip().lower()
+    merged["margin_locked"] = bool(merged.get("margin_locked", True))
+    merged = _layout.clamp_to_stock(merged)
+    merged["template_id"] = tid
+    c = get_conn(path)
+    c.isolation_level = None
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        try:
+            for k, v in _layout.to_settings(tid, merged).items():
+                c.execute(
+                    "INSERT INTO settings(key, value, updated_at) VALUES(?,?,?)"
+                    " ON CONFLICT(key) DO UPDATE SET value=excluded.value,"
+                    " updated_at=excluded.updated_at",
+                    (k, str(v), now_iso()))
+            _audit(c, resolved, "save_label_layout", "setting", 0, tid)
+            c.execute("COMMIT")
+        except Exception:
+            try:
+                c.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise
+        return {"ok": True, "template_id": tid, "layout": merged}
+    finally:
+        c.close()
+
+
+def get_printer_probe(printer_name: str,
+                      path: str | None = None) -> dict | None:
+    """Cached probed driver geometry for one printer (None if never probed)."""
+    from factory.hardware import layout as _layout
+    c = get_conn(path)
+    try:
+        settings = {}
+        for k in ("printable_origin_x_mm", "printable_origin_y_mm",
+                  "printable_w_mm", "printable_h_mm", "ticket_delta_mm",
+                  "dpi", "probed_at"):
+            settings[f"printer.{printer_name}.{k}"] = _setting_from(
+                c, f"printer.{printer_name}.{k}", "")
+        return _layout.get_printable(str(printer_name or ""), settings)
+    finally:
+        c.close()
+
+
 def client_label_detail(order_id: int, carton_id: int,
                         path: str | None = None) -> dict:
     """Everything the wide client sticker renders, for ONE loaded box.

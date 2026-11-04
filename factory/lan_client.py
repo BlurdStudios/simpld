@@ -461,6 +461,18 @@ class LanClient:
         return self.call("set_company_logo", {"logo": logo_b64},
                          request_id=request_id)
 
+    def get_label_layout(self, template_id: str) -> dict:
+        return self.call("get_label_layout", {"template_id": template_id})
+
+    def save_label_layout(self, template_id: str, layout: dict,
+                          request_id: str | None = None) -> dict:
+        return self.call("save_label_layout",
+                         {"template_id": template_id, "layout": layout},
+                         request_id=request_id)
+
+    def get_printer_probe(self, printer_name: str) -> dict | None:
+        return self.call("get_printer_probe", {"printer_name": printer_name})
+
     def scan_into_order(self, order_id: int, scan_text: str,
                         request_id: str | None = None) -> dict:
         return self.call("scan_into_order",

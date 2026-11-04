@@ -331,20 +331,185 @@ def test_real_print_renders_complete_data_and_paints_stock():
     assert st.get("ended") is True
     assert st["painter"].drawn, "label image must be painted"
     rect = st["painter"].drawn[-1][0]
-    assert (rect.x(), rect.y()) == (0, 0)
-    assert abs(rect.width() - 799) < 4 and abs(rect.height() - 399) < 4
+    # 1:1 content-box draw: default 3mm margins @203dpi -> origin (24,24),
+    # content 94x44mm art (label_px truncates to 751x351).
+    assert abs(rect.x() - 24) < 4 and abs(rect.y() - 24) < 4, rect
+    assert abs(rect.width() - 751) < 4 and abs(rect.height() - 351) < 4, rect
     calls = st["FakePrinter"].instances[-1].calls
     assert ("fullpage", False) in calls, \
         "printable-local origin so the 2.50mm hardware left offset needs no shift"
     assert ("resolution", 203) in calls, "must request 203dpi"
 
 
+def test_real_print_drifted_ticket_prints_11_with_state():
+    """Acceptance 8: driver ticket 102.5x50 still prints 1:1 (state=proceed).
+
+    The old hard exception ('reports a 102.5x50.0mm page, not the stock')
+    is gone: auto-repair runs, the job prints at the content origin with
+    no scaling, and the log line carries scale=1.0.
+    """
+    from PySide6 import QtGui as G
+    from PySide6.QtCore import QRect
+    st: dict = {}
+    job, reel, _detail = _job_reel_detail()
+
+    class DriftPrinter:
+        HighResolution = 2
+        DevicePixel = 0
+        instances: list = []
+
+        def __init__(self, mode):
+            DriftPrinter.instances.append(self)
+
+        def setPrinterName(self, n): pass
+
+        def setDocName(self, n): pass
+
+        def setFullPage(self, on): pass
+
+        def setResolution(self, dpi): pass
+
+        def setPageLayout(self, layout):
+            st["layout"] = layout
+
+        def pageLayout(self):
+            # Driver ignores our 100.1x50.05 ticket, keeps 102.5x50.0 form.
+            from PySide6.QtGui import QPageLayout as _PL, QPageSize as _PS
+            from PySide6.QtCore import QSizeF, QMarginsF
+            return _PL(_PS(QSizeF(102.5, 50.0), _PS.Millimeter),
+                       _PL.Portrait, QMarginsF(0, 0, 0, 0))
+
+        def pageRect(self, unit):
+            return QRect(0, 0, 799, 399)
+
+        def resolution(self):
+            return 203
+
+    class DriftPainter:
+        def __init__(self):
+            st["painter"] = self
+            self.drawn = []
+
+        def begin(self, printer):
+            return True
+
+        def drawImage(self, rect, img):
+            self.drawn.append((rect, img))
+
+        def end(self):
+            st["ended"] = True
+            return True
+
+    from PySide6 import QtPrintSupport as PS
+    p1 = _mock.patch.object(PS, "QPrinter", DriftPrinter)
+    p2 = _mock.patch.object(G, "QPainter", DriftPainter)
+    p3 = _mock.patch("factory.hardware.qtprint.printer_exists",
+                      lambda name: True)
+    with p1, p2, p3:
+        assert QtCitizenCLS621("Citizen CL-S621Z").print_reel_label(
+            {"job": job, "reel": reel}) is True
+    assert st.get("ended") is True
+    rect = st["painter"].drawn[-1][0]
+    assert abs(rect.x() - 24) < 4 and abs(rect.y() - 24) < 4, rect
+    assert abs(rect.width() - 751) < 4 and abs(rect.height() - 351) < 4, rect
+
+
+def test_origin_quirk_driver_repaired_to_ticket_minus_origin(caplog):
+    """ticket = label − origin: driver reports paper + 2.5mm origin.
+
+    First ticket (100.1) reads back 102.6; the single repair tickets
+    97.5, which reads back 100.1 -> state=repaired, print proceeds 1:1.
+    """
+    import logging
+    from PySide6 import QtGui as G
+    from PySide6.QtCore import QRect, QSizeF, QMarginsF
+    from PySide6.QtGui import QPageLayout as _PL, QPageSize as _PS
+    st: dict = {}
+    job, reel, _detail = _job_reel_detail()
+
+    class QuirkPrinter:
+        HighResolution = 2
+        DevicePixel = 0
+
+        def __init__(self, mode):
+            st.setdefault("tickets", [])
+
+        def setPrinterName(self, n): pass
+
+        def setDocName(self, n): pass
+
+        def setFullPage(self, on): pass
+
+        def setResolution(self, dpi): pass
+
+        def setPageLayout(self, layout):
+            full = layout.fullRect(_PL.Millimeter)
+            st["tickets"].append(
+                (round(full.width(), 2), round(full.height(), 2)))
+
+        def pageLayout(self):
+            # quirk: reported page = ticketed paper + 2.5mm origin.
+            # (A stub: real QPageLayout clamps custom margins, so the
+            # origin is reported directly like a driver would.)
+            from PySide6.QtCore import QRectF, QMarginsF
+            tw, th = st["tickets"][-1]
+
+            class _Geom:
+                def fullRect(self, unit):
+                    return QRectF(0, 0, tw + 2.5, th)
+
+                def margins(self, unit=None):
+                    return QMarginsF(2.5, 0.0, 0.0, 0.0)
+
+            return _Geom()
+
+        def pageRect(self, unit):
+            return QRect(0, 0, 769, 400)  # real CL-S621 printable
+
+        def resolution(self):
+            return 203
+
+    class QuirkPainter:
+        def __init__(self):
+            st["painter"] = self
+            self.drawn = []
+
+        def begin(self, printer):
+            return True
+
+        def drawImage(self, rect, img):
+            self.drawn.append((rect, img))
+
+        def end(self):
+            st["ended"] = True
+            return True
+
+    from PySide6 import QtPrintSupport as PS
+    p1 = _mock.patch.object(PS, "QPrinter", QuirkPrinter)
+    p2 = _mock.patch.object(G, "QPainter", QuirkPainter)
+    p3 = _mock.patch("factory.hardware.qtprint.printer_exists",
+                      lambda name: True)
+    with p1, p2, p3:
+        with caplog.at_level(logging.INFO, logger="simpld.hardware"):
+            assert QtCitizenCLS621("Citizen CL-S621Z").print_reel_label(
+                {"job": job, "reel": reel}) is True
+    assert st.get("ended") is True
+    assert len(st["tickets"]) == 2, st["tickets"]
+    assert abs(st["tickets"][0][0] - 100.10) < 0.3, st["tickets"]
+    assert abs(st["tickets"][1][0] - 97.59) < 0.3, st["tickets"]
+    assert "paper repaired: ticket=97.50x50.00" in caplog.text, caplog.text
+    assert "state=repaired" in caplog.text, caplog.text
+    rect = st["painter"].drawn[-1][0]
+    assert abs(rect.x() - 24) < 4 and abs(rect.y() - 24) < 4, rect
+
+
 def test_real_client_label_print_uses_wide_custom_stock():
     """Type-3 wide client sticker: 210 x content-height, zero margins.
 
-    The real Qt path must request the exact custom paper size (not 100x50
-    Citizen stock), paint the full-resolution 203dpi art at the origin, and
-    still fail closed if the driver reports a different page.
+    The real Qt path tickets the exact custom paper size (not 100x50
+    Citizen stock) and paints the full-resolution 203dpi art 1:1 at the
+    content origin — no scaling, and no hard fail when the driver page
+    drifts (auto-repair + proceed instead).
     """
     from PySide6.QtGui import QPageLayout as _PL
     detail = {
@@ -387,8 +552,10 @@ def test_real_client_label_print_uses_wide_custom_stock():
     assert st.get("ended") is True
     assert st["painter"].drawn, "wide label image must be painted"
     rect = st["painter"].drawn[-1][0]
-    assert (rect.x(), rect.y()) == (0, 0)
-    assert abs(rect.width() - 1678) < 4 and abs(rect.height() - 735) < 4
+    # 1:1 at the content origin: default 3mm margins @203dpi -> (24,24);
+    # art is 204mm wide (1630px truncated) x row-driven 92mm (735px).
+    assert abs(rect.x() - 24) < 4 and abs(rect.y() - 24) < 4, rect
+    assert abs(rect.width() - 1630) < 4 and abs(rect.height() - 735) < 4, rect
     calls = st["FakePrinter"].instances[-1].calls
     assert ("fullpage", False) in calls
     assert ("resolution", 203) in calls

@@ -1,0 +1,78 @@
+{
+  "kind": "simpld-label-profile-bundle",
+  "version": 1,
+  "model": "Citizen CL-S621",
+  "note": "100x50 stock with 3mm content margins; wide 210mm client sticker. Import from the Label Layout editor.",
+  "profiles": [
+    {
+      "kind": "simpld-label-profile",
+      "version": 1,
+      "template_id": "reel",
+      "layout": {
+        "stock_w_mm": 100.0,
+        "stock_h_mm": 50.0,
+        "dpi": 203,
+        "content_x_mm": 3.0,
+        "content_y_mm": 3.0,
+        "content_w_mm": 94.0,
+        "content_h_mm": 44.0,
+        "margin_locked": true,
+        "units": "mm",
+        "fit_mode": "reflow"
+      },
+      "printable": {
+        "origin_x_mm": 2.5,
+        "origin_y_mm": 0.0,
+        "print_w_mm": 96.1,
+        "print_h_mm": 50.0,
+        "ticket_delta_mm": 0.0,
+        "dpi": 203,
+        "probed_at": ""
+      }
+    },
+    {
+      "kind": "simpld-label-profile",
+      "version": 1,
+      "template_id": "carton",
+      "layout": {
+        "stock_w_mm": 100.0,
+        "stock_h_mm": 50.0,
+        "dpi": 203,
+        "content_x_mm": 3.0,
+        "content_y_mm": 3.0,
+        "content_w_mm": 94.0,
+        "content_h_mm": 44.0,
+        "margin_locked": true,
+        "units": "mm",
+        "fit_mode": "reflow"
+      },
+      "printable": {
+        "origin_x_mm": 2.5,
+        "origin_y_mm": 0.0,
+        "print_w_mm": 96.1,
+        "print_h_mm": 50.0,
+        "ticket_delta_mm": 0.0,
+        "dpi": 203,
+        "probed_at": ""
+      }
+    },
+    {
+      "kind": "simpld-label-profile",
+      "version": 1,
+      "template_id": "client",
+      "layout": {
+        "stock_w_mm": 210.0,
+        "stock_h_mm": 92.0,
+        "dpi": 203,
+        "content_x_mm": 3.0,
+        "content_y_mm": 3.0,
+        "content_w_mm": 204.0,
+        "content_h_mm": 86.0,
+        "margin_locked": true,
+        "units": "mm",
+        "fit_mode": "reflow"
+      },
+      "printable": null
+    }
+  ]
+}

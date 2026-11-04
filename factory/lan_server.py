@@ -819,6 +819,37 @@ def _h_set_logo(args: dict, actor: dict, dbp: str) -> dict:
     return _svc.set_company_logo(logo.strip(), dbp, actor=actor)
 
 
+@_op("get_label_layout", "read", ("template_id",))
+def _h_get_layout(args: dict, actor: dict, dbp: str) -> dict:
+    _need(args, "get_label_layout", frozenset({"template_id"}))
+    tid = args.get("template_id")
+    if not isinstance(tid, str):
+        raise _ValidationError("Argument 'template_id' must be a string.")
+    return _svc.get_label_layout(tid.strip()[:32], dbp)
+
+
+@_op("save_label_layout", "settings.manage", ("template_id", "layout"))
+def _h_save_layout(args: dict, actor: dict, dbp: str) -> dict:
+    _need(args, "save_label_layout",
+          frozenset({"template_id", "layout"}))
+    tid = args.get("template_id")
+    lay = args.get("layout")
+    if not isinstance(tid, str):
+        raise _ValidationError("Argument 'template_id' must be a string.")
+    if not isinstance(lay, dict):
+        raise _ValidationError("Argument 'layout' must be an object.")
+    return _svc.save_label_layout(tid.strip()[:32], lay, dbp, actor=actor)
+
+
+@_op("get_printer_probe", "read", ("printer_name",))
+def _h_get_probe(args: dict, actor: dict, dbp: str) -> dict | None:
+    _need(args, "get_printer_probe", frozenset({"printer_name"}))
+    name = args.get("printer_name")
+    if not isinstance(name, str):
+        raise _ValidationError("Argument 'printer_name' must be a string.")
+    return _svc.get_printer_probe(name.strip()[:128], dbp)
+
+
 @_op("scan_into_order", "dispatch.mutate", ("order_id", "scan_text"))
 def _h_scan(args: dict, actor: dict, dbp: str) -> dict:
     _need(args, "scan_into_order", frozenset({"order_id", "scan_text"}))

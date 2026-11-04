@@ -307,6 +307,31 @@ class AboutDialog(QDialog):
         outer.addWidget(self._logo_card)
 
         if str(me.get("role") or "") == "admin":
+            layout_card = QFrame()
+            layout_card.setProperty("card", True)
+            lc3 = QVBoxLayout(layout_card)
+            lc3.setContentsMargins(16, 12, 16, 12)
+            lc3.setSpacing(8)
+            lt3 = QLabel("LABEL LAYOUT")
+            lt3.setProperty("field", "caption")
+            lc3.addWidget(lt3)
+            lh3 = QLabel("Stock size, content area and margins per label "
+                        "template — what you see is what prints (1:1).")
+            lh3.setProperty("hint", True)
+            lh3.setWordWrap(True)
+            lc3.addWidget(lh3)
+            lr3 = QHBoxLayout()
+            lr3.setSpacing(8)
+            self._layout_btn = QPushButton("Label layout…")
+            self._layout_btn.setMinimumHeight(36)
+            from factory.ui.styles import style_button as _sb3
+            _sb3(self._layout_btn, "outline")
+            self._layout_btn.clicked.connect(self._open_layout)
+            lr3.addWidget(self._layout_btn, 1)
+            lc3.addLayout(lr3)
+            outer.addWidget(layout_card)
+
+        if str(me.get("role") or "") == "admin":
             from factory.hardware import devices as _HWDevices
             test_card = QFrame()
             test_card.setProperty("card", True)
@@ -427,6 +452,15 @@ class AboutDialog(QDialog):
         except Exception as e:
             return QMessageBox.warning(self, "Company logo", str(e))
         self._load_logo()
+
+    def _open_layout(self) -> None:
+        from factory.ui.label_layout import LabelLayoutDialog
+        try:
+            from factory.hardware import config as _cfg
+            pname = str((_cfg.load().get("printer_name") or ""))
+        except Exception:
+            pname = ""
+        LabelLayoutDialog(self, "reel", pname).exec()
 
     def _toggle_mock_qr(self, on: bool) -> None:
         """Admin-only switch for the Dispatch test-scan aid on this PC."""

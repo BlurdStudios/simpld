@@ -211,6 +211,46 @@ def _pieces_txt(job: dict) -> str:
         return ""
 
 
+def _is_admin() -> bool:
+    try:
+        me = DA.current_user() or {}
+    except Exception:
+        return False
+    return str(me.get("role") or "") == "admin"
+
+
+def _layout_preview_row(template_id: str):
+    """Read-only mini layout preview + admin Layout button for print dialogs."""
+    from PySide6.QtWidgets import QWidget as _W
+    from factory.ui.label_layout import MiniLayoutPreview
+    wrap = _W()
+    lay = QHBoxLayout(wrap)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(8)
+    mini = MiniLayoutPreview(template_id, wrap)
+    mini.setMinimumHeight(84)
+    lay.addWidget(mini, 1)
+    if _is_admin():
+        btn = QPushButton("Layout…")
+        btn.setMinimumHeight(36)
+        style_button(btn, "secondary")
+        btn.setToolTip("Edit stock, content area and margins (1:1).")
+
+        def _open():
+            from factory.ui.label_layout import open_layout_editor
+            from factory.hardware import config as _cfg
+            try:
+                pname = str((_cfg.load().get("printer_name") or ""))
+            except Exception:
+                pname = ""
+            if open_layout_editor(wrap, template_id, pname):
+                mini.refresh()
+
+        btn.clicked.connect(_open)
+        lay.addWidget(btn, 0)
+    return wrap
+
+
 def _queue_name_of(printer) -> str:
     """CUPS queue backing a label-printer driver ('' for mock/demo).
 
@@ -367,6 +407,7 @@ class ReelLabelDialog(QDialog):
         hd.setProperty("dialog", "desc")
         hd.setWordWrap(True)
         lay.addWidget(hd)
+        lay.addWidget(_layout_preview_row("reel"))
         t = QTextEdit()
         t.setReadOnly(True)
         t.setProperty("label", True)
@@ -442,6 +483,7 @@ class CartonLabelDialog(QDialog):
         hd.setProperty("dialog", "desc")
         hd.setWordWrap(True)
         lay.addWidget(hd)
+        lay.addWidget(_layout_preview_row("carton"))
         t = QTextEdit()
         t.setReadOnly(True)
         t.setProperty("label", True)
@@ -540,6 +582,7 @@ class ClientLabelDialog(QDialog):
         hd.setProperty("dialog", "desc")
         hd.setWordWrap(True)
         lay.addWidget(hd)
+        lay.addWidget(_layout_preview_row("client"))
 
         preview = QLabel()
         preview.setAlignment(Qt.AlignCenter)

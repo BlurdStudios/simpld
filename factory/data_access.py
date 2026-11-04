@@ -688,6 +688,27 @@ def set_company_logo(logo_b64: str) -> dict:
     return _svc.set_company_logo(logo_b64)
 
 
+def get_label_layout(template_id: str) -> dict:
+    if backend() == "lan":
+        return _lan_client().get_label_layout(template_id)
+    from . import services as _svc
+    return _svc.get_label_layout(template_id)
+
+
+def save_label_layout(template_id: str, layout: dict) -> dict:
+    if backend() == "lan":
+        return _lan_client().save_label_layout(template_id, layout)
+    from . import services as _svc
+    return _svc.save_label_layout(template_id, layout)
+
+
+def get_printer_probe(printer_name: str) -> dict | None:
+    if backend() == "lan":
+        return _lan_client().get_printer_probe(printer_name)
+    from . import services as _svc
+    return _svc.get_printer_probe(printer_name)
+
+
 def cancel_order(order_id: int) -> None:
     if backend() == "lan":
         _lan_client().cancel_order(order_id)
