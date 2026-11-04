@@ -32,6 +32,10 @@ class ActivateDialog(QDialog):
             mid = _LIC.machine_fingerprint() if _LIC else "?"
         except Exception:
             mid = "?"
+        try:
+            _stable = _LIC.stable_fingerprint() if _LIC else ""
+        except Exception:
+            _stable = ""
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(24, 24, 24, 20)
@@ -67,6 +71,19 @@ class ActivateDialog(QDialog):
         copy_btn.clicked.connect(self._copy_mid)
         row.addWidget(copy_btn)
         cl.addLayout(row)
+        # Stable ID note: either ID activates this PC (verify accepts
+        # both). Shown so a vendor issuing against the new stable hash
+        # can confirm it without guessing.
+        try:
+            if _stable and _stable != mid:
+                alt = QLabel(f"Stable ID: {_stable}  (either ID works)")
+                alt.setProperty("hint", True)
+                alt.setWordWrap(True)
+                alt.setTextInteractionFlags(
+                    Qt.TextInteractionFlag.TextSelectableByMouse)
+                cl.addWidget(alt)
+        except Exception:
+            pass
         outer.addWidget(card)
 
         self.tabs = QTabWidget()
@@ -150,16 +167,19 @@ class ActivateDialog(QDialog):
             return QMessageBox.warning(self, "Activate", str(e))
         ok, reason = LIC.verify_license(lic)
         if not ok:
+            try:
+                src = LIC.fingerprint_sources()
+                detail = (f"\n\nThis PC reports Machine ID {src.get('legacy')}"
+                          f" / Stable ID {src.get('stable')}.")
+            except Exception:
+                detail = ""
             return QMessageBox.warning(
                 self, "Activate",
                 f"This key is not valid for this computer:\n{reason}\n\n"
-                "Check the Machine ID matches the one sent to your vendor.")
+                "Check the Machine ID matches the one sent to your vendor."
+                f"{detail}")
         try:
-            dest = LIC.license_path()
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            with open(dest, "w", encoding="utf-8") as f:
-                json.dump(lic, f, indent=2, sort_keys=True)
-                f.write("\n")
+            dest = LIC.save_license_file(lic)
         except OSError as e:
             return QMessageBox.warning(
                 self, "Activate", f"Key is valid but could not be saved:\n{e}")
@@ -167,8 +187,14 @@ class ActivateDialog(QDialog):
             LIC.record_station()
         except Exception:
             pass
+        try:
+            loc = LIC.locate_license_file() or dest
+        except Exception:
+            loc = dest
         QMessageBox.information(
-            self, "Activate", f"Activated.\n{LIC.license_display()}")
+            self, "Activate",
+            f"Activated.\n{LIC.license_display()}\n\nSaved to:\n{loc}\n"
+            "No internet is needed to run — the licence is verified offline.")
         self.accept()
 
 

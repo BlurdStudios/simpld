@@ -359,19 +359,125 @@ def scale_port_present(port: str) -> bool | None:
         return None
 
 
+# ---- live-check caches (the 5s strip poll must never block the UI) ---------
+# QPrinterInfo.availablePrinters() hits the OS spooler and can take
+# seconds on a sick print server; pyserial enumeration is fast but still
+# a syscall per tick. Cache both: a slow spooler then costs one slow tick,
+# not one frozen UI per 5s.
+_PRINTER_CACHE: dict = {"at": 0.0, "names": None}
+_PRINTER_TTL_S = 15.0
+_PORTS_CACHE: dict = {"at": 0.0, "ports": None, "ok": False}
+_PORTS_TTL_S = 10.0
+
+
+def _cache_fresh(entry_at: float, ttl: float) -> bool:
+    try:
+        return (time.monotonic() - float(entry_at)) < float(ttl)
+    except Exception:
+        return False
+
+
+def cached_printers() -> list[str] | None:
+    """Printer queue names, cached. None when currently unknowable."""
+    # Tests patch qtprint.available_printers per-case: bypass the TTL
+    # cache when mocked so one test's queues never leak into the next.
+    try:
+        from . import qtprint as _qp
+        from . import autodetect as _auto
+        _fn = _qp.available_printers
+        if _auto._is_mock_fn(_fn):
+            try:
+                return list(_fn() or [])
+            except Exception:
+                return None
+    except Exception:
+        pass
+    if _cache_fresh(_PRINTER_CACHE.get("at", 0.0), _PRINTER_TTL_S):
+        return _PRINTER_CACHE.get("names")
+    try:
+        from .qtprint import available_printers
+        names = list(available_printers() or [])
+    except Exception:
+        return _PRINTER_CACHE.get("names")
+    # available_printers() returns [] both when there are no queues AND
+    # when Qt is missing/broken. Only cache the empty verdict when Qt is
+    # actually importable; otherwise keep the previous value (which may
+    # be None = unknowable, never flapping).
+    try:
+        from PySide6.QtPrintSupport import QPrinterInfo  # noqa: F401
+        qt_ok = True
+    except Exception:
+        qt_ok = False
+    if names or qt_ok:
+        _PRINTER_CACHE["names"] = names
+        _PRINTER_CACHE["at"] = time.monotonic()
+        return names
+    return _PRINTER_CACHE.get("names")
+
+
+def cached_scale_port_present(port: str) -> bool | None:
+    """Cached scale_port_present(). None when unknowable."""
+    want = str(port or "").strip()
+    if not want:
+        return None
+    # Tests patch essae.list_ports per-case: bypass the cache when mocked.
+    try:
+        from . import essae as _essae
+        from . import autodetect as _auto
+        if _auto._is_mock_fn(_essae.list_ports):
+            try:
+                return want in (list(_essae.list_ports() or []))
+            except Exception:
+                return None
+    except Exception:
+        pass
+    if _cache_fresh(_PORTS_CACHE.get("at", 0.0), _PORTS_TTL_S):
+        ports = _PORTS_CACHE.get("ports")
+        if ports is None and not _PORTS_CACHE.get("ok"):
+            return None
+        try:
+            return want in (ports or [])
+        except Exception:
+            return None
+    try:
+        from . import autodetect as _auto
+        ports, ok = _auto.list_ports_status()
+    except Exception:
+        return None
+    if not ok:
+        return None  # do not cache failures; retry next tick
+    _PORTS_CACHE["ports"] = list(ports)
+    _PORTS_CACHE["ok"] = True
+    _PORTS_CACHE["at"] = time.monotonic()
+    try:
+        return want in ports
+    except Exception:
+        return None
+
+
+def clear_live_caches() -> None:
+    """Test aid: force the next live tick to re-enumerate."""
+    try:
+        _PRINTER_CACHE["at"] = 0.0
+        _PORTS_CACHE["at"] = 0.0
+    except Exception:
+        pass
+
+
 def _printer_seen_hint() -> str | None:
     """Best-effort 'Seen N: a, b' summary for printer tooltips. None when
     the printer list cannot be read (no QApplication yet, Qt missing, …).
 
-    Display-only: never raises, never blocks. Keeps the operator from
-    guessing why detection says "not found".
+    Display-only: never raises, never blocks (uses the live-check cache).
+    Keeps the operator from guessing why detection says "not found".
     """
     try:
         from PySide6.QtWidgets import QApplication
         if QApplication.instance() is None:
             return None
-        from .qtprint import available_printers
-        names = available_printers()
+        names = cached_printers()
+        if names is None:
+            return None
     except Exception:
         return None
     if not names:
@@ -397,6 +503,10 @@ def live_device_status(key: str, cfg: dict | None = None) -> dict:
     unplugged USB printer fails explicitly at print time with the queue
     name in the error. A missing queue still reads setup, with the seen
     queue names in the hint.
+
+    Live checks are cached (printer list 15s, port list 10s) so the 5s
+    strip poll never blocks the UI on a slow spooler. A cache miss that
+    fails keeps the last verdict instead of flapping the pill.
     """
     if cfg is None:
         cfg = _config.load()
@@ -405,13 +515,15 @@ def live_device_status(key: str, cfg: dict | None = None) -> dict:
         return spec
     try:
         if key == SCALE:
-            if scale_port_present(str(cfg.get("scale_port") or "")) is False:
+            present = cached_scale_port_present(str(cfg.get("scale_port") or ""))
+            if present is False:
                 return {**spec, "state": "setup", "detail": "not found",
                         "hint": "Click to detect again."}
         elif key == PRINTER:
-            from .qtprint import available_printers
             name = str(cfg.get("printer_name") or "")
-            seen = available_printers()
+            seen = cached_printers()
+            if seen is None:
+                return spec  # unknowable right now — keep last verdict
             if name not in seen:
                 hint = "Click to detect again."
                 shown = ", ".join(seen[:4])

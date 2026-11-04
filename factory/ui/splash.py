@@ -213,21 +213,34 @@ class AboutDialog(QDialog):
                     pass
 
             def _do_import():
-                import shutil
                 p, _ = QFileDialog.getOpenFileName(
                     imp_btn, "Import licence file", "",
                     "Licence (*.lic);;All (*)")
                 if not p:
                     return
                 try:
-                    dest = _LIC.license_path()
-                    os.makedirs(os.path.dirname(dest), exist_ok=True)
-                    shutil.copyfile(p, dest)
+                    import json as _json
+                    with open(p, "r", encoding="utf-8") as _f:
+                        _lic = _json.load(_f)
+                    ok, reason = _LIC.verify_license(_lic)
+                    if not ok:
+                        QMessageBox.warning(
+                            imp_btn, "Licence",
+                            f"This licence is not valid for this computer:\n{reason}")
+                        return
+                    dest = _LIC.save_license_file(_lic)
                     st2 = _LIC.license_status()
                     lic_lbl.setText(_LIC.license_display(st2))
+                    try:
+                        parent = self.parent()
+                        if parent is not None and hasattr(
+                                parent, "_refresh_license_banner"):
+                            parent._refresh_license_banner()
+                    except Exception:
+                        pass
                     QMessageBox.information(
                         imp_btn, "Licence",
-                        f"Imported.\n{_LIC.license_display(st2)}")
+                        f"Imported.\n{_LIC.license_display(st2)}\n\nSaved to:\n{dest}")
                 except Exception as e:
                     QMessageBox.warning(imp_btn, "Licence",
                                         f"Could not import:\n{e}")

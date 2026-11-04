@@ -24,8 +24,20 @@ hardware surface.
 
 Detection runs on a worker thread (`DetectionController`), so probing ports
 never blocks the UI. It fires once at startup (`MainWindow.detect_devices()`).
-A probe that finds nothing forgets the stored entry (unless an env override
-pins it), so a vanished device reads "not found" instead of "ready".
+A probe that finds nothing clears the stored entry (unless an env override
+pins it), so a vanished device reads "not found" instead of "ready" — but
+only when enumeration itself succeeded (pyserial present / printer list
+readable). An inconclusive probe (missing pyserial, spooler error,
+exception) keeps the stored config and logs the failure instead of wiping
+`hardware.json`.
+
+Prod bounds: the scale sweep has an ~8s budget (configured port first, then
+all ports at 9600, fallback bauds only with time left) and a full run has a
+~12s deadline; the controller adds a 30s failsafe so the pills can never
+stick on "detecting" even if a driver hangs. Threads are fully cleaned up
+(quit + bounded wait + deleteLater) on every run. Live pills are cached
+(printer list 15s, port list 10s) so the 5s poll never blocks the UI on a
+slow spooler; a detection error surfaces once as a toast + Refresh tooltip.
 
 ## Realtime pills (live presence, display only)
 

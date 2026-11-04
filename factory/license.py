@@ -68,10 +68,25 @@ def machine_fingerprint() -> str:
 
     Order: SIMPLD_TEST_FP override (tests) → /sys/class/dmi UUID (linux) →
     wmic UUID (windows) → MAC fallback. Always returns a hex string.
+
+    Kept byte-identical to the original algorithm so every already-issued
+    licence keeps verifying. New code should prefer
+    candidate_fingerprints()/verify_license, which accept the newer stable
+    ID as well (see below). Offline note: uuid.getnode() reads the NIC,
+    not the network — unplugging the cable does NOT change it. What CAN
+    change it is adding/removing a USB NIC (the "first" NIC moves), which
+    is why verify accepts several candidates instead of one exact hash.
     """
     override = _test_fp()
     if override:
         return hashlib.sha256(f"test:{override}".encode()).hexdigest()[:32]
+    raw, mac_s = _legacy_parts()
+    seed = raw or f"mac:{mac_s}"
+    return hashlib.sha256(f"{seed}|{mac_s}".encode()).hexdigest()[:32]
+
+
+def _legacy_parts() -> tuple[str, str]:
+    """Split legacy fingerprint into (board_part, mac_hex) for reuse."""
     raw = ""
     try:
         for p in ("/sys/class/dmi/id/product_uuid",
@@ -102,8 +117,172 @@ def machine_fingerprint() -> str:
         mac_s = f"{mac:012x}"
     except Exception:
         mac_s = "nomac"
-    seed = raw or f"mac:{mac_s}"
-    return hashlib.sha256(f"{seed}|{mac_s}".encode()).hexdigest()[:32]
+    return raw, mac_s
+
+
+def _real_mac_hexes() -> list[str]:
+    """Physical MACs, excluding uuid.getnode()'s random fallback.
+
+    getnode() returns a random 48-bit value with the multicast bit set
+    when it cannot read a real NIC. That value changes per call/boot and
+    must never seed a stable ID — filter it out here.
+    """
+    out: list[str] = []
+    try:
+        node = uuid.getnode()
+        # Multicast bit (LSB of first octet) set => random, not a real MAC.
+        if ((node >> 40) & 0x01) == 0:
+            out.append(f"{node:012x}")
+    except Exception:
+        pass
+    # Linux: enumerate stable NIC addresses directly (offline-safe: MACs
+    # do not disappear when the cable is unplugged).
+    try:
+        netdir = "/sys/class/net"
+        if os.path.isdir(netdir):
+            for iface in sorted(os.listdir(netdir)):
+                if iface == "lo":
+                    continue
+                ap = os.path.join(netdir, iface, "address")
+                try:
+                    with open(ap, "r", errors="replace") as f:
+                        mac = f.read().strip().lower().replace("-", ":")
+                    parts = mac.split(":")
+                    if len(parts) == 6 and all(
+                            len(p) == 2 for p in parts):
+                        if mac not in ("00:00:00:00:00:00",
+                                       "ff:ff:ff:ff:ff:ff"):
+                            out.append(mac.replace(":", ""))
+                except OSError:
+                    continue
+    except Exception:
+        pass
+    # De-dupe, preserve order.
+    seen: set[str] = set()
+    uniq = []
+    for m in out:
+        if m not in seen:
+            seen.add(m)
+            uniq.append(m)
+    return uniq
+
+
+def _stable_board_base() -> str:
+    """Most-stable board identity, independent of NIC churn.
+
+    Order: Windows MachineGuid (registry, survives NIC/USB changes) →
+    Linux /etc/machine-id → DMI product UUID → wmic UUID → "".
+    This is the value new licences are bound to; verify() still accepts
+    the legacy hash so already-issued licences keep working offline.
+    """
+    if os.name == "nt":
+        try:
+            import winreg
+            with winreg.OpenKey(
+                    winreg.HKEY_LOCAL_MACHINE,
+                    r"SOFTWARE\Microsoft\Cryptography") as k:
+                guid, _ = winreg.QueryValueEx(k, "MachineGuid")
+            guid = str(guid or "").strip()
+            if guid and "00000000" not in guid:
+                return f"guid:{guid.lower()}"
+        except Exception:
+            pass
+    for p in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+        try:
+            if os.path.isfile(p):
+                with open(p, "r", errors="replace") as f:
+                    v = f.read().strip().lower()
+                if v and "00000000" not in v and len(v) >= 8:
+                    return f"mid:{v}"
+        except OSError:
+            pass
+    raw, _ = _legacy_parts()
+    if raw:
+        return raw
+    return ""
+
+
+def stable_fingerprint() -> str:
+    """New stable board ID (NIC-independent). Same 32-hex shape as legacy."""
+    override = _test_fp()
+    if override:
+        return hashlib.sha256(f"test:{override}".encode()).hexdigest()[:32]
+    base = _stable_board_base()
+    if not base:
+        # No stable source at all: fall back to legacy so we always
+        # return something rather than erroring the activation gate.
+        return machine_fingerprint()
+    return hashlib.sha256(f"stable-v1:{base}".encode()).hexdigest()[:32]
+
+
+def candidate_fingerprints() -> list[str]:
+    """Every fingerprint this board legitimately answers to.
+
+    verify_license() accepts ANY of these, so:
+    - licences issued against the legacy hash keep working,
+    - licences issued against the new stable hash keep working,
+    - a USB NIC swap (which moves uuid.getnode) does not invalidate
+      the install while offline.
+    Order: legacy first (what Activate shows today), stable second.
+    """
+    override = _test_fp()
+    if override:
+        # Tests pin the board: exactly one deterministic candidate.
+        fp = machine_fingerprint()
+        return [fp]
+    out = [machine_fingerprint()]
+    try:
+        st = stable_fingerprint()
+        if st not in out:
+            out.append(st)
+    except Exception:
+        pass
+    # Per-NIC legacy variants: if the board ever answered with a
+    # different "first NIC", that hash is also accepted.
+    try:
+        raw, _ = _legacy_parts()
+        for m in _real_mac_hexes()[1:]:
+            seed = raw or f"mac:{m}"
+            v = hashlib.sha256(f"{seed}|{m}".encode()).hexdigest()[:32]
+            if v not in out:
+                out.append(v)
+    except Exception:
+        pass
+    return out
+
+
+def fingerprint_sources() -> dict:
+    """Diagnostics for the Activate screen / simpld.log (never raises)."""
+    try:
+        raw, mac_s = _legacy_parts()
+    except Exception:
+        raw, mac_s = "", "?"
+    try:
+        base = _stable_board_base()
+    except Exception:
+        base = "?"
+    try:
+        cands = candidate_fingerprints()
+    except Exception:
+        cands = []
+    return {"legacy": machine_fingerprint_safe(),
+            "stable": stable_fingerprint_safe(),
+            "board_part": raw, "mac": mac_s,
+            "stable_base": base, "candidates": cands}
+
+
+def machine_fingerprint_safe() -> str:
+    try:
+        return machine_fingerprint()
+    except Exception:
+        return "?"
+
+
+def stable_fingerprint_safe() -> str:
+    try:
+        return stable_fingerprint()
+    except Exception:
+        return "?"
 
 
 def _app_dir() -> str:
@@ -115,48 +294,131 @@ def _app_dir() -> str:
         return os.path.join(base, "data")
 
 
-def license_path() -> str:
+def _candidate_license_paths() -> list[str]:
+    """Every location a licence may live in, primary first.
+
+    Windows factory PCs are multi-user: an activation done as admin
+    (LOCALAPPDATA=C:\\Users\\Admin\\...) was invisible to the operator
+    account, so the app asked for activation again — looking exactly
+    like "goes to licence page when offline". Primary is now the
+    all-users ProgramData/Simpld (shared), with the old per-user paths
+    kept as fallbacks so already-issued installs keep working.
+    """
     env = (os.environ.get("SIMPLD_LICENSE_PATH") or "").strip()
     if env:
-        return os.path.abspath(os.path.expanduser(env))
+        return [os.path.abspath(os.path.expanduser(env))]
     if os.name == "nt":
-        base = (os.environ.get("LOCALAPPDATA")
-                or os.environ.get("APPDATA")
-                or os.environ.get("USERPROFILE")
-                or os.path.expanduser("~"))
-        return os.path.join(base, "Simpld", "license.lic")
-    return os.path.join(_app_dir(), "license.lic")
+        seen: list[str] = []
+        programdata = (os.environ.get("PROGRAMDATA")
+                       or r"C:\ProgramData")
+        seen.append(os.path.join(programdata, "Simpld", "license.lic"))
+        for key in ("LOCALAPPDATA", "APPDATA"):
+            base = (os.environ.get(key) or "").strip()
+            if base:
+                p = os.path.join(base, "Simpld", "license.lic")
+                if p not in seen:
+                    seen.append(p)
+        up = (os.environ.get("USERPROFILE") or os.path.expanduser("~"))
+        p = os.path.join(up, "Simpld", "license.lic")
+        if p not in seen:
+            seen.append(p)
+        try:
+            legacy = os.path.join(_app_dir(), "license.lic")
+            if legacy not in seen:
+                seen.append(legacy)
+        except Exception:
+            pass
+        return seen
+    return [os.path.join(_app_dir(), "license.lic")]
+
+
+def license_path() -> str:
+    return _candidate_license_paths()[0]
+
+
+def _candidate_station_paths() -> list[str]:
+    env = (os.environ.get("SIMPLD_STATION_PATH") or "").strip()
+    if env:
+        return [os.path.abspath(os.path.expanduser(env))]
+    if os.name == "nt":
+        seen: list[str] = []
+        programdata = (os.environ.get("PROGRAMDATA")
+                       or r"C:\ProgramData")
+        seen.append(os.path.join(programdata, "Simpld", "station.id"))
+        for key in ("LOCALAPPDATA", "APPDATA"):
+            base = (os.environ.get(key) or "").strip()
+            if base:
+                p = os.path.join(base, "Simpld", "station.id")
+                if p not in seen:
+                    seen.append(p)
+        return seen
+    return [os.path.join(_app_dir(), "station.id")]
 
 
 def station_file_path() -> str:
-    if os.name == "nt":
-        base = (os.environ.get("LOCALAPPDATA")
-                or os.environ.get("APPDATA")
-                or os.environ.get("USERPROFILE")
-                or os.path.expanduser("~"))
-        return os.path.join(base, "Simpld", "station.id")
-    return os.path.join(_app_dir(), "station.id")
+    return _candidate_station_paths()[0]
 
 
 def station_id() -> str:
-    """Persistent per-machine station UUID (dispatcher identity)."""
-    p = station_file_path()
-    try:
-        if os.path.isfile(p):
-            with open(p, "r", errors="replace") as f:
-                v = f.read().strip()
-            if v:
-                return v
-    except OSError:
-        pass
+    """Persistent per-machine station UUID (dispatcher identity).
+
+    Reads every known location (per-user legacy first for continuity),
+    writes new IDs to the shared primary path.
+    """
+    for p in _candidate_station_paths():
+        try:
+            if os.path.isfile(p):
+                with open(p, "r", errors="replace") as f:
+                    v = f.read().strip()
+                if v:
+                    return v
+        except OSError:
+            continue
     v = uuid.uuid4().hex
     try:
+        p = station_file_path()
         os.makedirs(os.path.dirname(p), exist_ok=True)
-        with open(p, "w") as f:
-            f.write(v)
+        _atomic_write_text(p, v)
     except OSError:
         pass
     return v
+
+
+def _atomic_write_text(path: str, text: str) -> None:
+    """Write text atomically (temp + os.replace) so a power cut during
+    activation never leaves a half-written licence/station file."""
+    d = os.path.dirname(os.path.abspath(path))
+    os.makedirs(d, exist_ok=True)
+    tmp = os.path.join(d, f".tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+        try:
+            f.flush()
+            os.fsync(f.fileno())
+        except OSError:
+            pass
+    os.replace(tmp, path)
+
+
+def save_license_file(lic: dict, path: str | None = None) -> str:
+    """Persist a verified licence atomically. Returns the path written."""
+    dest = path or license_path()
+    payload = json.dumps(lic, indent=2, sort_keys=True) + "\n"
+    _atomic_write_text(dest, payload)
+    # Backfill legacy per-user path when primary is the shared one, so
+    # an older build (or a second login) that only reads the legacy
+    # location still finds the licence.
+    try:
+        for alt in _candidate_license_paths()[1:]:
+            try:
+                if os.path.isfile(alt):
+                    continue
+                _atomic_write_text(alt, payload)
+            except OSError:
+                continue
+    except Exception:
+        pass
+    return dest
 
 
 def _canonical_bytes(payload: dict) -> bytes:
@@ -194,14 +456,41 @@ def _parse_day(s: str | None) -> date | None:
 
 
 def load_license(path: str | None = None) -> dict | None:
-    """Read the licence file. None when missing/unreadable (not an error)."""
-    p = path or license_path()
-    try:
-        with open(p, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else None
-    except (OSError, ValueError):
-        return None
+    """Read the licence file. None when missing/unreadable (not an error).
+
+    With no explicit path, every known location is tried in order
+    (shared ProgramData first, per-user legacy after), so an activation
+    done under a different Windows account is still found offline.
+    """
+    if path:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else None
+        except (OSError, ValueError):
+            return None
+    for p in _candidate_license_paths():
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def locate_license_file() -> str | None:
+    """Path of the licence file actually in use, or None when absent."""
+    for p in _candidate_license_paths():
+        try:
+            if os.path.isfile(p):
+                with open(p, "r", encoding="utf-8") as f:
+                    if isinstance(json.load(f), dict):
+                        return p
+        except (OSError, ValueError):
+            continue
+    return None
 
 
 def verify_license(lic: dict | None,
@@ -233,7 +522,7 @@ def verify_license(lic: dict | None,
         return False, "licence signature invalid — contact admin"
     try:
         fp = str(lic.get("packager_fp") or "").strip()
-        if fp and fp != machine_fingerprint():
+        if fp and fp not in candidate_fingerprints():
             return False, ("licence is bound to another computer"
                            " (packager_fp mismatch) — contact admin")
     except Exception:
@@ -354,6 +643,56 @@ def is_trial_license(lic: dict | None = None) -> bool:
         return bool(lic) and str((lic or {}).get("edition") or "") == "trial"
     except Exception:
         return False
+
+
+def window_title_suffix(st: dict | None = None) -> str:
+    """Short plan tag for the window title: ' · Pro' / ' · Trial · 12d left'.
+
+    Days-left is shown for trial licences only (per floor request); other
+    editions show just the plan. Returns '' when unlicensed/unknown so the
+    title falls back to version + user only.
+    """
+    try:
+        st = st if st is not None else license_status()
+        lic = st.get("lic") or {}
+        ed = str(lic.get("edition") or "").strip()
+        if not ed or st.get("state") in ("none", "invalid"):
+            return ""
+        label = ed.capitalize()
+        if ed == "trial":
+            left = license_days_left(lic if lic else None)
+            if left is None:
+                return f" · {label}"
+            if left < 0:
+                return f" · {label} expired"
+            if left == 0:
+                return f" · {label} expires today"
+            return f" · {label} · {left}d left"
+        return f" · {label}"
+    except Exception:
+        return ""
+
+
+def full_window_title(username: str = "", role: str = "",
+                      st: dict | None = None) -> str:
+    """'Simpl'd vX.Y.Z — user (role) · Plan [· Nd left]' for MainWindow."""
+    try:
+        from .version import VERSION as _v
+    except Exception:
+        _v = "?"
+    base = f"Simpl'd v{_v}"
+    who = (username or "").strip()
+    if who:
+        base += f" — {who}"
+        if (role or "").strip():
+            base += f" ({role.strip()})"
+    elif (role or "").strip():
+        base += f" — ({role.strip()})"
+    try:
+        base += window_title_suffix(st)
+    except Exception:
+        pass
+    return base
 
 
 # ---------- station registry (packager DB; dispatcher inherits) ----------

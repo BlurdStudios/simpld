@@ -58,27 +58,60 @@ class _DetectWorker(QObject):
         self._keys = keys
 
     def run(self) -> None:
+        import logging as _logging
+        import time as _time
+        _t0 = _time.monotonic()
         try:
             if self._keys is None:
                 result = Auto.detect_all(save=True)
             else:
                 # One pill was clicked: re-detect just that device.
                 result = Auto.detect_one(self._keys[0], save=True)
+            if not isinstance(result, dict):
+                result = {"scale": None, "printer": None,
+                          "error": "detection returned nothing"}
         except Exception as e:            # never let a worker die silently
+            _logging.getLogger("simpld.hardware").warning(
+                "detection worker failed: %s", e, exc_info=True)
             result = {"scale": None, "printer": None, "error": str(e)}
-        self.done.emit(result)
+        try:
+            result.setdefault("elapsed", round(_time.monotonic() - _t0, 2))
+        except Exception:
+            pass
+        try:
+            self.done.emit(result)
+        except Exception:
+            pass
 
 
 class DetectionController(QObject):
-    """Owns the worker thread so detection can't be launched twice at once."""
+    """Owns the worker thread so detection can't be launched twice at once.
+
+    Prod guarantees:
+    - busy() is always accurate: a failsafe timer clears a stuck run even
+      if the worker thread dies without emitting done.
+    - Threads are fully cleaned up (quit + wait + deleteLater) so repeated
+      Refresh clicks cannot leak QThreads.
+    - A second start() while busy is ignored (returns False); every strip
+      refreshes from the single `finished` signal.
+    """
 
     finished = Signal(dict)
+
+    # Failsafe: even a hung serial driver must not wedge the pills in
+    # "detecting" forever. Autodetect budgets ~12s; 30s here is the outer
+    # "something is very wrong" net (worker killed, thread joined).
+    FAILSAFE_MS = 30000
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._thread: QThread | None = None
+        self._worker: QObject | None = None
         self._busy = False
         self._keys: tuple[str, ...] | None = None
+        self._failsafe: QTimer | None = None
+        self.last_result: dict | None = None
+        self.last_error: str = ""
 
     def busy(self) -> bool:
         return self._busy
@@ -88,6 +121,7 @@ class DetectionController(QObject):
             return False
         self._busy = True
         self._keys = keys
+        self.last_error = ""
         HWStatus.set_detecting(keys)
 
         thread = QThread()
@@ -95,20 +129,97 @@ class DetectionController(QObject):
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.done.connect(self._on_done)
-        thread.start()
+        # If the thread itself fails to start, do not wedge the UI.
+        try:
+            thread.start()
+        except Exception as e:
+            self.last_error = str(e)
+            HWStatus.clear_detecting()
+            self._busy = False
+            try:
+                worker.deleteLater()
+                thread.deleteLater()
+            except Exception:
+                pass
+            return False
         self._thread = thread
         self._worker = worker
+        try:
+            self._failsafe = QTimer(self)
+            self._failsafe.setSingleShot(True)
+            self._failsafe.timeout.connect(self._on_failsafe)
+            self._failsafe.start(self.FAILSAFE_MS)
+        except Exception:
+            self._failsafe = None
         return True
 
+    def cancel(self) -> None:
+        """Best-effort stop (used by tests / shutdown paths)."""
+        thread = self._thread
+        if thread is not None:
+            try:
+                thread.quit()
+                thread.wait(1500)
+            except Exception:
+                pass
+
+    def _on_failsafe(self) -> None:
+        if not self._busy:
+            return
+        import logging as _logging
+        _logging.getLogger("simpld.hardware").warning(
+            "detection failsafe fired after %dms with keys=%r — "
+            "clearing stuck 'detecting' state", self.FAILSAFE_MS, self._keys)
+        self._finish({"scale": None, "printer": None,
+                      "error": "detection timed out — check cables and click Refresh"})
+
     def _on_done(self, result: dict) -> None:
+        self._finish(result if isinstance(result, dict) else {})
+
+    def _finish(self, result: dict) -> None:
+        try:
+            if self._failsafe is not None:
+                self._failsafe.stop()
+        except Exception:
+            pass
+        self._failsafe = None
         HWStatus.clear_detecting()
         self._busy = False
-        thread = self._thread
+        thread, worker = self._thread, self._worker
         self._thread = None
+        self._worker = None
         if thread is not None:
-            thread.quit()
-            thread.wait(2000)
-        self.finished.emit(result)
+            try:
+                thread.quit()
+                # Wait off the worker thread (this slot runs on the GUI
+                # thread via queued connection), bounded so a hung
+                # driver cannot freeze the UI at Refresh time.
+                if thread.isRunning():
+                    thread.wait(3000)
+            except Exception:
+                pass
+            try:
+                thread.deleteLater()
+            except Exception:
+                pass
+        if worker is not None:
+            try:
+                worker.deleteLater()
+            except Exception:
+                pass
+        try:
+            self.last_result = dict(result)
+            err = result.get("error") or ""
+            errs = result.get("errors") or []
+            if errs and not err:
+                err = "; ".join(str(e) for e in errs[:3])
+            self.last_error = str(err)
+        except Exception:
+            pass
+        try:
+            self.finished.emit(result)
+        except Exception:
+            pass
 
 
 _shared_ctrl: "DetectionController | None" = None
@@ -123,10 +234,33 @@ def shared_controller() -> "DetectionController":
     connected to `finished` and will refresh.
     """
     global _shared_ctrl
-    if _shared_ctrl is None:
+    try:
         from PySide6.QtWidgets import QApplication
-        _shared_ctrl = DetectionController(QApplication.instance())
+        app = QApplication.instance()
+    except Exception:
+        app = None
+    # Recreate when the QApplication died (tests create/destroy apps) or
+    # when the controller lost its parent.
+    if _shared_ctrl is None:
+        _shared_ctrl = DetectionController(app)
+    else:
+        try:
+            if app is not None and _shared_ctrl.parent() is None:
+                _shared_ctrl.setParent(app)
+        except Exception:
+            pass
     return _shared_ctrl
+
+
+def reset_shared_controller() -> None:
+    """Test aid: drop the shared controller so a fresh QApplication binds."""
+    global _shared_ctrl
+    try:
+        if _shared_ctrl is not None:
+            _shared_ctrl.cancel()
+    except Exception:
+        pass
+    _shared_ctrl = None
 
 
 class DevicePill(QFrame):
@@ -378,6 +512,29 @@ class DeviceStrip(QWidget):
 
     def _on_detected(self, result: dict) -> None:
         self.refresh()
+        try:
+            result = result or {}
+            err = str(result.get("error") or "")
+            errs = result.get("errors") or []
+            if errs and not err:
+                err = "; ".join(str(e) for e in errs[:3])
+            if err:
+                # Detection finished but something failed: surface it once
+                # per strip so "detecting" resolving into silence is never
+                # mistaken for success. Pills already show not-found; this
+                # explains WHY (cable? spooler? timeout?).
+                self.btn_refresh.setToolTip(
+                    f"Last detection issue: {err[:220]} — click to retry.")
+                try:
+                    from factory.ui.toast import toast
+                    toast(self, f"Detection issue: {err[:220]}", ok=False)
+                except Exception:
+                    pass
+            else:
+                self.btn_refresh.setToolTip(
+                    "Detect the factory hardware again.")
+        except Exception:
+            pass
         self.detected.emit(result)
 
     def refresh(self) -> None:

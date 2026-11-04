@@ -112,6 +112,16 @@ def main():
         _st = _LIC.license_status()
         os.environ["SIMPLD_LICENSE_STATE"] = str(_st.get("state") or "")
         print(f"[license] {_LIC.license_display(_st)}", flush=True)
+        try:
+            _loc = _LIC.locate_license_file()
+            print(f"[license] file: {_loc or '(none found)'}", flush=True)
+            if _st.get("state") in ("none", "invalid"):
+                _src = _LIC.fingerprint_sources()
+                print(f"[license] board: legacy={_src.get('legacy')} "
+                      f"stable={_src.get('stable')} "
+                      f"base={_src.get('stable_base')}", flush=True)
+        except Exception:
+            pass
         if not DA.is_lan() and _st.get("state") in ("ok", "expiring", "grace"):
             try:
                 _LIC.record_station()

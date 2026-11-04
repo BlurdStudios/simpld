@@ -164,10 +164,15 @@ class MainWindow(QMainWindow):
             raise PermissionError(f"Unknown role '{role}' (denied)")
         self.user = actor
         user = actor
-        # Theme lives on the QApplication (see run.py). Do NOT set it here:
-        # a second copy on the window fights the app one for subcontrols
-        # (combo arrows, indicators) and dialogs stop inheriting it.
-        self.setWindowTitle(f"Simpl'd — {user.get('username','')} ({role})")
+        # Window title always carries version + plan (trial adds days left):
+        # "Simpl'd v1.4.2 — user (role) · Trial · 12d left". Offline-safe,
+        # computed from the local licence file only.
+        try:
+            from factory import license as _LICt
+            self.setWindowTitle(_LICt.full_window_title(
+                str(user.get("username", "")), str(role)))
+        except Exception:
+            self.setWindowTitle(f"Simpl'd — {user.get('username','')} ({role})")
         self.resize(1320, 840)
         self.setMinimumSize(1080, 680)
 
@@ -410,26 +415,25 @@ class MainWindow(QMainWindow):
         whose licence this copy runs under), plus a vivid timer when a
         trial is active or any licence nears expiry.
 
-        Trial licences also stamp the window title (TRIAL · Nd left) so the
-        mode is visible even with the sidebar collapsed.
+        The window title always carries version + plan (trial adds days
+        left) so the mode is visible even with the sidebar collapsed.
         """
         try:
             from factory import license as _LIC
             from factory.ui.styles import set_banner
             st = _LIC.license_status()
+            try:
+                _u = getattr(self, "user", {}) or {}
+                self.setWindowTitle(_LIC.full_window_title(
+                    str(_u.get("username", "")), str(_u.get("role", "")), st))
+            except Exception:
+                pass
             lic = st.get("lic") or {}
             ed = str(lic.get("edition") or "")
             state = str(st.get("state") or "")
             left = _LIC.license_days_left(lic if lic else None)
             cust = str(lic.get("customer") or "").strip()
             who = f"{cust} · {ed}" if cust and ed else (cust or ed or "")
-            try:
-                _user = getattr(self, "user", {}) or {}
-                _base = f"Simpl'd — {_user.get('username', '')} ({_user.get('role', '')})"
-            except Exception:
-                _base = str(self.windowTitle() or "Simpl'd")
-            if ed == "trial" and left is not None and left >= 0:
-                self.setWindowTitle(f"{_base} — TRIAL · {left}d left")
             if state in ("none", "invalid", "blocked"):
                 self.lic_label.setText(f"⚠ {st.get('reason') or state}")
                 set_banner(self.lic_label, "err")
