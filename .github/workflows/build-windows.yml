@@ -187,10 +187,62 @@ jobs:
           }
           echo "exe version resource OK: $($vi.ProductVersion)"
 
+      # Code signing (removes SmartScreen "Unknown publisher" + Smart App
+      # Control blocks — see UPDATES.md "Code signing"). Runs only when the
+      # repo has WINDOWS_CERT_PFX_B64 (+ optional WINDOWS_CERT_PASSWORD);
+      # otherwise the build ships unsigned exactly as before. The exe is
+      # signed BEFORE Inno embeds it; the installer is signed after (the
+      # .sha256 below then covers the signed bytes).
+      - name: Sign the exe (when a certificate is configured)
+        shell: pwsh
+        env:
+          CERT_PFX_B64: ${{ secrets.WINDOWS_CERT_PFX_B64 }}
+          CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          if (-not $env:CERT_PFX_B64) {
+            echo "No signing certificate configured — shipping unsigned."
+            exit 0
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP "simpld-sign.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CERT_PFX_B64))
+          $signtool = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
+            Where-Object { $_.FullName -match "x64" } | Select-Object -First 1).FullName
+          if (-not $signtool) { throw "signtool.exe not found on the runner" }
+          $pwArg = @()
+          if ($env:CERT_PASSWORD) { $pwArg = @("/p", $env:CERT_PASSWORD) }
+          & $signtool sign /fd SHA256 /f $pfx @pwArg /tr http://timestamp.digicert.com /td SHA256 "dist/Simpld/Simpld.exe"
+          if ($LASTEXITCODE -ne 0) { throw "signing Simpld.exe failed" }
+          Remove-Item $pfx -Force
+          echo "Simpld.exe signed."
+
       - name: Compile installer (Inno Setup)
         run: |
           choco install innosetup -y
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DMyAppVersion=$env:APP_VERSION build\windows\simpld.iss
+
+      - name: Sign the installer (when a certificate is configured)
+        shell: pwsh
+        env:
+          CERT_PFX_B64: ${{ secrets.WINDOWS_CERT_PFX_B64 }}
+          CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          if (-not $env:CERT_PFX_B64) {
+            echo "No signing certificate configured — shipping unsigned."
+            exit 0
+          }
+          $exe = (Get-ChildItem dist/Simpld-Setup-*.exe | Select-Object -First 1).FullName
+          if (-not $exe) { throw "installer missing" }
+          $pfx = Join-Path $env:RUNNER_TEMP "simpld-sign.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CERT_PFX_B64))
+          $signtool = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
+            Where-Object { $_.FullName -match "x64" } | Select-Object -First 1).FullName
+          if (-not $signtool) { throw "signtool.exe not found on the runner" }
+          $pwArg = @()
+          if ($env:CERT_PASSWORD) { $pwArg = @("/p", $env:CERT_PASSWORD) }
+          & $signtool sign /fd SHA256 /f $pfx @pwArg /tr http://timestamp.digicert.com /td SHA256 $exe
+          if ($LASTEXITCODE -ne 0) { throw "signing the installer failed" }
+          Remove-Item $pfx -Force
+          echo "Installer signed."
 
       - name: Write installer checksum (.sha256)
         shell: pwsh

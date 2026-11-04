@@ -48,8 +48,22 @@ Compression=lzma2/max
 SolidCompression=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+; Floor requirement: 64-bit Windows 10 or newer (PySide6 6.x + Python 3.12
+; need it too). The updater checks this BEFORE quitting for an install
+; (factory/updater.py _install_block_reason) so an old PC gets a readable
+; error instead of a silent installer exit. Keep MinVersion truthful.
 MinVersion=10.0
 PrivilegesRequired=admin
+; Code signing (removes the SmartScreen "Unknown publisher" warning and the
+; Smart App Control block — both are purely "this file is unsigned", the
+; SHA-256 + HTTPS story in UPDATES.md is unchanged). Unsigned builds compile
+; fine without it: CI signs only when WINDOWS_CERT_PFX_B64 is configured
+; (see .github/workflows/build-windows.yml + UPDATES.md "Code signing").
+; To sign locally with a PFX on the build PC, uncomment the next two lines
+; and compile with:
+;   iscc /Ssigntool="signtool sign /fd SHA256 /f cert.pfx /p $qSECRET$q /tr http://timestamp.digicert.com /td SHA256 $f" /DMyAppVersion=<version> build\windows\simpld.iss
+;SignTool=signtool
+;SignedUninstaller=yes
 WizardStyle=modern
 UninstallDisplayName={#MyAppName}
 CloseApplications=yes

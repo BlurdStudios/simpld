@@ -55,6 +55,7 @@ import os
 import re
 import ssl
 import subprocess
+import sys
 import tempfile
 import urllib.error
 import urllib.parse
@@ -528,6 +529,47 @@ def _unlink_quiet(path: str) -> None:
         pass
 
 
+def _install_block_reason(major: int | None = None,
+                          is_64bit: bool | None = None) -> str | None:
+    """Why this PC cannot run the installer, or None when it can.
+
+    Pure (takes the OS facts as arguments) so tests cover it without
+    mocking the platform. The live values come from sys.getwindowsversion
+    and sys.maxsize in install_and_relaunch.
+
+    The whole stack — PySide6 6.x, Python 3.12, the Inno installer
+    (MinVersion=10.0, x64) — needs 64-bit Windows 10 or newer. Older
+    Windows must be told so UP FRONT with a readable error: with
+    /SILENT + /SUPPRESSMSGBOXES Inno would otherwise exit silently and
+    the app has already quit for the install, which reads as "the
+    update does nothing".
+    """
+    try:
+        bits64 = bool(sys.maxsize > 2**32) if is_64bit is None else bool(is_64bit)
+    except Exception:
+        bits64 = True
+    if major is None:
+        try:
+            major = int(sys.getwindowsversion().major)
+        except Exception:
+            return ("could not determine the Windows version — install "
+                    "Simpld-Setup manually to stay safe")
+    try:
+        major = int(major)
+    except (TypeError, ValueError):
+        return ("could not determine the Windows version — install "
+                "Simpld-Setup manually to stay safe")
+    if major < 10:
+        return ("this PC runs Windows %d — Simpl'd updates need 64-bit "
+                "Windows 10 or newer (the app itself needs it too). "
+                "Install manually on a supported PC instead" % major)
+    if not bits64:
+        return ("this is a 32-bit Windows install — Simpl'd ships 64-bit "
+                "only. Reinstall Windows 64-bit or stay on the current "
+                "version")
+    return None
+
+
 def install_and_relaunch(installer_path: str) -> None:
     """Start the Inno Setup installer silently. Windows only.
 
@@ -538,6 +580,9 @@ def install_and_relaunch(installer_path: str) -> None:
     if os.name != "nt":
         raise UpdateError(
             "automatic install is Windows-only — run the installer manually")
+    block = _install_block_reason()
+    if block is not None:
+        raise UpdateError(block)
     if not os.path.isfile(installer_path):
         raise UpdateError("the downloaded installer is missing")
     args = [installer_path, "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART",

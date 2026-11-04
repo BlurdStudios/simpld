@@ -294,6 +294,22 @@ def test_install_refuses_non_windows(tmp_path):
         U.install_and_relaunch(str(p))
 
 
+def test_install_block_reason_os_gate():
+    # Supported: Win10/11 64-bit.
+    assert U._install_block_reason(major=10, is_64bit=True) is None
+    assert U._install_block_reason(major=11, is_64bit=True) is None
+    # Older Windows: clear refusal, never a silent installer death.
+    old = U._install_block_reason(major=6, is_64bit=True)
+    assert isinstance(old, str) and "Windows 10" in old
+    old32 = U._install_block_reason(major=7, is_64bit=False)
+    assert isinstance(old32, str) and "Windows 10" in old32
+    # 32-bit Windows 10: also refused (the installer is x64-only).
+    bit32 = U._install_block_reason(major=10, is_64bit=False)
+    assert isinstance(bit32, str) and "64-bit" in bit32
+    # Unparseable version: fail closed.
+    assert U._install_block_reason(major="??", is_64bit=True) is not None
+
+
 # --------------------------------------------------------------------------
 # LAN channel end-to-end (real TLS server + real updates dir)
 # --------------------------------------------------------------------------

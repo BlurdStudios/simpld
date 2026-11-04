@@ -89,6 +89,52 @@ If the mirror name ever changes, update `DEFAULT_REPO` in
 `factory/updater.py` and ship a build that carries the new name. Machines can
 also override it per-machine with `SIMPLD_UPDATE_REPO`.
 
+## Code signing (SmartScreen + Smart App Control)
+
+Without a signature, every release trips two Windows gates:
+
+| gate | unsigned behaviour | fix |
+|------|-------------------|-----|
+| SmartScreen | blue "Unknown publisher — Windows protected your PC" dialog | click **More info → Run anyway** (per file, no setting changed) |
+| Smart App Control (Win 11, on by default on new PCs) | installer blocked outright, no "run anyway" offered | sign the release (below) — or install that one version from an admin account with App Control in evaluation mode; never turn App Control off system-wide |
+
+The permanent fix is signing both `Simpld.exe` and the installer with an
+OV (organization-validated) code-signing certificate — any public CA
+(DigiCert, Sectigo, GlobalSign…) — or Azure Trusted Signing, which is the
+same trust without a USB token:
+
+1. Buy the certificate (OV is enough; EV is not required) **or** create an
+   Azure Trusted Signing account + certificate profile.
+2. PFX route: export the certificate with its private key to a `.pfx`,
+   base64 it (`certutil -encode cert.pfx cert.b64` on Windows), and add two
+   repository secrets to the **private** repo: `WINDOWS_CERT_PFX_B64` (the
+   base64 text) and `WINDOWS_CERT_PASSWORD` (leave empty when the PFX has
+   no password).
+3. Nothing else to change: the `build-windows.yml` workflow signs the exe
+   before Inno embeds it and signs the installer after compiling, but only
+   when those secrets exist — builds without them ship unsigned exactly as
+   before. The `.sha256` sidecar is written after signing, so it always
+   covers the signed bytes the fleet verifies.
+4. Azure route: instead of a PFX, wire the `AzureSignTool` step with your
+   tenant/client/endpoint secrets in place of the PFX step (same position
+   in the workflow: exe before compile, installer before checksum).
+
+First signed release: SmartScreen may still show once while reputation
+builds; Smart App Control accepts a valid signature immediately.
+
+## Floor requirement: 64-bit Windows 10 or newer
+
+PySide6 6.x, Python 3.12 and the installer itself (Inno `MinVersion=10.0`,
+x64) all need 64-bit Windows 10+. An older PC (Windows 7/8.1, or 32-bit
+Windows) cannot run current Simpl'd builds at all — that is a stack limit,
+not a setting. The updater enforces the same gate **before** quitting for
+an install (`_install_block_reason` in `factory/updater.py`): on an old PC
+the operator gets "updates need 64-bit Windows 10 or newer" and the
+running version keeps working, instead of the app closing for an
+installer that exits silently under `/SILENT`.
+Keep one old-PC plan: leave it on its last working version, or move it to
+a supported PC.
+
 ## Publishing to the LAN channel (no-internet factory)
 
 On any machine with internet, download `Simpld-Setup-X.Y.Z.exe` from the
@@ -135,10 +181,16 @@ back. `--prune` deletes older installers from the folder after publishing.
   installer and its checksum are mirrored. The installer is a PyInstaller
   bundle, so treat what it contains as extractable — no credentials or
   secrets belong in the client.
-- **Known gap: code signing.** The installer is unsigned, so SmartScreen/UAC
-  shows "Unknown publisher". When Blur'd has a code-signing certificate, sign
-  `Simpld.exe` + the installer in CI; nothing else changes. Until then the
-  SHA-256 + HTTPS are the integrity story.
+- **Unsigned builds: SmartScreen + Smart App Control.**
+  The installer is unsigned until the company holds a code-signing
+  certificate (see *Code signing* below), so Windows SmartScreen says
+  "Unknown publisher" and Smart App Control may block the file outright.
+  That is purely "this file is unsigned" — the SHA-256 + HTTPS story above
+  is unchanged. Never turn off Smart App Control or SmartScreen
+  system-wide for this: right-click the installer → Properties → check
+  **Unblock** if present → run it → on the blue SmartScreen dialog click
+  **More info → Run anyway**. One signed release with growing reputation
+  ends the warnings for good.
 - Release integrity is GitHub account security: keep 2FA on the BlurdStudios
   account, keep the mirror token scoped to `simpld-releases`, and restrict who
   can push tags to the private repo.
@@ -178,6 +230,14 @@ back. `--prune` deletes older installers from the folder after publishing.
 - **Update prompt appears, install fails at UAC.** The Windows account needs
   administrator approval (or admin credentials) for this one step. The
   running version stays unaffected.
+- **Old PC: "updates need 64-bit Windows 10 or newer".** That PC cannot
+  take current builds (see *Floor requirement* above). Leave it on its
+  version or move it to a supported PC — do not force the installer.
+- **Smart App Control blocks the installer.** Expected for unsigned
+  releases — it is not a corrupt download (the SHA-256 already verified).
+  See *Code signing*: unblock the single file / Run anyway, never disable
+  App Control system-wide. The block disappears permanently once releases
+  are signed.
 - **The app installed under a different user than the one clicking UAC.**
   Covered: the installer relaunches Simpl'd as the original user
   (`runasoriginaluser` in `simpld.iss`), so data keeps going to the right

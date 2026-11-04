@@ -149,6 +149,10 @@ def offer_update(parent, info: updater.UpdateInfo) -> None:
     text += ("\n\nInstall now? Simpl'd will close, Windows may ask for "
              "administrator confirmation, and the app reopens by itself "
              "when the update finishes.")
+    text += ("\n\nNote: until releases are code-signed (see UPDATES.md), "
+             "Windows SmartScreen may show an 'Unknown publisher' prompt — "
+             "use 'More info → Run anyway'. Do not turn off Smart App "
+             "Control; the installer is still SHA-256 verified.")
     box = QMessageBox(parent)
     box.setWindowTitle("Simpl'd update")
     box.setIcon(QMessageBox.Icon.Information)
