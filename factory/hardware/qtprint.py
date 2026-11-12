@@ -455,15 +455,16 @@ class QtCitizenCLS621(PrinterInterface):
         except Exception as e:
             named = None
             _log.warning("could not read the printer's page sizes: %s", e)
+        from PySide6.QtGui import QPageLayout, QPageSize
+        from PySide6.QtCore import QMarginsF, QSizeF
         if named is None:
-            raise RuntimeError(
-                f"Stock {float(layout['stock_w_mm']):.2f}x"
-                f"{float(layout['stock_h_mm']):.2f}mm is not a page size "
-                f"{self.printer_name!r} lists. Set the label stock to one of "
-                f"its sizes (e.g. 4.00x2.00in = 101.60x50.80mm) in Label "
-                f"layout, then print again. Nothing was sent.")
-        from PySide6.QtGui import QPageLayout
-        from PySide6.QtCore import QMarginsF
+            _log.warning(
+                "stock %.2fx%.2fmm not listed by %r — requesting it exactly",
+                float(layout["stock_w_mm"]), float(layout["stock_h_mm"]),
+                self.printer_name)
+            named = QPageSize(QSizeF(float(layout["stock_w_mm"]),
+                                     float(layout["stock_h_mm"])),
+                              QPageSize.Millimeter)
         printer.setPageLayout(QPageLayout(
             named, QPageLayout.Portrait, QMarginsF(0, 0, 0, 0)))
         painter = QPainter()

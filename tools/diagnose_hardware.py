@@ -50,6 +50,17 @@ def main() -> int:
         for n in names:
             print(f"  - {n!r}")
         try:
+            from PySide6.QtPrintSupport import QPrinterInfo
+            from PySide6.QtGui import QPageSize
+            for n in names:
+                sizes = QPrinterInfo.printerInfo(n).supportedPageSizes()
+                print(f"  page sizes for {n!r}: {len(sizes)}")
+                for s in sizes:
+                    m = s.size(QPageSize.Millimeter)
+                    print(f"    {s.name()!r}  {m.width():.2f} x {m.height():.2f} mm")
+        except Exception as e:
+            print(f"page size listing failed ({e!r})")
+        try:
             from factory.hardware import autodetect as Auto
             print(f"hint match -> {Auto.detect_printer()!r}")
         except Exception as e:
