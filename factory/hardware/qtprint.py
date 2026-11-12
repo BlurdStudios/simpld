@@ -386,6 +386,29 @@ class QtCitizenCLS621(PrinterInterface):
         _save_probe_cache(printer_name, second)
         return second, "proceed"
 
+    @staticmethod
+    def _supported_size(printer_name: str, w_mm: float, h_mm: float,
+                        tol_mm: float = 0.05):
+        """The queue's own listed page size that equals the stock, or None.
+
+        Asking for a custom size the driver does not list makes CUPS fall
+        back to A4, so the job must name a size the queue actually has.
+        Exact match only (rounding tolerance), never the nearest size.
+        """
+        try:
+            from PySide6.QtPrintSupport import QPrinterInfo
+            from PySide6.QtGui import QPageSize
+            best, best_err = None, None
+            for s in QPrinterInfo.printerInfo(printer_name).supportedPageSizes():
+                m = s.size(QPageSize.Millimeter)
+                mw, mh = float(m.width()), float(m.height())
+                err = max(abs(mw - w_mm), abs(mh - h_mm))
+                if err <= tol_mm and (best_err is None or err < best_err):
+                    best, best_err = s, err
+            return best
+        except Exception:
+            return None
+
     # ----- 1:1 submission (never scaled, never fail on size) -----
     def _submit_11(self, pil_img, doc_name: str, layout: dict,
                    geometry: dict, state: str) -> bool:
@@ -425,6 +448,24 @@ class QtCitizenCLS621(PrinterInterface):
             printer.setResolution(dpi)
         except Exception:
             pass
+        try:
+            named = self._supported_size(self.printer_name,
+                                         float(layout["stock_w_mm"]),
+                                         float(layout["stock_h_mm"]))
+        except Exception as e:
+            named = None
+            _log.warning("could not read the printer's page sizes: %s", e)
+        if named is None:
+            raise RuntimeError(
+                f"Stock {float(layout['stock_w_mm']):.2f}x"
+                f"{float(layout['stock_h_mm']):.2f}mm is not a page size "
+                f"{self.printer_name!r} lists. Set the label stock to one of "
+                f"its sizes (e.g. 4.00x2.00in = 101.60x50.80mm) in Label "
+                f"layout, then print again. Nothing was sent.")
+        from PySide6.QtGui import QPageLayout
+        from PySide6.QtCore import QMarginsF
+        printer.setPageLayout(QPageLayout(
+            named, QPageLayout.Portrait, QMarginsF(0, 0, 0, 0)))
         painter = QPainter()
         if not painter.begin(printer):
             raise RuntimeError(

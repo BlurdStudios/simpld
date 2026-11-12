@@ -42,6 +42,9 @@ DEFAULTS = {
     "scale_stopbits": 1,
     # Citizen CL-S621 (USB): Windows printer share name from driver install.
     "printer_name": "",        # e.g. "Citizen CL-S621". "" = file-log/mock
+    "printer_mode": "qt",      # "qt" = installed OS queue (printer_name); "vcom" = COM port (printer_port)
+    "printer_port": "",        # e.g. "COM5" on Windows; VCOM mode only
+    "printer_baud": 9600,
     "demo_mode": False,        # explicit demo switch: simulate scale+printer (no hardware)
     "mock_qr": False,          # test aid: show a Dispatch button that loads the
                                # next Ready box as if its QR was scanned. Off on

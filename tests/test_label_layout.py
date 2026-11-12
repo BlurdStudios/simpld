@@ -6,6 +6,7 @@ import io
 import json
 import os
 import sys
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -265,3 +266,14 @@ if __name__ == "__main__":
     test_profile_rejects_garbage()
     test_shipped_bundle_validates()
     print("layout model tests OK")
+
+
+@pytest.fixture(autouse=True)
+def _stub_queue_page_sizes(monkeypatch):
+    from PySide6.QtCore import QSizeF
+    from PySide6.QtGui import QPageSize
+    from factory.hardware.qtprint import QtCitizenCLS621
+    monkeypatch.setattr(
+        QtCitizenCLS621, "_supported_size",
+        staticmethod(lambda _n, w, h, tol_mm=0.05: QPageSize(
+            QSizeF(float(w), float(h)), QPageSize.Millimeter)))

@@ -93,6 +93,10 @@ def build_printer(cfg: dict):
     """Real Citizen (installed Qt printer) when named, else the log mock."""
     if demo_mode(cfg):
         return _mock.MockCitizenCLS621()
+    if str(cfg.get("printer_mode") or "").strip().lower() == "vcom":
+        from .vcom import VcomCitizen
+        return VcomCitizen(str(cfg.get("printer_port") or "").strip(),
+                           int(cfg.get("printer_baud") or 9600))
     name = str(cfg.get("printer_name") or "").strip()
     if not name:
         return _mock.MockCitizenCLS621()

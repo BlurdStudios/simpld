@@ -9,6 +9,7 @@ persistence. Temp DB + offscreen — never production, never real hardware.
 """
 import os
 import sys
+import pytest
 import json
 import tempfile
 from unittest import mock as _mock
@@ -1291,3 +1292,16 @@ if __name__ == "__main__":
     test_sysfs_usb_printer_scan()
     test_autodetect_concurrent_runs_do_not_clobber()
     print("test_hardware_real PASS")
+
+
+def _listed_size_for(printer_name, w_mm, h_mm, tol_mm=0.05):
+    """Test stand-in for the queue's listed page sizes: the exact stock."""
+    from PySide6.QtCore import QSizeF
+    from PySide6.QtGui import QPageSize
+    return QPageSize(QSizeF(float(w_mm), float(h_mm)), QPageSize.Millimeter)
+
+
+@pytest.fixture(autouse=True)
+def _stub_queue_page_sizes(monkeypatch):
+    monkeypatch.setattr(QtCitizenCLS621, "_supported_size",
+                        staticmethod(_listed_size_for))
