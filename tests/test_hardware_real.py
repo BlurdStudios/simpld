@@ -490,14 +490,18 @@ def test_origin_quirk_driver_repaired_to_ticket_minus_origin(caplog):
     p2 = _mock.patch.object(G, "QPainter", QuirkPainter)
     p3 = _mock.patch("factory.hardware.qtprint.printer_exists",
                       lambda name: True)
-    with p1, p2, p3:
+    from factory.hardware import layout as _L
+    p4 = _mock.patch("factory.hardware.qtprint._load_layout",
+                      lambda t: dict(_L.DEFAULTS[t], template_id=t))
+    with p1, p2, p3, p4:
         with caplog.at_level(logging.INFO, logger="simpld.hardware"):
             assert QtCitizenCLS621("Citizen CL-S621Z").print_reel_label(
                 {"job": job, "reel": reel}) is True
     assert st.get("ended") is True
-    assert len(st["tickets"]) == 2, st["tickets"]
+    assert len(st["tickets"]) == 3, st["tickets"]
     assert abs(st["tickets"][0][0] - 100.10) < 0.3, st["tickets"]
     assert abs(st["tickets"][1][0] - 97.59) < 0.3, st["tickets"]
+    assert abs(st["tickets"][2][0] - 100.0) < 0.05, st["tickets"]
     assert "paper repaired: ticket=97.50x50.00" in caplog.text, caplog.text
     assert "state=repaired" in caplog.text, caplog.text
     rect = st["painter"].drawn[-1][0]
