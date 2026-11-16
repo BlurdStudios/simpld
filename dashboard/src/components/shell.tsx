@@ -21,44 +21,62 @@ interface NavItem {
   to: string;
   label: string;
   icon: typeof DashboardSquare01Icon;
-  adminOnly?: boolean;
-  authOnly?: boolean;
 }
 
-const NAV: NavItem[] = [
-  { to: "/", label: "Overview", icon: DashboardSquare01Icon },
-  { to: "/licence", label: "Licence", icon: Key01Icon, authOnly: true },
-  { to: "/download", label: "Downloads", icon: Download01Icon, authOnly: true },
-  { to: "/admin", label: "Admin", icon: Shield01Icon, adminOnly: true },
-];
+// ONE layout, TWO content sets. The route decides which content fills the
+// shell: vendor portal pages get the vendor nav, /s/:siteId pages get the
+// customer nav (never vendor links). The shell itself only renders what it
+// is given — see shellContent() below.
+interface ShellContent {
+  brand: { title: string; subtitle: string };
+  items: NavItem[];
+}
+
+function vendorContent(me: { role: string } | null | undefined): ShellContent {
+  return {
+    brand: { title: "Simpl'd Vendor", subtitle: "factory portal" },
+    items: [
+      { to: "/", label: "Overview", icon: DashboardSquare01Icon },
+      ...(me ? [{ to: "/licence", label: "Licence", icon: Key01Icon }] : []),
+      ...(me ? [{ to: "/download", label: "Downloads", icon: Download01Icon }] : []),
+      ...(me?.role === "vendor_admin"
+        ? [{ to: "/admin", label: "Admin", icon: Shield01Icon }]
+        : []),
+    ],
+  };
+}
+
+function customerContent(siteId: string, onLogin: boolean, me: { role: string } | null | undefined): ShellContent {
+  return {
+    brand: { title: siteId, subtitle: "customer portal" },
+    // The login page shows branding only — nav appears once inside the site.
+    items: onLogin
+      ? []
+      : [
+          { to: `/s/${siteId}`, label: "Overview", icon: DashboardSquare01Icon },
+          // A vendor admin previewing a customer's site gets a way back.
+          ...(me?.role === "vendor_admin"
+            ? [{ to: "/", label: "Vendor portal", icon: ArrowLeft01Icon }]
+            : []),
+        ],
+  };
+}
+
+function shellContent(pathname: string, me: { role: string } | null | undefined): ShellContent {
+  const siteMatch = /^\/s\/([^/]+)(\/login)?$/.exec(pathname);
+  if (siteMatch) {
+    const siteId = decodeURIComponent(siteMatch[1]);
+    return customerContent(siteId, /\/login$/.test(pathname), me);
+  }
+  return vendorContent(me);
+}
 
 export function DashboardShell({ children }: { children: React.ReactNode }) {
   const { me, logout } = useAuth();
   const location = useLocation();
   const [open, setOpen] = useState(false);
 
-  // Route-aware chrome: /s/:siteId (and /s/:siteId/login) are the CUSTOMER's
-  // pages — they get customer branding and a customer nav, never the vendor
-  // portal links (Licence/Downloads/Admin). Everything else keeps the vendor
-  // sidebar. A vendor_admin previewing a site gets a link back to the portal.
-  const siteMatch = /^\/s\/([^/]+)(\/login)?$/.exec(location.pathname);
-  const siteId = siteMatch ? decodeURIComponent(siteMatch[1]) : null;
-  const onSiteLogin = !!siteId && /\/login$/.test(location.pathname);
-
-  const items: NavItem[] = siteId
-    ? onSiteLogin
-      ? []
-      : [
-          { to: `/s/${siteId}`, label: "Overview", icon: DashboardSquare01Icon },
-          ...(me?.role === "vendor_admin"
-            ? [{ to: "/", label: "Vendor portal", icon: ArrowLeft01Icon }]
-            : []),
-        ]
-    : NAV.filter((n) => {
-        if (n.adminOnly) return me?.role === "vendor_admin";
-        if (n.authOnly) return !!me;
-        return true;
-      });
+  const content = shellContent(location.pathname, me);
 
   const sidebar = (
     <div className="flex h-full flex-col gap-2">
@@ -67,15 +85,13 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           S
         </div>
         <div className="leading-tight">
-          <p className="truncate text-sm font-semibold">{siteId ?? "Simpl'd Vendor"}</p>
-          <p className="text-xs text-muted-foreground">
-            {siteId ? "customer portal" : "factory portal"}
-          </p>
+          <p className="truncate text-sm font-semibold">{content.brand.title}</p>
+          <p className="text-xs text-muted-foreground">{content.brand.subtitle}</p>
         </div>
       </div>
       <Separator />
       <nav className="flex flex-col gap-1">
-        {items.map((n) => {
+        {content.items.map((n) => {
           const active =
             n.to === "/" ? location.pathname === "/" : location.pathname.startsWith(n.to);
           return (
@@ -130,7 +146,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
         <Button variant="ghost" size="icon" onClick={() => setOpen(!open)} aria-label="Menu">
           <HugeiconsIcon icon={open ? Cancel01Icon : Menu01Icon} size={20} />
         </Button>
-        <p className="text-sm font-semibold">{siteId ?? "Simpl'd Vendor"}</p>
+        <p className="truncate text-sm font-semibold">{content.brand.title}</p>
         <div className="ml-auto">
           {me ? (
             <Badge variant={me.role === "vendor_admin" ? "default" : "secondary"}>
