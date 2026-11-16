@@ -487,8 +487,8 @@ class SummaryPage(QWidget):
         if not _SYNC.configured():
             return QMessageBox.information(
                 self, "Sync",
-                "Sync is disabled.\nSet SIMPLD_SYNC_URL, SIMPLD_SYNC_SITE_ID "
-                "and SIMPLD_SYNC_KEY to enable the vendor dashboard push.\n"
+                "Sync is not set up yet.\nOpen Settings → Sync and enter the "
+                "dashboard address, site ID and key.\n"
                 "The factory works fully offline.")
         day = self.date_edit.date().toString("yyyy-MM-dd")
         try:

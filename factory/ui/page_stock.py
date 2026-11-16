@@ -1,9 +1,14 @@
-"""Ready Stock: all packed boxes available for dispatch. No customer shown (decoupled)."""
+"""Ready Stock: packed boxes available for dispatch. No customer shown (decoupled).
+
+Main view is one card per product (job) with its stock numbers. Clicking a
+card opens that product's box table on its own page; Back returns to cards.
+"""
 from __future__ import annotations
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
                                QTableWidget, QTableWidgetItem, QHeaderView, QLineEdit,
-                               QMessageBox, QAbstractItemView)
+                               QMessageBox, QAbstractItemView, QFrame, QGridLayout,
+                               QScrollArea, QStackedWidget, QSizePolicy)
 from factory import data_access as DA
 from factory.db import bare_carton_no, job_label
 from factory.hardware import mock as HW
@@ -26,6 +31,43 @@ def _show_backend_error(parent, exc) -> None:
         QMessageBox.warning(parent, "Not available", msg)
     else:
         QMessageBox.warning(parent, "Stock", msg)
+
+
+class ProductCard(QFrame):
+    """Clickable product card: job identity plus stock numbers."""
+
+    clicked = Signal(int)
+
+    def __init__(self, job_id: int, title: str, name: str, numbers: str, weight: str):
+        super().__init__()
+        self.job_id = job_id
+        self.setProperty("card", True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMinimumHeight(130)
+        self.setMinimumWidth(220)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(14, 12, 14, 12)
+        v.setSpacing(4)
+        t = QLabel(title)
+        t.setProperty("field", "caption")
+        t.setWordWrap(True)
+        v.addWidget(t)
+        n = QLabel(name)
+        n.setWordWrap(True)
+        v.addWidget(n)
+        big = QLabel(weight)
+        big.setProperty("stat", "value")
+        v.addWidget(big)
+        s = QLabel(numbers)
+        s.setProperty("hint", True)
+        s.setWordWrap(True)
+        v.addWidget(s)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit(self.job_id)
+        super().mousePressEvent(event)
 
 
 class StockPage(QWidget):
@@ -73,6 +115,38 @@ class StockPage(QWidget):
         self.count.setProperty("count", True)
         self.count.setWordWrap(True)
         lay.addWidget(self.count)
+
+        # Page 0: product cards. Page 1: one product's boxes.
+        self.stack = QStackedWidget()
+        cards_page = QWidget()
+        cards_lay = QVBoxLayout(cards_page)
+        cards_lay.setContentsMargins(0, 0, 0, 0)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.grid_host = QWidget()
+        self.grid = QGridLayout(self.grid_host)
+        self.grid.setSpacing(10)
+        self.grid.setContentsMargins(0, 4, 0, 4)
+        self.grid.setAlignment(Qt.AlignTop)
+        self.scroll.setWidget(self.grid_host)
+        cards_lay.addWidget(self.scroll, 1)
+        self.stack.addWidget(cards_page)
+
+        detail_page = QWidget()
+        detail_lay = QVBoxLayout(detail_page)
+        detail_lay.setContentsMargins(0, 0, 0, 0)
+        detail_lay.setSpacing(8)
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        self.btn_back = QPushButton("← Back to products")
+        self.btn_back.setMinimumHeight(40)
+        style_button(self.btn_back, "secondary")
+        head.addWidget(self.btn_back)
+        self.detail_title = QLabel("")
+        self.detail_title.setProperty("field", "caption")
+        head.addWidget(self.detail_title, 1)
+        detail_lay.addLayout(head)
         self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
             ["Box No", "Job", "Bundle", "Reels", "Rolls", "Wt Kg", "Packed"])
@@ -85,11 +159,17 @@ class StockPage(QWidget):
         self.table.setShowGrid(False)
         self.table.setAlternatingRowColors(True)
         self.table.setFocusPolicy(Qt.NoFocus)
-        lay.addWidget(self.table, 1)
+        detail_lay.addWidget(self.table, 1)
+        self.stack.addWidget(detail_page)
+        lay.addWidget(self.stack, 1)
+
         self.btn_refresh.clicked.connect(self.refresh)
         self.btn_reprint.clicked.connect(self.reprint)
         self.btn_slip.clicked.connect(self.slip)
+        self.btn_back.clicked.connect(self.show_cards)
         self._rows: list[dict] = []
+        self._view_rows: list[dict] = []
+        self._job_id: int | None = None
         self._offline = False
         self.refresh()
         if DA.is_lan():
@@ -130,6 +210,45 @@ class StockPage(QWidget):
                     or q in str(r["job_no"]) or q in r["job_name"].upper()
                     or q in str(r.get("job_code") or "").upper()]
         self._rows = rows
+        if self._job_id is not None:
+            self._render_table(self._job_id)
+        else:
+            self._render_cards()
+        self._update_count()
+
+    def _jobs(self) -> dict[int, list[dict]]:
+        jobs: dict[int, list[dict]] = {}
+        for r in self._rows:
+            jobs.setdefault(int(r["job_id"]), []).append(r)
+        return jobs
+
+    def _render_cards(self):
+        while self.grid.count():
+            item = self.grid.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        jobs = self._jobs()
+        ordered = sorted(jobs.items(), key=lambda kv: str(kv[1][0]["job_no"]))
+        for i, (jid, rows) in enumerate(ordered):
+            first = rows[0]
+            boxes = len(rows)
+            coils = sum(int(r.get("num_reels") or 0) for r in rows)
+            pieces = sum(int(r.get("pieces") or 0) for r in rows)
+            kg = sum(float(r.get("total_net") or 0) for r in rows)
+            numbers = f"{boxes} box{'es' if boxes != 1 else ''} · {coils} coil{'s' if coils != 1 else ''}"
+            if pieces:
+                numbers += f" · {pieces} piece{'s' if pieces != 1 else ''}"
+            card = ProductCard(jid, job_label(first), str(first["job_name"]),
+                               numbers, f"{kg:.3f} kg")
+            card.clicked.connect(self.show_product)
+            self.grid.addWidget(card, i // 3, i % 3)
+        for c in range(3):
+            self.grid.setColumnStretch(c, 1)
+
+    def _render_table(self, job_id: int):
+        rows = self._jobs().get(job_id, [])
+        self._view_rows = rows
         self.table.setRowCount(0)
         for r in rows:
             i = self.table.rowCount()
@@ -143,13 +262,40 @@ class StockPage(QWidget):
                 ",".join(map(str, r["rolls"])) if r["rolls"] else "—"))
             self.table.setItem(i, 5, QTableWidgetItem(f"{r['total_net']:.3f}"))
             self.table.setItem(i, 6, QTableWidgetItem(r["packed_at"][:16]))
-        tot = sum(r["total_net"] for r in rows)
         if rows:
-            self.count.setText(f"In stock: {len(rows)} boxes  |  {tot:.3f} Kg")
-            self.count.setProperty("empty", False)
+            self.detail_title.setText(job_label(rows[0]))
         else:
-            self.count.setText("No boxes in stock — pack boxes in Packaging.")
-            self.count.setProperty("empty", True)
+            self.detail_title.setText("")
+            self.show_cards()
+
+    def show_product(self, job_id: int):
+        self._job_id = int(job_id)
+        self._render_table(self._job_id)
+        if self._job_id is not None and self._view_rows:
+            self.stack.setCurrentIndex(1)
+        self._update_count()
+
+    def show_cards(self):
+        self._job_id = None
+        self.stack.setCurrentIndex(0)
+        self._update_count()
+
+    def _update_count(self):
+        if self._job_id is not None and self._view_rows:
+            rows = self._view_rows
+            tot = sum(r["total_net"] for r in rows)
+            text = f"{len(rows)} boxes  |  {tot:.3f} Kg"
+            empty = False
+        elif self._rows:
+            tot = sum(r["total_net"] for r in self._rows)
+            text = (f"In stock: {len(self._rows)} boxes across "
+                    f"{len(self._jobs())} products  |  {tot:.3f} Kg")
+            empty = False
+        else:
+            text = "No boxes in stock — pack boxes in Packaging."
+            empty = True
+        self.count.setText(text)
+        self.count.setProperty("empty", empty)
         try:
             s = self.count.style()
             s.unpolish(self.count)
@@ -162,7 +308,7 @@ class StockPage(QWidget):
         if not rows:
             return None
         i = rows[0].row()
-        return self._rows[i] if 0 <= i < len(self._rows) else None
+        return self._view_rows[i] if 0 <= i < len(self._view_rows) else None
 
     def reprint(self):
         r = self.selected()
@@ -183,7 +329,7 @@ class StockPage(QWidget):
         if not r:
             return QMessageBox.warning(
                 self, "Slip",
-                "Select any box of the job, then print its packing slip.\n"
+                "Open a product, select any of its boxes, then print its packing slip.\n"
                 "Reel-only jobs have no boxes — open their packing slip "
                 "from the Jobs page.")
         if self._offline:
@@ -209,9 +355,13 @@ class StockPage(QWidget):
             return QMessageBox.warning(
                 self, "Verify", f"Unknown box QR: {code.strip().upper()}")
         d = found["detail"]
-        for i, r in enumerate(self._rows):
+        for r in self._rows:
             if r["carton_no"] == d["carton_no"]:
-                self.table.selectRow(i)
+                self.show_product(int(r["job_id"]))
+                for i, vr in enumerate(self._view_rows):
+                    if vr["carton_no"] == d["carton_no"]:
+                        self.table.selectRow(i)
+                        break
                 break
         self.verify_scan.setFocus()
         VerifyDialog(self, found).exec()

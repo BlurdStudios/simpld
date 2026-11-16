@@ -2,7 +2,7 @@
 from __future__ import annotations
 from PySide6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
                                QPushButton, QStackedWidget, QLabel, QButtonGroup)
-from PySide6.QtCore import Signal, QTimer, QSize, Qt, QPointF, QEvent
+from PySide6.QtCore import QObject, Signal, QTimer, QSize, Qt, QPointF, QEvent
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from factory import data_access as DA
 from factory.hardware import devices as DEV  # noqa: F401  (applies env/file config)
@@ -13,6 +13,15 @@ from factory.ui.pages_misc import JobsPage, HistoryPage, SummaryPage
 from factory.ui.styles import style_button
 from factory.ui import brand as BRAND
 from factory.ui.device_strip import DeviceStrip
+
+HEARTBEAT_MS = 30 * 60 * 1000
+
+
+class _HeartbeatBridge(QObject):
+    """Carries a background heartbeat result back to the UI thread."""
+
+    done = Signal(dict)
+
 
 # key -> (nav label, page factory). Factories run lazily per window.
 PAGES = {
@@ -164,6 +173,8 @@ class MainWindow(QMainWindow):
             raise PermissionError(f"Unknown role '{role}' (denied)")
         self.user = actor
         user = actor
+        self._user_info = actor
+        self._role_name = role
         # Window title always carries version + plan (trial adds days left):
         # "Simpl'd v1.4.2 — user (role) · Trial · 12d left". Offline-safe,
         # computed from the local licence file only.
@@ -292,12 +303,12 @@ class MainWindow(QMainWindow):
             self._set_nav_icon(self.btn_users, "users")
             side.addWidget(self.btn_users)
             self.btn_users.clicked.connect(self.manage_users)
-        self.btn_about = QPushButton("   About")
-        self.btn_about.setMinimumHeight(40)
-        style_button(self.btn_about, "nav")
-        self._set_nav_icon(self.btn_about, "info")
-        side.addWidget(self.btn_about)
-        self.btn_about.clicked.connect(self.show_about)
+        self.btn_settings = QPushButton("   Settings")
+        self.btn_settings.setMinimumHeight(40)
+        style_button(self.btn_settings, "nav")
+        self._set_nav_icon(self.btn_settings, "info")
+        side.addWidget(self.btn_settings)
+        self.btn_settings.clicked.connect(self.show_settings)
         self.btn_logout = QPushButton("   Sign out")
         self.btn_logout.setMinimumHeight(40)
         style_button(self.btn_logout, "nav")
@@ -336,6 +347,7 @@ class MainWindow(QMainWindow):
             f"F1–F{shortcut_n}: switch pages."
             + (" Shared packager DB — auto-refresh every 15s." if DA.is_lan() else ""))
         self._refresh_license_banner()
+        self._start_licence_heartbeat()
         if DA.is_lan():
             self._lan_timer = QTimer(self)
             self._lan_timer.timeout.connect(self._lan_refresh)
@@ -406,9 +418,47 @@ class MainWindow(QMainWindow):
                 style_button(obj, obj.property("kind") or "nav")
         return super().eventFilter(obj, event)
 
-    def show_about(self):
-        from factory.ui.splash import AboutDialog
-        AboutDialog(self).exec()
+    def _start_licence_heartbeat(self):
+        """Heartbeat every 30 min (and once shortly after start). Packager only:
+        the dispatcher inherits the packager's licence over LAN."""
+        if DA.is_lan():
+            return
+        self._hb_busy = False
+        self._hb_bridge = _HeartbeatBridge(self)
+        self._hb_bridge.done.connect(self._on_heartbeat)
+        self._hb_timer = QTimer(self)
+        self._hb_timer.timeout.connect(self._run_heartbeat)
+        self._hb_timer.start(HEARTBEAT_MS)
+        QTimer.singleShot(5000, self._run_heartbeat)
+
+    def _run_heartbeat(self):
+        if getattr(self, "_hb_busy", False):
+            return
+        self._hb_busy = True
+        import threading
+        from factory import sync as _SYNC
+        bridge = self._hb_bridge
+
+        def work():
+            try:
+                res = _SYNC.licence_heartbeat()
+            except Exception as e:  # never reaches the UI thread as an exception
+                res = {"ok": False, "installed": None, "detail": str(e)}
+            bridge.done.emit(res)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_heartbeat(self, res: dict):
+        self._hb_busy = False
+        if res.get("installed"):
+            from factory.ui.toast import toast
+            toast(self, f"Licence updated ({res['installed']}).")
+        self._refresh_license_banner()
+
+    def show_settings(self):
+        from factory.ui.settings_dialog import SettingsDialog
+        SettingsDialog(self, user=self._user_info, role=self._role_name).exec()
+        self._refresh_license_banner()
 
     def _refresh_license_banner(self):
         """Sidebar identity: the licensed CLIENT name always shows (this is
@@ -452,8 +502,19 @@ class MainWindow(QMainWindow):
                     self.lic_label.setText(f"{who}\nTrial: {left}d left")
                     set_banner(self.lic_label, "info")
                 self.lic_label.show()
-            elif state in ("expiring", "grace"):
-                self.lic_label.setText(f"{who}\n{_LIC.license_display(st)}")
+            elif state == "grace":
+                over = max(0, -(left or 0))
+                keep = max(0, _LIC.GRACE_DAYS - over)
+                self.lic_label.setText(
+                    f"{who}\nLicence EXPIRED {over}d ago — {keep} days left "
+                    "to keep working.\nUpgrade or back up now "
+                    "(Settings → Licence).")
+                set_banner(self.lic_label, "err" if keep <= 7 else "warn")
+                self.lic_label.show()
+            elif state == "expiring":
+                self.lic_label.setText(
+                    f"{who}\nLicence expires in {left} days.\n"
+                    "Upgrade or back up now (Settings → Licence).")
                 set_banner(self.lic_label, "warn")
                 self.lic_label.show()
             elif who:

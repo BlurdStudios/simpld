@@ -61,7 +61,7 @@ test("licence: TS issuance round-trips (sign -> verify)", async () => {
     { customer: "Acme", site_id: "s1", edition: "pro", packager_fp: "fp1", expires: "2027-01-01" },
     TEST_PRIV_B64
   );
-  assert.ok(/^SIMPLD-\d{8}-001$/.test(lic.serial), `serial default shape: ${lic.serial}`);
+  assert.ok(/^SIMPLD-\d{8}-[0-9a-f]{4}$/.test(lic.serial), `serial default shape: ${lic.serial}`);
   assert.deepEqual(lic.features, ["lan", "history", "summary"]);
   assert.equal(await verifySignature(lic, TEST_PUB_B64), true);
   const v = await verifyLicence(lic, { pubkeyB64: TEST_PUB_B64, machineFp: "fp1", appVersion: "2.0.1" });
@@ -382,6 +382,8 @@ test("portal: issuance derives tiers, renew works, overview gates", async () => 
   );
   assert.equal(r.status, 404);
 });
+
+test("push: D1 per-site keys issue, confirm, rotate, revoke", async () => {
   const env = testEnv();
   await initSchema(env.DB as D1Like);
   const accounts = accountsForEnv(env);

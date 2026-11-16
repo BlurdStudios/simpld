@@ -141,6 +141,25 @@ CREATE TABLE IF NOT EXISTS site_licences (
   packager_fp TEXT NOT NULL DEFAULT '',
   updated_at TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS licence_offers (
+  id TEXT PRIMARY KEY,
+  site_id TEXT NOT NULL,
+  serial TEXT NOT NULL,
+  packager_fp TEXT NOT NULL,
+  licence_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  acked_at TEXT
+);
+CREATE TABLE IF NOT EXISTS trial_requests (
+  id TEXT PRIMARY KEY,
+  site_id TEXT NOT NULL,
+  days INTEGER NOT NULL,
+  reason TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  requested_at TEXT NOT NULL,
+  decided_at TEXT,
+  decided_by TEXT
+);
 `.trim();
 
 export interface D1Prepared {

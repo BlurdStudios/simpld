@@ -30,10 +30,19 @@ TIMEOUT = 15.0
 
 
 def _cfg() -> tuple[str, str, str]:
-    url = (os.environ.get("SIMPLD_SYNC_URL") or "").strip().rstrip("/")
+    """Env vars win (ops override); otherwise the values saved in Settings."""
+    url = (os.environ.get("SIMPLD_SYNC_URL") or "").strip()
     site = (os.environ.get("SIMPLD_SYNC_SITE_ID") or "").strip()
     key = (os.environ.get("SIMPLD_SYNC_KEY") or "").strip()
-    return url, site, key
+    if not (url and site and key):
+        try:
+            from . import services as _svc
+            url = url or (_svc.get_setting("sync.url", "") or "").strip()
+            site = site or (_svc.get_setting("sync.site_id", "") or "").strip()
+            key = key or (_svc.get_setting("sync.key", "") or "").strip()
+        except Exception:
+            pass
+    return url.rstrip("/"), site, key
 
 
 def configured() -> bool:
@@ -269,3 +278,114 @@ def push_now(day: str | None = None,
         return {"ok": False, "queued": True, "detail": str(exc)}
     _save_state(True, "pushed")
     return {"ok": True, "queued": False, "detail": "pushed"}
+
+
+# ---- licence heartbeat, one-time offer install, trial requests -------------
+
+def _post_json(path: str, payload: dict, timeout: float = TIMEOUT) -> dict:
+    """POST and return the parsed JSON reply. Errors are redacted, never raise
+    key material. Raises OSError on any failure (caller decides what to do)."""
+    url, _site, key = _cfg()
+    req = urllib.request.Request(
+        url + path, data=json.dumps(payload).encode("utf-8"),
+        method="POST", headers={"Content-Type": "application/json",
+                                "Authorization": f"Bearer {key}"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read(256 * 1024).decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = json.loads(exc.read(4096).decode("utf-8", "replace")).get("error", "")
+        except Exception:
+            detail = ""
+        raise OSError(f"HTTP {exc.code} from dashboard{': ' + str(detail)[:120] if detail else ''}") from None
+    except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
+        raise OSError(f"dashboard unreachable ({exc.__class__.__name__})") from None
+    try:
+        out = json.loads(body)
+    except ValueError:
+        raise OSError("dashboard returned a non-JSON reply") from None
+    return out if isinstance(out, dict) else {}
+
+
+def _licence_snapshot() -> dict:
+    try:
+        from . import license as _LIC
+        from .version import VERSION as _APP_VER
+        st = _LIC.license_status()
+        lic = st.get("lic") or {}
+        return {
+            "edition": str(lic.get("edition") or ""),
+            "expires": str(lic.get("expires") or st.get("expires") or ""),
+            "state": str(st.get("state") or ""),
+            "days_left": _LIC.license_days_left(lic if lic else None),
+            "packager_fp": str(lic.get("packager_fp") or _LIC.machine_fingerprint_safe() or ""),
+            "app_version": str(_APP_VER or ""),
+        }
+    except Exception:
+        return {}
+
+
+def _install_offer(offer: dict) -> str:
+    """Verify and save a delivered licence. Returns the serial now installed.
+
+    The licence is only saved after verify_license() passes (signature and
+    board binding). An offer whose serial is already installed is a no-op, so
+    a re-delivered offer (ack lost) is harmless.
+    """
+    from . import license as _LIC
+    lic = offer.get("licence")
+    serial = str(offer.get("serial") or "")
+    if not isinstance(lic, dict) or not serial or lic.get("serial") != serial:
+        raise ValueError("offer is malformed")
+    current = _LIC.load_license()
+    if current and current.get("serial") == serial:
+        return serial
+    ok, reason = _LIC.verify_license(lic)
+    if not ok:
+        raise ValueError(f"offer rejected: {reason}")
+    _LIC.save_license_file(lic)
+    return serial
+
+
+def licence_heartbeat() -> dict:
+    """One heartbeat: report state, install any delivered licence, ack it.
+
+    Returns {ok, installed: serial|None, detail}. Never raises. Offline or
+    unconfigured sync is reported as ok=False with a short detail.
+    """
+    if not configured():
+        return {"ok": False, "installed": None, "detail": "sync not set up"}
+    _url, site, _key = _cfg()
+    ack = ""
+    installed = None
+    try:
+        reply = _post_json("/api/licence-heartbeat", {
+            "site_id": site, "licence": _licence_snapshot(),
+        })
+        offer = reply.get("offer")
+        if isinstance(offer, dict):
+            installed = _install_offer(offer)
+            ack = installed
+        if ack:
+            _post_json("/api/licence-heartbeat", {
+                "site_id": site, "licence": _licence_snapshot(), "ack_serial": ack,
+            })
+        return {"ok": True, "installed": installed, "detail": "ok"}
+    except (OSError, ValueError) as exc:
+        return {"ok": False, "installed": installed, "detail": str(exc)}
+
+
+def request_trial(days: int, reason: str = "") -> dict:
+    """Ask the vendor for a trial extension. Returns {ok, status, detail}."""
+    if not configured():
+        return {"ok": False, "status": "", "detail": "sync not set up"}
+    _url, site, _key = _cfg()
+    try:
+        reply = _post_json("/api/trial-request", {
+            "site_id": site, "days": int(days), "reason": str(reason or "")[:500],
+        })
+        return {"ok": True, "status": str(reply.get("status") or "pending"),
+                "detail": "request sent"}
+    except (OSError, ValueError) as exc:
+        return {"ok": False, "status": "", "detail": str(exc)}

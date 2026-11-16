@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Key01Icon, Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
@@ -34,6 +34,106 @@ function expiryPreview(days: number): string {
   const d = new Date();
   d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString().slice(0, 10);
+}
+
+type TrialRequest = {
+  id: string;
+  site_id: string;
+  days: number;
+  reason: string;
+  status: string;
+  requested_at: string;
+  decided_at: string | null;
+};
+
+function TrialRequests() {
+  const [rows, setRows] = useState<TrialRequest[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  async function load() {
+    try {
+      const res = await fetch("/api/trial-requests");
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error ?? `could not load requests (${res.status})`);
+      setRows(data.requests ?? []);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "could not load requests");
+    }
+  }
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  async function decide(id: string, approve: boolean) {
+    setBusyId(id);
+    setError(null);
+    try {
+      const res = await fetch("/api/trial-requests/decide", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, approve }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error ?? `decision failed (${res.status})`);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "decision failed");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  const pending = rows.filter((r) => r.status === "pending");
+  const decided = rows.filter((r) => r.status !== "pending").slice(0, 10);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Trial requests</CardTitle>
+        <CardDescription>
+          Approving issues a new trial licence for the site from today. It reaches the factory on
+          its next heartbeat — no key to copy.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-4">
+        {error && <p className="text-sm font-medium text-destructive">{error}</p>}
+        {pending.length === 0 && <p className="text-sm text-muted-foreground">No pending requests.</p>}
+        {pending.map((r) => (
+          <div key={r.id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3">
+            <div className="grid gap-1 text-sm">
+              <span className="font-medium">
+                {r.site_id} — {r.days} day{r.days === 1 ? "" : "s"}
+              </span>
+              <span className="text-muted-foreground">
+                {r.reason || "No reason given"} · requested {r.requested_at.slice(0, 16).replace("T", " ")}
+              </span>
+            </div>
+            <div className="flex gap-2">
+              <Button disabled={busyId === r.id} onClick={() => decide(r.id, true)}>
+                Approve
+              </Button>
+              <Button variant="outline" disabled={busyId === r.id} onClick={() => decide(r.id, false)}>
+                Deny
+              </Button>
+            </div>
+          </div>
+        ))}
+        {decided.length > 0 && (
+          <div className="grid gap-1 text-xs text-muted-foreground">
+            {decided.map((r) => (
+              <span key={r.id}>
+                {r.site_id} · {r.days}d · {r.status}
+                {r.decided_at ? ` · ${r.decided_at.slice(0, 16).replace("T", " ")}` : ""}
+              </span>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
 }
 
 export function Licence() {
@@ -108,6 +208,7 @@ export function Licence() {
           Signed by the vendor key for one Machine ID (packager_fp). Logged as {me?.email}.
         </p>
       </div>
+      {me?.role === "vendor_admin" && <TrialRequests />}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">How licensing works (3 steps)</CardTitle>

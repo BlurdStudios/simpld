@@ -12,6 +12,20 @@
 
 import type { AccountsStore, PublicUser } from "../../lib/db";
 import { issueLicence } from "../../lib/license";
+import { OfferStore } from "../../lib/offers";
+import type { D1Like } from "../../lib/db";
+
+// Each issued/renewed licence becomes a one-time offer, delivered on the
+// site's next heartbeat (no manual key copy). Needs the D1 database.
+async function queueOffer(env: Record<string, string | undefined>, lic: { site_id: string; serial: string; packager_fp: string }, lic_full: unknown): Promise<void> {
+  const db = (env as unknown as { DB?: D1Like }).DB;
+  if (!db) return;
+  await new OfferStore(db).addOffer({
+    id: `ofr_${crypto.randomUUID()}`, site_id: lic.site_id, serial: lic.serial,
+    packager_fp: lic.packager_fp, licence_json: JSON.stringify(lic_full),
+    created_at: new Date().toISOString(),
+  });
+}
 import { json } from "../../lib/portal";
 
 export async function handleIssueLicence(
@@ -79,6 +93,7 @@ export async function handleIssueLicence(
       max_version: lic.max_version,
       issued_by: caller.email,
     });
+    await queueOffer(env, lic, lic);
     return json({ ok: true, licence: lic }, 201);
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : "issuance failed" }, 400);
@@ -163,6 +178,7 @@ export async function handleRenewLicence(
       max_version: lic.max_version,
       issued_by: `${caller.email} (renew ${serial}${planChange})`,
     });
+    await queueOffer(env, lic, lic);
     return json({ ok: true, licence: lic, renewed_from: serial }, 201);
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : "renewal failed" }, 400);

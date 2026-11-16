@@ -16,6 +16,8 @@
 //   GET  /s/:siteId, GET /       (SPA pages — served from ./dist assets)
 
 import { accountsForEnv, initSchema, type AccountsStore, type D1Like } from "./lib/db";
+import { OfferStore } from "./lib/offers";
+import { handleDecideTrialRequest, handleHeartbeat, handleListTrialRequests, handleTrialRequest } from "./routes/api/licence-heartbeat";
 import { authorizeAsync, canAccessSite, sessionTokenFrom } from "./lib/auth";
 import { compositeKeyStore, getSessionUser, json, needAdmin, needAuth } from "./lib/portal";
 import { reportersForEnv, storeForEnv } from "./lib/store";
@@ -98,6 +100,14 @@ export default {
       return handlePushOrders(req, { keys, store, reporters });
     }
 
+    if (req.method === "POST" && (path === "/api/licence-heartbeat" || path === "/api/trial-request")) {
+      await ensureSchema(env, accounts);
+      const d1 = (env as unknown as { DB?: D1Like }).DB;
+      const offers = d1 ? new OfferStore(d1) : null;
+      if (path === "/api/licence-heartbeat") return handleHeartbeat(req, { keys, accounts, offers });
+      return handleTrialRequest(req, { keys, offers });
+    }
+
     if (req.method === "POST" && path === "/api/auth/login") {
       await ensureSchema(env, accounts);
       return handleLogin(req, accounts);
@@ -145,6 +155,21 @@ export default {
       if (!me) return needAuth();
       await ensureSchema(env, accounts);
       return handleRenewLicence(req, env, accounts, me);
+    }
+    if (path === "/api/trial-requests" && req.method === "GET") {
+      const me = await getSessionUser(req, accounts);
+      if (!me) return needAuth();
+      await ensureSchema(env, accounts);
+      const d1 = (env as unknown as { DB?: D1Like }).DB;
+      return handleListTrialRequests(d1 ? new OfferStore(d1) : null, me);
+    }
+    if (path === "/api/trial-requests/decide" && req.method === "POST") {
+      const me = await getSessionUser(req, accounts);
+      if (!me) return needAuth();
+      await ensureSchema(env, accounts);
+      const d1 = (env as unknown as { DB?: D1Like }).DB;
+      return handleDecideTrialRequest(req, env as Record<string, string | undefined>,
+        { accounts, offers: d1 ? new OfferStore(d1) : null }, me);
     }
     if (path === "/api/admin/site-licences" && req.method === "GET") {
       const me = await getSessionUser(req, accounts);
