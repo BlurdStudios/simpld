@@ -15,7 +15,13 @@ import { Route as DownloadRouteImport } from './routes/download'
 import { Route as LicenceRouteImport } from './routes/licence'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as SSiteIdRouteImport } from './routes/s.$siteId'
+import { Route as SSiteIdIndexRouteImport } from './routes/s.$siteId.index'
+import { Route as SSiteIdDownloadsRouteImport } from './routes/s.$siteId.downloads'
+import { Route as SSiteIdLicenceRouteImport } from './routes/s.$siteId.licence'
 import { Route as SSiteIdLoginRouteImport } from './routes/s.$siteId.login'
+import { Route as SSiteIdOrdersRouteImport } from './routes/s.$siteId.orders'
+import { Route as SSiteIdProductionRouteImport } from './routes/s.$siteId.production'
+import { Route as SSiteIdStockRouteImport } from './routes/s.$siteId.stock'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -47,9 +53,39 @@ const SSiteIdRoute = SSiteIdRouteImport.update({
   path: '/s/$siteId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SSiteIdIndexRoute = SSiteIdIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => SSiteIdRoute,
+} as any)
+const SSiteIdDownloadsRoute = SSiteIdDownloadsRouteImport.update({
+  id: '/downloads',
+  path: '/downloads',
+  getParentRoute: () => SSiteIdRoute,
+} as any)
+const SSiteIdLicenceRoute = SSiteIdLicenceRouteImport.update({
+  id: '/licence',
+  path: '/licence',
+  getParentRoute: () => SSiteIdRoute,
+} as any)
 const SSiteIdLoginRoute = SSiteIdLoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => SSiteIdRoute,
+} as any)
+const SSiteIdOrdersRoute = SSiteIdOrdersRouteImport.update({
+  id: '/orders',
+  path: '/orders',
+  getParentRoute: () => SSiteIdRoute,
+} as any)
+const SSiteIdProductionRoute = SSiteIdProductionRouteImport.update({
+  id: '/production',
+  path: '/production',
+  getParentRoute: () => SSiteIdRoute,
+} as any)
+const SSiteIdStockRoute = SSiteIdStockRouteImport.update({
+  id: '/stock',
+  path: '/stock',
   getParentRoute: () => SSiteIdRoute,
 } as any)
 
@@ -60,7 +96,13 @@ export interface FileRoutesByFullPath {
   '/licence': typeof LicenceRoute
   '/login': typeof LoginRoute
   '/s/$siteId': typeof SSiteIdRouteWithChildren
+  '/s/$siteId/downloads': typeof SSiteIdDownloadsRoute
+  '/s/$siteId/licence': typeof SSiteIdLicenceRoute
   '/s/$siteId/login': typeof SSiteIdLoginRoute
+  '/s/$siteId/orders': typeof SSiteIdOrdersRoute
+  '/s/$siteId/production': typeof SSiteIdProductionRoute
+  '/s/$siteId/stock': typeof SSiteIdStockRoute
+  '/s/$siteId/': typeof SSiteIdIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -68,8 +110,13 @@ export interface FileRoutesByTo {
   '/download': typeof DownloadRoute
   '/licence': typeof LicenceRoute
   '/login': typeof LoginRoute
-  '/s/$siteId': typeof SSiteIdRouteWithChildren
+  '/s/$siteId/downloads': typeof SSiteIdDownloadsRoute
+  '/s/$siteId/licence': typeof SSiteIdLicenceRoute
   '/s/$siteId/login': typeof SSiteIdLoginRoute
+  '/s/$siteId/orders': typeof SSiteIdOrdersRoute
+  '/s/$siteId/production': typeof SSiteIdProductionRoute
+  '/s/$siteId/stock': typeof SSiteIdStockRoute
+  '/s/$siteId': typeof SSiteIdIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -79,7 +126,13 @@ export interface FileRoutesById {
   '/licence': typeof LicenceRoute
   '/login': typeof LoginRoute
   '/s/$siteId': typeof SSiteIdRouteWithChildren
+  '/s/$siteId/downloads': typeof SSiteIdDownloadsRoute
+  '/s/$siteId/licence': typeof SSiteIdLicenceRoute
   '/s/$siteId/login': typeof SSiteIdLoginRoute
+  '/s/$siteId/orders': typeof SSiteIdOrdersRoute
+  '/s/$siteId/production': typeof SSiteIdProductionRoute
+  '/s/$siteId/stock': typeof SSiteIdStockRoute
+  '/s/$siteId/': typeof SSiteIdIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -90,7 +143,13 @@ export interface FileRouteTypes {
     | '/licence'
     | '/login'
     | '/s/$siteId'
+    | '/s/$siteId/downloads'
+    | '/s/$siteId/licence'
     | '/s/$siteId/login'
+    | '/s/$siteId/orders'
+    | '/s/$siteId/production'
+    | '/s/$siteId/stock'
+    | '/s/$siteId/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -98,8 +157,13 @@ export interface FileRouteTypes {
     | '/download'
     | '/licence'
     | '/login'
-    | '/s/$siteId'
+    | '/s/$siteId/downloads'
+    | '/s/$siteId/licence'
     | '/s/$siteId/login'
+    | '/s/$siteId/orders'
+    | '/s/$siteId/production'
+    | '/s/$siteId/stock'
+    | '/s/$siteId'
   id:
     | '__root__'
     | '/'
@@ -108,7 +172,13 @@ export interface FileRouteTypes {
     | '/licence'
     | '/login'
     | '/s/$siteId'
+    | '/s/$siteId/downloads'
+    | '/s/$siteId/licence'
     | '/s/$siteId/login'
+    | '/s/$siteId/orders'
+    | '/s/$siteId/production'
+    | '/s/$siteId/stock'
+    | '/s/$siteId/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -164,6 +234,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SSiteIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/s/$siteId/': {
+      id: '/s/$siteId/'
+      path: '/'
+      fullPath: '/s/$siteId/'
+      preLoaderRoute: typeof SSiteIdIndexRouteImport
+      parentRoute: typeof SSiteIdRoute
+    }
+    '/s/$siteId/downloads': {
+      id: '/s/$siteId/downloads'
+      path: '/downloads'
+      fullPath: '/s/$siteId/downloads'
+      preLoaderRoute: typeof SSiteIdDownloadsRouteImport
+      parentRoute: typeof SSiteIdRoute
+    }
+    '/s/$siteId/licence': {
+      id: '/s/$siteId/licence'
+      path: '/licence'
+      fullPath: '/s/$siteId/licence'
+      preLoaderRoute: typeof SSiteIdLicenceRouteImport
+      parentRoute: typeof SSiteIdRoute
+    }
     '/s/$siteId/login': {
       id: '/s/$siteId/login'
       path: '/login'
@@ -171,15 +262,48 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SSiteIdLoginRouteImport
       parentRoute: typeof SSiteIdRoute
     }
+    '/s/$siteId/orders': {
+      id: '/s/$siteId/orders'
+      path: '/orders'
+      fullPath: '/s/$siteId/orders'
+      preLoaderRoute: typeof SSiteIdOrdersRouteImport
+      parentRoute: typeof SSiteIdRoute
+    }
+    '/s/$siteId/production': {
+      id: '/s/$siteId/production'
+      path: '/production'
+      fullPath: '/s/$siteId/production'
+      preLoaderRoute: typeof SSiteIdProductionRouteImport
+      parentRoute: typeof SSiteIdRoute
+    }
+    '/s/$siteId/stock': {
+      id: '/s/$siteId/stock'
+      path: '/stock'
+      fullPath: '/s/$siteId/stock'
+      preLoaderRoute: typeof SSiteIdStockRouteImport
+      parentRoute: typeof SSiteIdRoute
+    }
   }
 }
 
 interface SSiteIdRouteChildren {
+  SSiteIdDownloadsRoute: typeof SSiteIdDownloadsRoute
+  SSiteIdLicenceRoute: typeof SSiteIdLicenceRoute
   SSiteIdLoginRoute: typeof SSiteIdLoginRoute
+  SSiteIdOrdersRoute: typeof SSiteIdOrdersRoute
+  SSiteIdProductionRoute: typeof SSiteIdProductionRoute
+  SSiteIdStockRoute: typeof SSiteIdStockRoute
+  SSiteIdIndexRoute: typeof SSiteIdIndexRoute
 }
 
 const SSiteIdRouteChildren: SSiteIdRouteChildren = {
+  SSiteIdDownloadsRoute: SSiteIdDownloadsRoute,
+  SSiteIdLicenceRoute: SSiteIdLicenceRoute,
   SSiteIdLoginRoute: SSiteIdLoginRoute,
+  SSiteIdOrdersRoute: SSiteIdOrdersRoute,
+  SSiteIdProductionRoute: SSiteIdProductionRoute,
+  SSiteIdStockRoute: SSiteIdStockRoute,
+  SSiteIdIndexRoute: SSiteIdIndexRoute,
 }
 
 const SSiteIdRouteWithChildren =

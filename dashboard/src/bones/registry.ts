@@ -8,7 +8,12 @@ import _admin_licences_issued from './admin-licences-issued.bones.json'
 import _admin_licences_tracking from './admin-licences-tracking.bones.json'
 import _admin_sites from './admin-sites.bones.json'
 import _admin_users from './admin-users.bones.json'
-import _site_viewer from './site-viewer.bones.json'
+import _site_overview from './site-overview.bones.json'
+import _site_production from './site-production.bones.json'
+import _site_orders from './site-orders.bones.json'
+import _site_stock from './site-stock.bones.json'
+import _site_licence from './site-licence.bones.json'
+import _site_downloads from './site-downloads.bones.json'
 
 registerBones({
   "downloads": _downloads,
@@ -17,5 +22,10 @@ registerBones({
   "admin-licences-tracking": _admin_licences_tracking,
   "admin-sites": _admin_sites,
   "admin-users": _admin_users,
-  "site-viewer": _site_viewer,
+  "site-overview": _site_overview,
+  "site-production": _site_production,
+  "site-orders": _site_orders,
+  "site-stock": _site_stock,
+  "site-licence": _site_licence,
+  "site-downloads": _site_downloads,
 })

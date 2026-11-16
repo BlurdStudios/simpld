@@ -10,6 +10,9 @@ import {
   Menu01Icon,
   Cancel01Icon,
   ArrowLeft01Icon,
+  PackageIcon,
+  BoxesIcon,
+  DeliveryTruck01Icon,
 } from "@hugeicons/core-free-icons";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -21,6 +24,8 @@ interface NavItem {
   to: string;
   label: string;
   icon: typeof DashboardSquare01Icon;
+  /** Only highlight on an exact path match (e.g. the site's Overview). */
+  exact?: boolean;
 }
 
 // ONE layout, TWO content sets. The route decides which content fills the
@@ -47,26 +52,34 @@ function vendorContent(me: { role: string } | null | undefined): ShellContent {
 }
 
 function customerContent(siteId: string, onLogin: boolean, me: { role: string } | null | undefined): ShellContent {
+  const base = `/s/${siteId}`;
   return {
     brand: { title: siteId, subtitle: "customer portal" },
     // The login page shows branding only — nav appears once inside the site.
     items: onLogin
       ? []
       : [
-          { to: `/s/${siteId}`, label: "Overview", icon: DashboardSquare01Icon },
+          { to: base, label: "Overview", icon: DashboardSquare01Icon, exact: true },
+          { to: `${base}/production`, label: "Production", icon: BoxesIcon },
+          { to: `${base}/orders`, label: "Orders", icon: DeliveryTruck01Icon },
+          { to: `${base}/stock`, label: "Stock", icon: PackageIcon },
+          { to: `${base}/licence`, label: "Licence", icon: Key01Icon },
+          { to: `${base}/downloads`, label: "Downloads", icon: Download01Icon },
           // A vendor admin previewing a customer's site gets a way back.
           ...(me?.role === "vendor_admin"
-            ? [{ to: "/", label: "Vendor portal", icon: ArrowLeft01Icon }]
+            ? [{ to: "/", label: "Vendor portal", icon: ArrowLeft01Icon, exact: true }]
             : []),
         ],
   };
 }
 
 function shellContent(pathname: string, me: { role: string } | null | undefined): ShellContent {
-  const siteMatch = /^\/s\/([^/]+)(\/login)?$/.exec(pathname);
+  // Any /s/:siteId/... path is a customer page; the login subpath shows
+  // branding only (no nav until the customer is inside the site).
+  const siteMatch = /^\/s\/([^/]+)(\/.*)?$/.exec(pathname);
   if (siteMatch) {
     const siteId = decodeURIComponent(siteMatch[1]);
-    return customerContent(siteId, /\/login$/.test(pathname), me);
+    return customerContent(siteId, /^\/login\/?$/.test(siteMatch[2] ?? ""), me);
   }
   return vendorContent(me);
 }
@@ -92,8 +105,11 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
       <Separator />
       <nav className="flex flex-col gap-1">
         {content.items.map((n) => {
-          const active =
-            n.to === "/" ? location.pathname === "/" : location.pathname.startsWith(n.to);
+          // Exact-only for Overview (and the vendor root) so a subpage never
+          // lights up its parent. Other items keep the prefix behaviour.
+          const active = n.to === "/" || n.exact
+            ? location.pathname === n.to
+            : location.pathname.startsWith(n.to);
           return (
             <Link
               key={n.to}
