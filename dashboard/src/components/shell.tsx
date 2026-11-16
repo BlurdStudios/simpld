@@ -9,6 +9,7 @@ import {
   Logout01Icon,
   Menu01Icon,
   Cancel01Icon,
+  ArrowLeft01Icon,
 } from "@hugeicons/core-free-icons";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -36,11 +37,28 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   const [open, setOpen] = useState(false);
 
-  const items = NAV.filter((n) => {
-    if (n.adminOnly) return me?.role === "vendor_admin";
-    if (n.authOnly) return !!me;
-    return true;
-  });
+  // Route-aware chrome: /s/:siteId (and /s/:siteId/login) are the CUSTOMER's
+  // pages — they get customer branding and a customer nav, never the vendor
+  // portal links (Licence/Downloads/Admin). Everything else keeps the vendor
+  // sidebar. A vendor_admin previewing a site gets a link back to the portal.
+  const siteMatch = /^\/s\/([^/]+)(\/login)?$/.exec(location.pathname);
+  const siteId = siteMatch ? decodeURIComponent(siteMatch[1]) : null;
+  const onSiteLogin = !!siteId && /\/login$/.test(location.pathname);
+
+  const items: NavItem[] = siteId
+    ? onSiteLogin
+      ? []
+      : [
+          { to: `/s/${siteId}`, label: "Overview", icon: DashboardSquare01Icon },
+          ...(me?.role === "vendor_admin"
+            ? [{ to: "/", label: "Vendor portal", icon: ArrowLeft01Icon }]
+            : []),
+        ]
+    : NAV.filter((n) => {
+        if (n.adminOnly) return me?.role === "vendor_admin";
+        if (n.authOnly) return !!me;
+        return true;
+      });
 
   const sidebar = (
     <div className="flex h-full flex-col gap-2">
@@ -49,8 +67,10 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           S
         </div>
         <div className="leading-tight">
-          <p className="text-sm font-semibold">Simpl'd Vendor</p>
-          <p className="text-xs text-muted-foreground">factory portal</p>
+          <p className="truncate text-sm font-semibold">{siteId ?? "Simpl'd Vendor"}</p>
+          <p className="text-xs text-muted-foreground">
+            {siteId ? "customer portal" : "factory portal"}
+          </p>
         </div>
       </div>
       <Separator />
@@ -110,7 +130,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
         <Button variant="ghost" size="icon" onClick={() => setOpen(!open)} aria-label="Menu">
           <HugeiconsIcon icon={open ? Cancel01Icon : Menu01Icon} size={20} />
         </Button>
-        <p className="text-sm font-semibold">Simpl'd Vendor</p>
+        <p className="text-sm font-semibold">{siteId ?? "Simpl'd Vendor"}</p>
         <div className="ml-auto">
           {me ? (
             <Badge variant={me.role === "vendor_admin" ? "default" : "secondary"}>
