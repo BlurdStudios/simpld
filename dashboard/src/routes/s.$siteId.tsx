@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { Skeleton as BoneSkeleton } from "boneyard-js/react";
 import {
   PackageIcon,
   BoxesIcon,
@@ -32,6 +33,21 @@ function SiteViewerRoute() {
   const { siteId } = Route.useParams();
   return <SiteViewer siteId={siteId} />;
 }
+
+// The boneyard CLI sets this before page load so `<BoneSkeleton fixture>` renders
+// mock content while bones are captured. Never true in a production build here.
+const isBuild =
+  typeof window !== "undefined" &&
+  (window as unknown as { __BONEYARD_BUILD?: boolean }).__BONEYARD_BUILD === true;
+
+// Shared boneyard look: shadcn muted fill, shimmer, viewport-keyed breakpoints
+// (the shell's content column is narrower than the window).
+const boneStyle = {
+  animate: "shimmer",
+  color: "hsl(var(--muted))",
+  darkColor: "hsl(var(--muted))",
+  select: "viewport",
+} as const;
 
 function mockSnapshot(siteId: string): SiteSnapshot {
   const days: Record<string, SiteSnapshot["days"][string]> = {};
@@ -132,79 +148,8 @@ function Stat({
   );
 }
 
-export function SiteViewer({ siteId }: { siteId: string }) {
-  const [snap, setSnap] = useState<SiteSnapshot | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [empty, setEmpty] = useState(false);
-  const [mock, setMock] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      // Session cookie auth only — no viewer keys.
-      let res: Response;
-      try {
-        res = await fetch(`/api/s/${encodeURIComponent(siteId)}`);
-      } catch {
-        // Dev fallback: no Worker backend under `vite dev` — show mock shape.
-        if (!cancelled) {
-          setSnap(mockSnapshot(siteId));
-          setMock(true);
-          setError(null);
-        }
-        return;
-      }
-      if (res.status === 403) {
-        if (!cancelled) setError("This login cannot view this site.");
-        return;
-      }
-      if (res.status === 401) {
-        if (!cancelled) setError("Log in to view this site.");
-        return;
-      }
-      if (res.status === 404) {
-        if (!cancelled) setEmpty(true);
-        return;
-      }
-      if (!res.ok) {
-        if (!cancelled) setError(`Viewer request failed (${res.status}).`);
-        return;
-      }
-      const data = (await res.json()) as SiteSnapshot;
-      if (!cancelled) setSnap(data);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [siteId]);
-
-  if (empty)
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">No data yet</CardTitle>
-          <CardDescription>Your figures will appear here after the first sync from the factory.</CardDescription>
-        </CardHeader>
-      </Card>
-    );
-  if (error)
-    return (
-      <Card className="border-destructive">
-        <CardHeader>
-          <CardTitle className="text-base">Cannot open viewer</CardTitle>
-          <CardDescription>{error}</CardDescription>
-        </CardHeader>
-      </Card>
-    );
-  if (!snap)
-    return (
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {[0, 1, 2, 3].map((i) => (
-          <Skeleton key={i} className="h-28" />
-        ))}
-      </div>
-    );
-
+/** The real viewer content, also used as the boneyard capture fixture. */
+function SiteViewerContent({ snap, mock }: { snap: SiteSnapshot; mock: boolean }) {
   const days = Object.keys(snap.days).sort().slice(-2); // yesterday + today
   const latest = days.length ? snap.days[days[days.length - 1]] : null;
 
@@ -302,5 +247,92 @@ export function SiteViewer({ siteId }: { siteId: string }) {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+export function SiteViewer({ siteId }: { siteId: string }) {
+  const [snap, setSnap] = useState<SiteSnapshot | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [empty, setEmpty] = useState(false);
+  const [mock, setMock] = useState(false);
+
+  useEffect(() => {
+    // Capture runs on the fixture — no fetch, so no 401/error card can unmount
+    // the <BoneSkeleton> before boneyard snapshots it.
+    if (isBuild) return;
+    let cancelled = false;
+    (async () => {
+      // Session cookie auth only — no viewer keys.
+      let res: Response;
+      try {
+        res = await fetch(`/api/s/${encodeURIComponent(siteId)}`);
+      } catch {
+        // Dev fallback: no Worker backend under `vite dev` — show mock shape.
+        if (!cancelled) {
+          setSnap(mockSnapshot(siteId));
+          setMock(true);
+          setError(null);
+        }
+        return;
+      }
+      if (res.status === 403) {
+        if (!cancelled) setError("This login cannot view this site.");
+        return;
+      }
+      if (res.status === 401) {
+        if (!cancelled) setError("Log in to view this site.");
+        return;
+      }
+      if (res.status === 404) {
+        if (!cancelled) setEmpty(true);
+        return;
+      }
+      if (!res.ok) {
+        if (!cancelled) setError(`Viewer request failed (${res.status}).`);
+        return;
+      }
+      const data = (await res.json()) as SiteSnapshot;
+      if (!cancelled) setSnap(data);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [siteId]);
+
+  if (empty)
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">No data yet</CardTitle>
+          <CardDescription>Your figures will appear here after the first sync from the factory.</CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  if (error)
+    return (
+      <Card className="border-destructive">
+        <CardHeader>
+          <CardTitle className="text-base">Cannot open viewer</CardTitle>
+          <CardDescription>{error}</CardDescription>
+        </CardHeader>
+      </Card>
+    );
+
+  return (
+    <BoneSkeleton
+      name="site-viewer"
+      loading={!snap}
+      {...boneStyle}
+      fixture={<SiteViewerContent snap={mockSnapshot(siteId)} mock />}
+      fallback={
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {[0, 1, 2, 3].map((i) => (
+            <Skeleton key={i} className="h-28" />
+          ))}
+        </div>
+      }
+    >
+      {snap ? <SiteViewerContent snap={snap} mock={mock} /> : null}
+    </BoneSkeleton>
   );
 }

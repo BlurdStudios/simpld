@@ -1,6 +1,7 @@
 import { TanStackRouterVite } from "@tanstack/router-plugin/vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { boneyardPlugin } from "boneyard-js/vite";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 
@@ -15,6 +16,7 @@ export default defineConfig({
     }),
     react(),
     tailwindcss(),
+    boneyardPlugin(),
   ],
   resolve: {
     alias: {

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { Skeleton as BoneSkeleton } from "boneyard-js/react";
 import { Download01Icon, File01Icon } from "@hugeicons/core-free-icons";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -16,6 +17,69 @@ export const Route = createFileRoute("/download")({
   ),
 });
 
+// boneyard capture flag + shared look (see admin.tsx / s.$siteId.tsx).
+const isBuild =
+  typeof window !== "undefined" &&
+  (window as unknown as { __BONEYARD_BUILD?: boolean }).__BONEYARD_BUILD === true;
+
+const boneStyle = {
+  animate: "shimmer",
+  color: "hsl(var(--muted))",
+  darkColor: "hsl(var(--muted))",
+  select: "viewport",
+} as const;
+
+const MOCK_RELEASES: ReleaseManifest[] = [
+  {
+    version: "2.4.1",
+    file: "Simpld-Setup-2.4.1.exe",
+    sha256: "a1b2c3d4e5f60718293a4b5c6d7e8f900123456789abcdef0123456789abcdef0",
+    notes: "Faster sync, clearer licence warnings.",
+  },
+  {
+    version: "2.4.0",
+    file: "Simpld-Setup-2.4.0.exe",
+    sha256: "0fedcba9876543210fedcba9876543210fedcba9876543210fedcba987654321",
+    notes: "Reporter fingerprints and station heartbeats.",
+  },
+];
+
+/** Real release list, reused as the boneyard capture fixture. */
+function ReleaseCards({
+  releases,
+  latest,
+}: {
+  releases: ReleaseManifest[];
+  latest: ReleaseManifest | null;
+}) {
+  return (
+    <>
+      {releases.map((r) => (
+        <div key={r.file} className="flex flex-col gap-1 rounded-lg border p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="flex items-center gap-2 font-semibold">
+              <HugeiconsIcon icon={File01Icon} size={18} className="text-muted-foreground" />
+              v{r.version}
+              {latest?.file === r.file && (
+                <span className="rounded-md bg-primary px-2 py-0.5 text-xs font-semibold text-primary-foreground">
+                  latest
+                </span>
+              )}
+            </span>
+            <a href={`/api/releases/file/${encodeURIComponent(r.file)}`} download={r.file}>
+              <Button size="sm">
+                <HugeiconsIcon icon={Download01Icon} size={16} /> {r.file}
+              </Button>
+            </a>
+          </div>
+          {r.notes && <p className="text-sm">{r.notes}</p>}
+          <p className="break-all text-xs text-muted-foreground">sha256: {r.sha256}</p>
+        </div>
+      ))}
+    </>
+  );
+}
+
 export function Downloads() {
   const { me } = useAuth();
   const [latest, setLatest] = useState<ReleaseManifest | null>(null);
@@ -24,6 +88,8 @@ export function Downloads() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // Fixture drives capture; skip the API call so no error state appears.
+    if (isBuild) return;
     let live = true;
     (async () => {
       try {
@@ -62,38 +128,24 @@ export function Downloads() {
           <CardDescription>Compare the hash below if in doubt (see UPDATES.md).</CardDescription>
         </CardHeader>
         <CardContent className="grid gap-3">
-          {loading && (
-            <>
-              <Skeleton className="h-20" />
-              <Skeleton className="h-20" />
-            </>
-          )}
+          <BoneSkeleton
+            name="downloads"
+            loading={loading}
+            {...boneStyle}
+            fixture={<ReleaseCards releases={MOCK_RELEASES} latest={MOCK_RELEASES[0]} />}
+            fallback={
+              <>
+                <Skeleton className="h-20" />
+                <Skeleton className="h-20" />
+              </>
+            }
+          >
+            <ReleaseCards releases={releases} latest={latest} />
+          </BoneSkeleton>
           {error && <p className="text-sm font-medium text-destructive">{error}</p>}
           {!loading && !error && releases.length === 0 && (
             <p className="text-sm text-muted-foreground">No releases published yet.</p>
           )}
-          {releases.map((r) => (
-            <div key={r.file} className="flex flex-col gap-1 rounded-lg border p-4">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="flex items-center gap-2 font-semibold">
-                  <HugeiconsIcon icon={File01Icon} size={18} className="text-muted-foreground" />
-                  v{r.version}
-                  {latest?.file === r.file && (
-                    <span className="rounded-md bg-primary px-2 py-0.5 text-xs font-semibold text-primary-foreground">
-                      latest
-                    </span>
-                  )}
-                </span>
-                <a href={`/api/releases/file/${encodeURIComponent(r.file)}`} download={r.file}>
-                  <Button size="sm">
-                    <HugeiconsIcon icon={Download01Icon} size={16} /> {r.file}
-                  </Button>
-                </a>
-              </div>
-              {r.notes && <p className="text-sm">{r.notes}</p>}
-              <p className="break-all text-xs text-muted-foreground">sha256: {r.sha256}</p>
-            </div>
-          ))}
         </CardContent>
       </Card>
     </div>

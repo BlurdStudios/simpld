@@ -1,4 +1,6 @@
 import "./index.css";
+// Boneyard bones registry — registers captured skeletons by name at startup.
+import "./bones/registry";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { RouterProvider } from "@tanstack/react-router";

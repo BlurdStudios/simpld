@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { Skeleton as BoneSkeleton } from "boneyard-js/react";
 import {
   UserIcon,
   Key01Icon,
@@ -75,6 +76,154 @@ interface AdminSite {
   reporters_seen: number;
 }
 
+type LicenceRow = {
+  serial: string;
+  site_id: string;
+  edition: string;
+  packager_fp: string;
+  max_stations: number;
+  expires: string;
+  issued_by: string;
+  created_at: string;
+};
+
+type TrackedSite = {
+  site_id: string;
+  edition: string;
+  expires: string;
+  days_left: number | null;
+  state: string;
+  app_version: string;
+  packager_fp: string;
+  updated_at: string;
+};
+
+// boneyard capture flag + shared look (same as download/s.$siteId).
+const isBuild =
+  typeof window !== "undefined" &&
+  (window as unknown as { __BONEYARD_BUILD?: boolean }).__BONEYARD_BUILD === true;
+
+const boneStyle = {
+  animate: "shimmer",
+  color: "hsl(var(--muted))",
+  darkColor: "hsl(var(--muted))",
+  select: "viewport",
+} as const;
+
+// Fixture data — only rendered while `npx boneyard-js build` captures bones.
+const MOCK_USERS: AdminUser[] = [
+  {
+    id: "u-1",
+    email: "ops@vendor.example",
+    role: "vendor_admin",
+    site_id: null,
+    disabled: false,
+    created_at: "2026-01-12T09:30:00.000Z",
+  },
+  {
+    id: "u-2",
+    email: "buyer@acme.example",
+    role: "client",
+    site_id: "acme-f1",
+    disabled: false,
+    created_at: "2026-02-03T11:15:00.000Z",
+    setup_pending: true,
+    setup_expires: "2026-12-01T00:00:00.000Z",
+  },
+  {
+    id: "u-3",
+    email: "old@globex.example",
+    role: "client",
+    site_id: "globex-f2",
+    disabled: true,
+    created_at: "2025-11-20T08:00:00.000Z",
+  },
+];
+
+const MOCK_KEYS: AdminKey[] = [
+  {
+    id: "key-1",
+    user_id: "u-2",
+    site_id: "acme-f1",
+    label: "factory-1",
+    created_at: "2026-02-04T10:00:00.000Z",
+    revoked_at: null,
+  },
+  {
+    id: "key-2",
+    user_id: "u-3",
+    site_id: "globex-f2",
+    label: "old-packager",
+    created_at: "2025-11-21T10:00:00.000Z",
+    revoked_at: "2026-01-05T10:00:00.000Z",
+  },
+];
+
+const MOCK_SITES: AdminSite[] = [
+  {
+    site_id: "acme-f1",
+    last_push_at: "2026-11-16T06:45:00.000Z",
+    last_reporter_fp: "9f2c1a7b4e8d0c63",
+    frozen: false,
+    active_keys: 1,
+    reporters_seen: 3,
+  },
+  {
+    site_id: "globex-f2",
+    last_push_at: null,
+    last_reporter_fp: null,
+    frozen: true,
+    active_keys: 0,
+    reporters_seen: 0,
+  },
+];
+
+const MOCK_TRACKED: TrackedSite[] = [
+  {
+    site_id: "acme-f1",
+    edition: "pro",
+    expires: "2027-06-30",
+    days_left: 225,
+    state: "active",
+    app_version: "2.4.1",
+    packager_fp: "9f2c1a7b4e8d0c63",
+    updated_at: "2026-11-16T06:45:00.000Z",
+  },
+  {
+    site_id: "initech-f3",
+    edition: "trial",
+    expires: "2026-11-18",
+    days_left: 2,
+    state: "trial",
+    app_version: "2.3.9",
+    packager_fp: "abc123def4567890",
+    updated_at: "2026-11-15T18:20:00.000Z",
+  },
+];
+
+const MOCK_LICENCES: LicenceRow[] = [
+  {
+    serial: "SIMPLD-20260203-ab12",
+    site_id: "acme-f1",
+    edition: "pro",
+    packager_fp: "9f2c1a7b4e8d0c63",
+    max_stations: 3,
+    expires: "2027-06-30",
+    issued_by: "ops@vendor.example",
+    created_at: "2026-02-03T11:20:00.000Z",
+  },
+  {
+    serial: "SIMPLD-20251120-cd34",
+    site_id: "globex-f2",
+    edition: "simple",
+    packager_fp: "0a1b2c3d4e5f6789",
+    max_stations: 1,
+    expires: "2026-11-20",
+    issued_by: "ops@vendor.example",
+    created_at: "2025-11-20T08:10:00.000Z",
+  },
+];
+
 const TABS = [
   { id: "users", label: "Users", icon: UserIcon },
   { id: "keys", label: "API keys", icon: Key01Icon },
@@ -115,12 +264,314 @@ export function Admin() {
           {error}
         </p>
       )}
-      {tab === "users" && <UsersTab onError={setError} />}
-      {tab === "keys" && <KeysTab onError={setError} />}
-      {tab === "sites" && <SitesTab onError={setError} />}
-      {tab === "licences" && <LicencesTab onError={setError} />}
-      {tab === "releases" && <ReleasesTab onError={setError} />}
+      {/* In capture mode all sections mount at once so every named skeleton
+          can be snapshotted in a single CLI visit. Runtime keeps one tab. */}
+      {(isBuild || tab === "users") && <UsersTab onError={setError} />}
+      {(isBuild || tab === "keys") && <KeysTab onError={setError} />}
+      {(isBuild || tab === "sites") && <SitesTab onError={setError} />}
+      {(isBuild || tab === "licences") && <LicencesTab onError={setError} />}
+      {(isBuild || tab === "releases") && <ReleasesTab onError={setError} />}
     </div>
+  );
+}
+
+// ---------- section tables (shared by real content and boneyard fixtures) ----------
+
+function UsersTable({
+  users,
+  resending,
+  onPatch,
+  onResend,
+}: {
+  users: AdminUser[];
+  resending: string | null;
+  onPatch: (id: string, body: Record<string, unknown>) => void;
+  onResend: (u: AdminUser) => void;
+}) {
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Email</TableHead>
+          <TableHead>Role</TableHead>
+          <TableHead>Site</TableHead>
+          <TableHead>Status</TableHead>
+          <TableHead>Setup</TableHead>
+          <TableHead className="text-right">Actions</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {users.map((u) => (
+          <TableRow key={u.id}>
+            <TableCell className="font-medium">{u.email}</TableCell>
+            <TableCell>
+              <Badge variant={u.role === "vendor_admin" ? "default" : "secondary"}>{u.role}</Badge>
+            </TableCell>
+            <TableCell>{u.site_id ?? "—"}</TableCell>
+            <TableCell>
+              <Badge variant={u.disabled ? "destructive" : "outline"}>
+                {u.disabled ? "disabled" : "active"}
+              </Badge>
+            </TableCell>
+            <TableCell>
+              {u.role === "client" && u.setup_pending ? (
+                <Badge variant="outline">
+                  {u.setup_expired ? "code expired" : "setup pending"}
+                </Badge>
+              ) : (
+                <span className="text-muted-foreground">—</span>
+              )}
+            </TableCell>
+            <TableCell className="text-right">
+              <div className="flex justify-end gap-2">
+                {u.role === "client" && u.setup_pending && (
+                  <Button variant="outline" size="sm" disabled={resending === u.id} onClick={() => onResend(u)}>
+                    {resending === u.id ? "Sending…" : "Resend setup code"}
+                  </Button>
+                )}
+                <Button variant="outline" size="sm" onClick={() => onPatch(u.id, { disabled: !u.disabled })}>
+                  {u.disabled ? "Enable" : "Disable"}
+                </Button>
+              </div>
+            </TableCell>
+          </TableRow>
+        ))}
+        {users.length === 0 && (
+          <TableRow>
+            <TableCell colSpan={6} className="text-muted-foreground">No users yet.</TableCell>
+          </TableRow>
+        )}
+      </TableBody>
+    </Table>
+  );
+}
+
+function KeysTable({ keys, onRevoke }: { keys: AdminKey[]; onRevoke: (id: string) => void }) {
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>ID</TableHead>
+          <TableHead>User</TableHead>
+          <TableHead>Site</TableHead>
+          <TableHead>Label</TableHead>
+          <TableHead>Status</TableHead>
+          <TableHead className="text-right">Actions</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {keys.map((k) => (
+          <TableRow key={k.id}>
+            <TableCell className="font-mono text-xs">{k.id}</TableCell>
+            <TableCell className="font-mono text-xs">{k.user_id}</TableCell>
+            <TableCell>{k.site_id}</TableCell>
+            <TableCell>{k.label}</TableCell>
+            <TableCell>
+              <Badge variant={k.revoked_at ? "destructive" : "outline"}>
+                {k.revoked_at ? `revoked ${k.revoked_at}` : "active"}
+              </Badge>
+            </TableCell>
+            <TableCell className="text-right">
+              {!k.revoked_at && (
+                <Button variant="outline" size="sm" onClick={() => onRevoke(k.id)}>
+                  <HugeiconsIcon icon={Cancel01Icon} size={14} /> Revoke
+                </Button>
+              )}
+            </TableCell>
+          </TableRow>
+        ))}
+        {keys.length === 0 && (
+          <TableRow>
+            <TableCell colSpan={6} className="text-muted-foreground">No keys yet.</TableCell>
+          </TableRow>
+        )}
+      </TableBody>
+    </Table>
+  );
+}
+
+function SitesTable({
+  sites,
+  onFreeze,
+  onReporters,
+}: {
+  sites: AdminSite[];
+  onFreeze: (s: AdminSite) => void;
+  onReporters: (siteId: string) => void;
+}) {
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Site</TableHead>
+          <TableHead>Last push</TableHead>
+          <TableHead>Reporter fp</TableHead>
+          <TableHead>Keys</TableHead>
+          <TableHead>Reporters</TableHead>
+          <TableHead>Frozen</TableHead>
+          <TableHead className="text-right">Actions</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {sites.map((s) => (
+          <TableRow key={s.site_id}>
+            <TableCell className="font-medium">{s.site_id}</TableCell>
+            <TableCell>{s.last_push_at ?? "—"}</TableCell>
+            <TableCell className="max-w-40 truncate font-mono text-xs">{s.last_reporter_fp ?? "—"}</TableCell>
+            <TableCell>{s.active_keys}</TableCell>
+            <TableCell>{s.reporters_seen}</TableCell>
+            <TableCell>
+              <Badge variant={s.frozen ? "destructive" : "outline"}>{s.frozen ? "frozen" : "live"}</Badge>
+            </TableCell>
+            <TableCell className="text-right">
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" size="sm" onClick={() => onFreeze(s)}>
+                  {s.frozen ? "Unfreeze" : "Freeze"}
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => onReporters(s.site_id)}>
+                  Reporters
+                </Button>
+              </div>
+            </TableCell>
+          </TableRow>
+        ))}
+        {sites.length === 0 && (
+          <TableRow>
+            <TableCell colSpan={7} className="text-muted-foreground">No sites pushed yet.</TableCell>
+          </TableRow>
+        )}
+      </TableBody>
+    </Table>
+  );
+}
+
+function TrackedLicencesTable({
+  tracked,
+  neverActivated,
+  planPick,
+  changing,
+  onPlanPick,
+  onChangePlan,
+}: {
+  tracked: TrackedSite[];
+  neverActivated: LicenceRow[];
+  planPick: Record<string, string>;
+  changing: string | null;
+  onPlanPick: (siteId: string, edition: string) => void;
+  onChangePlan: (siteId: string) => void;
+}) {
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Site</TableHead>
+          <TableHead>Live edition</TableHead>
+          <TableHead>Expires</TableHead>
+          <TableHead>Left</TableHead>
+          <TableHead>State</TableHead>
+          <TableHead>App</TableHead>
+          <TableHead>Action</TableHead>
+          <TableHead>Plan</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {tracked.map((t) => {
+          const flag = flagFor(t);
+          return (
+            <TableRow key={t.site_id}>
+              <TableCell className="font-medium">{t.site_id}</TableCell>
+              <TableCell>
+                <Badge variant="secondary">{t.edition || "—"}</Badge>
+              </TableCell>
+              <TableCell>{t.expires || "—"}</TableCell>
+              <TableCell>{t.days_left == null ? "—" : `${t.days_left}d`}</TableCell>
+              <TableCell>{t.state || "—"}</TableCell>
+              <TableCell className="text-muted-foreground">{t.app_version || "—"}</TableCell>
+              <TableCell>
+                {flag ? (
+                  <Badge variant={flag.tone === "err" ? "destructive" : "outline"}>{flag.label}</Badge>
+                ) : (
+                  <span className="text-muted-foreground">—</span>
+                )}
+              </TableCell>
+              <TableCell>
+                <div className="flex items-center gap-2">
+                  <select
+                    className="flex h-8 rounded-md border border-input bg-transparent px-2 text-xs"
+                    value={planPick[t.site_id] || t.edition || "pro"}
+                    onChange={(e) => onPlanPick(t.site_id, e.target.value)}
+                  >
+                    {["simple", "pro", "premium", "trial"].map((ed) => (
+                      <option key={ed} value={ed}>{ed}</option>
+                    ))}
+                  </select>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={changing === t.site_id}
+                    onClick={() => onChangePlan(t.site_id)}
+                  >
+                    {changing === t.site_id ? "…" : "Set plan"}
+                  </Button>
+                </div>
+              </TableCell>
+            </TableRow>
+          );
+        })}
+        {neverActivated.map((l) => (
+          <TableRow key={"na-" + l.site_id}>
+            <TableCell className="font-medium">{l.site_id}</TableCell>
+            <TableCell colSpan={6} className="text-muted-foreground">
+              Key issued {l.issued_by ? `by ${l.issued_by}` : ""} — never activated (no push yet)
+            </TableCell>
+            <TableCell>
+              <Badge variant="outline">Chase activation</Badge>
+            </TableCell>
+          </TableRow>
+        ))}
+        {tracked.length === 0 && neverActivated.length === 0 && (
+          <TableRow>
+            <TableCell colSpan={7} className="text-muted-foreground">No licences issued yet.</TableCell>
+          </TableRow>
+        )}
+      </TableBody>
+    </Table>
+  );
+}
+
+function LicencesIssuedTable({ rows }: { rows: LicenceRow[] }) {
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Serial</TableHead>
+          <TableHead>Site</TableHead>
+          <TableHead>Edition</TableHead>
+          <TableHead>Machines</TableHead>
+          <TableHead>Expires</TableHead>
+          <TableHead>Issued by</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {rows.map((l) => (
+          <TableRow key={l.serial + l.created_at}>
+            <TableCell className="font-medium">{l.serial}</TableCell>
+            <TableCell>{l.site_id}</TableCell>
+            <TableCell>
+              <Badge variant="secondary">{l.edition}</Badge>
+            </TableCell>
+            <TableCell>{l.max_stations}</TableCell>
+            <TableCell>{l.expires}</TableCell>
+            <TableCell className="text-muted-foreground">{l.issued_by}</TableCell>
+          </TableRow>
+        ))}
+        {rows.length === 0 && (
+          <TableRow>
+            <TableCell colSpan={6} className="text-muted-foreground">None issued yet.</TableCell>
+          </TableRow>
+        )}
+      </TableBody>
+    </Table>
   );
 }
 
@@ -151,7 +602,8 @@ function UsersTab({ onError }: { onError: (e: string | null) => void }) {
     }
   }
   useEffect(() => {
-    refresh();
+    // Fixture drives capture — no network needed while bones are captured.
+    if (!isBuild) refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -258,69 +710,17 @@ function UsersTab({ onError }: { onError: (e: string | null) => void }) {
             </div>
           </div>
         )}
-        {loading ? (
-          <Skeleton className="h-40" />
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Email</TableHead>
-                <TableHead>Role</TableHead>
-                <TableHead>Site</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Setup</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {users.map((u) => (
-                <TableRow key={u.id}>
-                  <TableCell className="font-medium">{u.email}</TableCell>
-                  <TableCell>
-                    <Badge variant={u.role === "vendor_admin" ? "default" : "secondary"}>{u.role}</Badge>
-                  </TableCell>
-                  <TableCell>{u.site_id ?? "—"}</TableCell>
-                  <TableCell>
-                    <Badge variant={u.disabled ? "destructive" : "outline"}>
-                      {u.disabled ? "disabled" : "active"}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>
-                    {u.role === "client" && u.setup_pending ? (
-                      <Badge variant="outline">
-                        {u.setup_expired ? "code expired" : "setup pending"}
-                      </Badge>
-                    ) : (
-                      <span className="text-muted-foreground">—</span>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex justify-end gap-2">
-                      {u.role === "client" && u.setup_pending && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          disabled={resending === u.id}
-                          onClick={() => resendSetup(u)}
-                        >
-                          {resending === u.id ? "Sending…" : "Resend setup code"}
-                        </Button>
-                      )}
-                      <Button variant="outline" size="sm" onClick={() => patch(u.id, { disabled: !u.disabled })}>
-                        {u.disabled ? "Enable" : "Disable"}
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-              {users.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={6} className="text-muted-foreground">No users yet.</TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        )}
+        <BoneSkeleton
+          name="admin-users"
+          loading={loading}
+          {...boneStyle}
+          fixture={
+            <UsersTable users={MOCK_USERS} resending={null} onPatch={() => {}} onResend={() => {}} />
+          }
+          fallback={<Skeleton className="h-40" />}
+        >
+          <UsersTable users={users} resending={resending} onPatch={patch} onResend={resendSetup} />
+        </BoneSkeleton>
       </CardContent>
     </Card>
   );
@@ -347,7 +747,8 @@ function KeysTab({ onError }: { onError: (e: string | null) => void }) {
     }
   }
   useEffect(() => {
-    refresh();
+    // Fixture drives capture — no network needed while bones are captured.
+    if (!isBuild) refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -421,49 +822,15 @@ function KeysTab({ onError }: { onError: (e: string | null) => void }) {
             </div>
           </div>
         )}
-        {loading ? (
-          <Skeleton className="h-40" />
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>ID</TableHead>
-                <TableHead>User</TableHead>
-                <TableHead>Site</TableHead>
-                <TableHead>Label</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {keys.map((k) => (
-                <TableRow key={k.id}>
-                  <TableCell className="font-mono text-xs">{k.id}</TableCell>
-                  <TableCell className="font-mono text-xs">{k.user_id}</TableCell>
-                  <TableCell>{k.site_id}</TableCell>
-                  <TableCell>{k.label}</TableCell>
-                  <TableCell>
-                    <Badge variant={k.revoked_at ? "destructive" : "outline"}>
-                      {k.revoked_at ? `revoked ${k.revoked_at}` : "active"}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-right">
-                    {!k.revoked_at && (
-                      <Button variant="outline" size="sm" onClick={() => revoke(k.id)}>
-                        <HugeiconsIcon icon={Cancel01Icon} size={14} /> Revoke
-                      </Button>
-                    )}
-                  </TableCell>
-                </TableRow>
-              ))}
-              {keys.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={6} className="text-muted-foreground">No keys yet.</TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        )}
+        <BoneSkeleton
+          name="admin-keys"
+          loading={loading}
+          {...boneStyle}
+          fixture={<KeysTable keys={MOCK_KEYS} onRevoke={() => {}} />}
+          fallback={<Skeleton className="h-40" />}
+        >
+          <KeysTable keys={keys} onRevoke={revoke} />
+        </BoneSkeleton>
       </CardContent>
     </Card>
   );
@@ -486,7 +853,8 @@ function SitesTab({ onError }: { onError: (e: string | null) => void }) {
     }
   }
   useEffect(() => {
-    refresh();
+    // Fixture drives capture — no network needed while bones are captured.
+    if (!isBuild) refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -519,52 +887,15 @@ function SitesTab({ onError }: { onError: (e: string | null) => void }) {
         <CardDescription>Last push, reporter fingerprints, freeze control.</CardDescription>
       </CardHeader>
       <CardContent className="grid gap-4">
-        {loading ? (
-          <Skeleton className="h-40" />
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Site</TableHead>
-                <TableHead>Last push</TableHead>
-                <TableHead>Reporter fp</TableHead>
-                <TableHead>Keys</TableHead>
-                <TableHead>Reporters</TableHead>
-                <TableHead>Frozen</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {sites.map((s) => (
-                <TableRow key={s.site_id}>
-                  <TableCell className="font-medium">{s.site_id}</TableCell>
-                  <TableCell>{s.last_push_at ?? "—"}</TableCell>
-                  <TableCell className="max-w-40 truncate font-mono text-xs">{s.last_reporter_fp ?? "—"}</TableCell>
-                  <TableCell>{s.active_keys}</TableCell>
-                  <TableCell>{s.reporters_seen}</TableCell>
-                  <TableCell>
-                    <Badge variant={s.frozen ? "destructive" : "outline"}>{s.frozen ? "frozen" : "live"}</Badge>
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex justify-end gap-2">
-                      <Button variant="outline" size="sm" onClick={() => toggleFreeze(s)}>
-                        {s.frozen ? "Unfreeze" : "Freeze"}
-                      </Button>
-                      <Button variant="outline" size="sm" onClick={() => loadReporters(s.site_id)}>
-                        Reporters
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-              {sites.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={7} className="text-muted-foreground">No sites pushed yet.</TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        )}
+        <BoneSkeleton
+          name="admin-sites"
+          loading={loading}
+          {...boneStyle}
+          fixture={<SitesTable sites={MOCK_SITES} onFreeze={() => {}} onReporters={() => {}} />}
+          fallback={<Skeleton className="h-40" />}
+        >
+          <SitesTable sites={sites} onFreeze={toggleFreeze} onReporters={loadReporters} />
+        </BoneSkeleton>
         {Object.entries(reporters).map(([site, rows]) => (
           <div key={site} className="rounded-lg border bg-muted p-4 text-sm">
             <p className="font-medium">{site} — {rows.length} sightings</p>
@@ -581,12 +912,8 @@ function SitesTab({ onError }: { onError: (e: string | null) => void }) {
 }
 
 function LicencesTab({ onError }: { onError: (e: string | null) => void }) {
-  const [rows, setRows] = useState<
-    Array<{ serial: string; site_id: string; edition: string; packager_fp: string; max_stations: number; expires: string; issued_by: string; created_at: string }>
-  >([]);
-  const [tracked, setTracked] = useState<
-    Array<{ site_id: string; edition: string; expires: string; days_left: number | null; state: string; app_version: string; packager_fp: string; updated_at: string }>
-  >([]);
+  const [rows, setRows] = useState<LicenceRow[]>([]);
+  const [tracked, setTracked] = useState<TrackedSite[]>([]);
   const [loading, setLoading] = useState(true);
   const [changing, setChanging] = useState<string | null>(null);
   const [planPick, setPlanPick] = useState<Record<string, string>>({});
@@ -618,6 +945,8 @@ function LicencesTab({ onError }: { onError: (e: string | null) => void }) {
     }
   }
   useEffect(() => {
+    // Fixture drives capture — no network needed while bones are captured.
+    if (isBuild) return;
     (async () => {
       await refresh();
       setLoading(false);
@@ -863,85 +1192,31 @@ function LicencesTab({ onError }: { onError: (e: string | null) => void }) {
         </CardDescription>
       </CardHeader>
       <CardContent>
-        {loading ? (
-          <Skeleton className="h-40" />
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Site</TableHead>
-                <TableHead>Live edition</TableHead>
-                <TableHead>Expires</TableHead>
-                <TableHead>Left</TableHead>
-                <TableHead>State</TableHead>
-                <TableHead>App</TableHead>
-                <TableHead>Action</TableHead>
-                <TableHead>Plan</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {tracked.map((t) => {
-                const flag = flagFor(t);
-                return (
-                  <TableRow key={t.site_id}>
-                    <TableCell className="font-medium">{t.site_id}</TableCell>
-                    <TableCell>
-                      <Badge variant="secondary">{t.edition || "—"}</Badge>
-                    </TableCell>
-                    <TableCell>{t.expires || "—"}</TableCell>
-                    <TableCell>{t.days_left == null ? "—" : `${t.days_left}d`}</TableCell>
-                    <TableCell>{t.state || "—"}</TableCell>
-                    <TableCell className="text-muted-foreground">{t.app_version || "—"}</TableCell>
-                    <TableCell>
-                      {flag ? (
-                        <Badge variant={flag.tone === "err" ? "destructive" : "outline"}>{flag.label}</Badge>
-                      ) : (
-                        <span className="text-muted-foreground">—</span>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-2">
-                        <select
-                          className="flex h-8 rounded-md border border-input bg-transparent px-2 text-xs"
-                          value={planPick[t.site_id] || t.edition || "pro"}
-                          onChange={(e) => setPlanPick({ ...planPick, [t.site_id]: e.target.value })}
-                        >
-                          {["simple", "pro", "premium", "trial"].map((ed) => (
-                            <option key={ed} value={ed}>{ed}</option>
-                          ))}
-                        </select>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={changing === t.site_id}
-                          onClick={() => changePlan(t.site_id)}
-                        >
-                          {changing === t.site_id ? "…" : "Set plan"}
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-              {neverActivated.map((l) => (
-                <TableRow key={"na-" + l.site_id}>
-                  <TableCell className="font-medium">{l.site_id}</TableCell>
-                  <TableCell colSpan={6} className="text-muted-foreground">
-                    Key issued {l.issued_by ? `by ${l.issued_by}` : ""} — never activated (no push yet)
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant="outline">Chase activation</Badge>
-                  </TableCell>
-                </TableRow>
-              ))}
-              {tracked.length === 0 && neverActivated.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={7} className="text-muted-foreground">No licences issued yet.</TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        )}
+        <BoneSkeleton
+          name="admin-licences-tracking"
+          loading={loading}
+          {...boneStyle}
+          fixture={
+            <TrackedLicencesTable
+              tracked={MOCK_TRACKED}
+              neverActivated={MOCK_LICENCES.filter((l) => !MOCK_TRACKED.some((t) => t.site_id === l.site_id))}
+              planPick={{}}
+              changing={null}
+              onPlanPick={() => {}}
+              onChangePlan={() => {}}
+            />
+          }
+          fallback={<Skeleton className="h-40" />}
+        >
+          <TrackedLicencesTable
+            tracked={tracked}
+            neverActivated={neverActivated}
+            planPick={planPick}
+            changing={changing}
+            onPlanPick={(siteId, edition) => setPlanPick({ ...planPick, [siteId]: edition })}
+            onChangePlan={changePlan}
+          />
+        </BoneSkeleton>
       </CardContent>
     </Card>
     <Card>
@@ -952,41 +1227,15 @@ function LicencesTab({ onError }: { onError: (e: string | null) => void }) {
         <CardDescription>Audit log of every signed licence.</CardDescription>
       </CardHeader>
       <CardContent>
-        {loading ? (
-          <Skeleton className="h-40" />
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Serial</TableHead>
-                <TableHead>Site</TableHead>
-                <TableHead>Edition</TableHead>
-                <TableHead>Machines</TableHead>
-                <TableHead>Expires</TableHead>
-                <TableHead>Issued by</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.map((l) => (
-                <TableRow key={l.serial + l.created_at}>
-                  <TableCell className="font-medium">{l.serial}</TableCell>
-                  <TableCell>{l.site_id}</TableCell>
-                  <TableCell>
-                    <Badge variant="secondary">{l.edition}</Badge>
-                  </TableCell>
-                  <TableCell>{l.max_stations}</TableCell>
-                  <TableCell>{l.expires}</TableCell>
-                  <TableCell className="text-muted-foreground">{l.issued_by}</TableCell>
-                </TableRow>
-              ))}
-              {rows.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={6} className="text-muted-foreground">None issued yet.</TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        )}
+        <BoneSkeleton
+          name="admin-licences-issued"
+          loading={loading}
+          {...boneStyle}
+          fixture={<LicencesIssuedTable rows={MOCK_LICENCES} />}
+          fallback={<Skeleton className="h-40" />}
+        >
+          <LicencesIssuedTable rows={rows} />
+        </BoneSkeleton>
       </CardContent>
     </Card>
     </div>
