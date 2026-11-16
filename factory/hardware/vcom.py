@@ -18,8 +18,8 @@ _log = _logging.getLogger("simpld.hardware")
 VCOM_BAUD = 9600
 WRITE_TIMEOUT_S = 5.0
 
-# Set to "DPL" or "ZPL" after the self-test page confirms the emulation.
-EMULATION: str | None = None
+# Confirmed on this CL-S621 by a ZPL test label printing: ZPL.
+EMULATION: str | None = "ZPL"
 
 
 CITIZEN_VID = 0x2730
@@ -67,8 +67,28 @@ def send_bytes(port: str, data: bytes, baud: int = VCOM_BAUD) -> None:
         raise RuntimeError(f"VCOM write to {port} failed: {e}")
 
 
+def zpl_bitmap(pil_img, x: int, y: int, stock_w_dots: int,
+               stock_h_dots: int) -> bytes:
+    """One ZPL job that draws a 1-bit bitmap at (x, y) on a stock_w x stock_h page."""
+    from PIL import ImageOps
+    mono = ImageOps.invert(pil_img.convert("L")).convert("1")
+    row_bytes = (mono.width + 7) // 8
+    raw = mono.tobytes()
+    total = row_bytes * mono.height
+    hexdata = raw.hex().upper()
+    job = (
+        "^XA"
+        f"^PW{stock_w_dots}^LL{stock_h_dots}^LH0,0"
+        f"^FO{x},{y}"
+        f"^GFA,{total},{total},{row_bytes},{hexdata}"
+        "^FS"
+        "^XZ"
+    )
+    return job.encode("ascii")
+
+
 class VcomCitizen(PrinterInterface):
-    """Label printer on a VCOM port. Fails closed until the language is set."""
+    """Label printer on a VCOM port, sending ZPL bitmaps (Citizen CL-S621)."""
 
     def __init__(self, port: str = "", baud: int = VCOM_BAUD):
         self.port = str(port or "").strip()
@@ -84,14 +104,33 @@ class VcomCitizen(PrinterInterface):
                 "VCOM printing needs the printer language confirmed first "
                 "(self-test page: DPL or ZPL). Nothing was sent.")
 
-    def print_reel_label(self, data: dict) -> bool:
+    def _print(self, template_id: str, image, data_label: str) -> bool:
+        from .qtprint import _load_layout
+        from . import layout as _layout
         self._require_language()
-        raise NotImplementedError("reel label renderer not written yet")
+        port = self._target()
+        if not port:
+            raise RuntimeError("VCOM port not found. Set the printer port in Settings.")
+        lay = _load_layout(template_id)
+        dpi = int(lay.get("dpi") or 203)
+        stock_w = round(float(lay["stock_w_mm"]) / 25.4 * dpi)
+        stock_h = round(float(lay["stock_h_mm"]) / 25.4 * dpi)
+        ox, oy = _layout.content_origin_px(lay)
+        send_bytes(port, zpl_bitmap(image, ox, oy, stock_w, stock_h), self.baud)
+        _log.info("vcom: printed %s (%s) on %s", template_id, data_label, port)
+        return True
+
+    def print_reel_label(self, data: dict) -> bool:
+        from .qtprint import QtCitizenCLS621, _load_layout
+        lay = _load_layout("reel")
+        return self._print("reel", QtCitizenCLS621._reel_image(data, lay), "reel")
 
     def print_carton_label(self, data: dict) -> bool:
-        self._require_language()
-        raise NotImplementedError("box label renderer not written yet")
+        from .qtprint import QtCitizenCLS621, _load_layout
+        lay = _load_layout("carton")
+        return self._print("carton", QtCitizenCLS621._carton_image(data, lay), "carton")
 
     def print_client_label(self, data: dict) -> bool:
-        self._require_language()
-        raise NotImplementedError("client label renderer not written yet")
+        from .qtprint import QtCitizenCLS621, _load_layout
+        lay = _load_layout("client")
+        return self._print("client", QtCitizenCLS621._client_image(data, lay), "client")
