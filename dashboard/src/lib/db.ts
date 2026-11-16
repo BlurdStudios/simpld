@@ -3,6 +3,7 @@
 // (dev/smoke). Both implement AccountsStore so handlers stay backend-agnostic.
 
 import { hashPassword, newId, newToken, nowIso, sha256Hex, verifyPassword } from "./password";
+import { noteSiteId } from "./site-id";
 
 export type Role = "vendor_admin" | "client";
 
@@ -14,6 +15,12 @@ export interface User {
   site_id: string | null;
   disabled: number;
   created_at: string;
+  /** SHA-256 of the one-time setup code (site-bound); null once setup is done. */
+  setup_code_hash: string | null;
+  /** ISO expiry of the pending setup code; null once setup is done. */
+  setup_expires: string | null;
+  /** 0 = first login pending (must POST /api/auth/setup); 1 = active. */
+  setup_done: number;
 }
 
 export interface PublicUser {
@@ -23,6 +30,16 @@ export interface PublicUser {
   site_id: string | null;
   disabled: boolean;
   created_at: string;
+}
+
+/** Admin Users-tab row: PublicUser plus pending-setup status (hashes never leave). */
+export interface AdminUserView extends PublicUser {
+  /** True while the client still has a pending setup code (incl. expired). */
+  setup_pending: boolean;
+  /** True when a pending code exists but is past expiry. */
+  setup_expired: boolean;
+  /** ISO expiry of the pending code, or null. */
+  setup_expires: string | null;
 }
 
 export interface ApiKeyRow {
@@ -87,8 +104,12 @@ CREATE TABLE IF NOT EXISTS users (
   role TEXT NOT NULL CHECK (role IN ('vendor_admin','client')),
   site_id TEXT,
   disabled INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  setup_code_hash TEXT,
+  setup_expires TEXT,
+  setup_done INTEGER NOT NULL DEFAULT 1
 );
+CREATE UNIQUE INDEX IF NOT EXISTS users_client_site_unique ON users(site_id) WHERE role = 'client';
 CREATE TABLE IF NOT EXISTS sessions (
   token TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -200,7 +221,20 @@ export interface AccountsStore {
   createUser(email: string, password: string, role: Role, siteId: string | null): Promise<PublicUser>;
   findUserByEmail(email: string): Promise<User | null>;
   findUserById(id: string): Promise<User | null>;
+  /** Client account bound to a site_id (site IDs are unique per client). */
+  findUserBySiteId(siteId: string): Promise<User | null>;
+  siteIdInUse(siteId: string): Promise<boolean>;
+  /** Create a pending client (first login via POST /api/auth/setup). */
+  createClientWithSetup(siteId: string, email: string, setupCodeHash: string, setupExpires: string): Promise<PublicUser>;
+  /** Single use: set password, clear code/expiry, mark done. Throws on short password. */
+  completeSetup(userId: string, password: string): Promise<PublicUser>;
+  /** Overwrite the pending setup code (resend): the old code stops working. */
+  rotateSetupCode(userId: string, setupCodeHash: string, setupExpires: string): Promise<User | null>;
+  /** Delete a user (rollback for failed issuance). True when a row was removed. */
+  deleteUser(id: string): Promise<boolean>;
   listUsers(): Promise<PublicUser[]>;
+  /** Admin Users-tab list with pending-setup status (hashes never leave). */
+  listUsersAdmin(): Promise<AdminUserView[]>;
   updateUser(id: string, patch: { role?: Role; site_id?: string | null; disabled?: boolean }): Promise<PublicUser | null>;
   verifyLogin(email: string, password: string): Promise<PublicUser | null>;
   createSession(userId: string, days?: number): Promise<{ token: string; expires: string }>;
@@ -250,16 +284,87 @@ export class D1AccountsStore implements AccountsStore {
       site_id: role === "client" ? siteId!.trim() : siteId?.trim() || null,
       disabled: 0,
       created_at: nowIso(),
+      setup_code_hash: null,
+      setup_expires: null,
+      setup_done: 1,
     };
     try {
       await this.db
-        .prepare("INSERT INTO users(id,email,pass_hash,role,site_id,disabled,created_at) VALUES(?,?,?,?,?,?,?)")
-        .bind(row.id, row.email, row.pass_hash, row.role, row.site_id, row.disabled, row.created_at)
+        .prepare("INSERT INTO users(id,email,pass_hash,role,site_id,disabled,created_at,setup_code_hash,setup_expires,setup_done) VALUES(?,?,?,?,?,?,?,?,?,?)")
+        .bind(row.id, row.email, row.pass_hash, row.role, row.site_id, row.disabled, row.created_at, row.setup_code_hash, row.setup_expires, row.setup_done)
         .run();
     } catch {
       throw new Error("email already exists");
     }
+    if (row.site_id) noteSiteId(row.site_id);
     return toPublic(row);
+  }
+
+  async findUserBySiteId(siteId: string): Promise<User | null> {
+    return this.db
+      .prepare("SELECT * FROM users WHERE site_id=? AND role='client'")
+      .bind(siteId.trim())
+      .first<User>();
+  }
+
+  async siteIdInUse(siteId: string): Promise<boolean> {
+    return (await this.findUserBySiteId(siteId)) !== null;
+  }
+
+  async createClientWithSetup(siteId: string, email: string, setupCodeHash: string, setupExpires: string): Promise<PublicUser> {
+    const sid = siteId.trim();
+    const em = email.trim().toLowerCase();
+    if (!sid) throw new Error("site_id required");
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)) throw new Error("invalid email");
+    const row: User = {
+      id: newId("u"),
+      email: em,
+      // Random placeholder: the account is unusable until setup sets a password.
+      pass_hash: await hashPassword(newToken(16)),
+      role: "client",
+      site_id: sid,
+      disabled: 0,
+      created_at: nowIso(),
+      setup_code_hash: setupCodeHash,
+      setup_expires: setupExpires,
+      setup_done: 0,
+    };
+    try {
+      await this.db
+        .prepare("INSERT INTO users(id,email,pass_hash,role,site_id,disabled,created_at,setup_code_hash,setup_expires,setup_done) VALUES(?,?,?,?,?,?,?,?,?,?)")
+        .bind(row.id, row.email, row.pass_hash, row.role, row.site_id, row.disabled, row.created_at, row.setup_code_hash, row.setup_expires, row.setup_done)
+        .run();
+    } catch {
+      throw new Error("site_id taken");
+    }
+    noteSiteId(sid);
+    return toPublic(row);
+  }
+
+  async completeSetup(userId: string, password: string): Promise<PublicUser> {
+    const passHash = await hashPassword(password); // throws when < 8 chars
+    await this.db
+      .prepare("UPDATE users SET pass_hash=?, setup_code_hash=NULL, setup_expires=NULL, setup_done=1 WHERE id=?")
+      .bind(passHash, userId)
+      .run();
+    const next = await this.findUserById(userId);
+    if (!next) throw new Error("unknown user");
+    return toPublic(next);
+  }
+
+  async rotateSetupCode(userId: string, setupCodeHash: string, setupExpires: string): Promise<User | null> {
+    await this.db
+      .prepare("UPDATE users SET setup_code_hash=?, setup_expires=? WHERE id=?")
+      .bind(setupCodeHash, setupExpires, userId)
+      .run();
+    return this.findUserById(userId);
+  }
+
+  async deleteUser(id: string): Promise<boolean> {
+    const cur = await this.findUserById(id);
+    if (!cur) return false;
+    await this.db.prepare("DELETE FROM users WHERE id=?").bind(id).run();
+    return true;
   }
 
   async findUserByEmail(email: string): Promise<User | null> {
@@ -273,6 +378,20 @@ export class D1AccountsStore implements AccountsStore {
   async listUsers(): Promise<PublicUser[]> {
     const r = await this.db.prepare("SELECT * FROM users ORDER BY created_at").bind().all<User>();
     return r.results.map(toPublic);
+  }
+
+  async listUsersAdmin(): Promise<AdminUserView[]> {
+    const r = await this.db.prepare("SELECT * FROM users ORDER BY created_at").bind().all<User>();
+    const now = new Date().toISOString();
+    return r.results.map((u) => {
+      const pending = u.setup_done === 0 && !!u.setup_code_hash;
+      return {
+        ...toPublic(u),
+        setup_pending: pending,
+        setup_expired: pending && !!u.setup_expires && u.setup_expires <= now,
+        setup_expires: u.setup_expires,
+      };
+    });
   }
 
   async updateUser(id: string, patch: { role?: Role; site_id?: string | null; disabled?: boolean }): Promise<PublicUser | null> {
@@ -517,6 +636,8 @@ class MemoryD1 implements D1Like {
             return t.users.filter((u) => u.email === params[0]) as unknown as T[];
           if (q.startsWith("SELECT * FROM users WHERE id=?"))
             return t.users.filter((u) => u.id === params[0]) as unknown as T[];
+          if (q.startsWith("SELECT * FROM users WHERE site_id=? AND role='client'"))
+            return t.users.filter((u) => u.site_id === params[0] && u.role === "client") as unknown as T[];
           if (q.startsWith("SELECT * FROM users ORDER BY created_at")) return [...t.users] as unknown as T[];
           if (q.startsWith("SELECT * FROM sessions WHERE token=?"))
             return t.sessions.filter((s) => s.token === params[0]) as unknown as T[];
@@ -574,9 +695,26 @@ class MemoryD1 implements D1Like {
         };
         const runWrite = (): void => {
           if (q.startsWith("INSERT INTO users(")) {
-            const [id, email, pass_hash, role, site_id, disabled, created_at] = params;
+            const [id, email, pass_hash, role, site_id, disabled, created_at, setup_code_hash, setup_expires, setup_done] = params;
             if (t.users.some((u) => u.email === email)) throw new Error("UNIQUE constraint failed: users.email");
-            t.users.push({ id, email, pass_hash, role, site_id, disabled, created_at });
+            if (role === "client" && t.users.some((u) => u.role === "client" && u.site_id === site_id)) throw new Error("UNIQUE constraint failed: users.site_id");
+            t.users.push({ id, email, pass_hash, role, site_id, disabled, created_at, setup_code_hash: setup_code_hash ?? null, setup_expires: setup_expires ?? null, setup_done: setup_done ?? 1 });
+            return;
+          }
+          if (q.startsWith("UPDATE users SET pass_hash=?, setup_code_hash=NULL")) {
+            const [pass_hash, id] = params;
+            const u = t.users.find((x) => x.id === id);
+            if (u) Object.assign(u, { pass_hash, setup_code_hash: null, setup_expires: null, setup_done: 1 });
+            return;
+          }
+          if (q.startsWith("UPDATE users SET setup_code_hash=?, setup_expires=? WHERE id=?")) {
+            const [setup_code_hash, setup_expires, id] = params;
+            const u = t.users.find((x) => x.id === id);
+            if (u) Object.assign(u, { setup_code_hash, setup_expires });
+            return;
+          }
+          if (q.startsWith("DELETE FROM users WHERE id=?")) {
+            t.users = t.users.filter((x) => x.id !== params[0]);
             return;
           }
           if (q.startsWith("UPDATE users SET role=?")) {

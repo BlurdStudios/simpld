@@ -37,7 +37,7 @@ export function Landing() {
         </div>
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {clientSite && (
-            <Link to="/s/$siteId" params={{ siteId: clientSite }} search={{ key: "" }}>
+            <Link to="/s/$siteId" params={{ siteId: clientSite }}>
               <Card className="transition-colors hover:border-primary">
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2 text-base">
@@ -85,8 +85,8 @@ export function Landing() {
     );
   }
 
-  // Logged out: product hero + login. No public key form — every client gets
-  // a provisioned account; shared ?key= viewer links still work directly.
+  // Logged out: product hero + login. No self-registration and no shared
+  // viewer links — every client gets a provisioned account.
   return (
     <div className="mx-auto flex max-w-lg flex-col justify-center gap-6 py-8">
       <div className="text-center">

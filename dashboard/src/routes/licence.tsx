@@ -140,6 +140,7 @@ export function Licence() {
   const { me } = useAuth();
   const [siteId, setSiteId] = useState("");
   const [customer, setCustomer] = useState("");
+  const [contactEmail, setContactEmail] = useState("");
   const [packagerFp, setPackagerFp] = useState("");
   const [edition, setEdition] = useState("pro");
   const [trialDays, setTrialDays] = useState("14");
@@ -147,6 +148,12 @@ export function Licence() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [licence, setLicence] = useState<string | null>(null);
+  const [onboard, setOnboard] = useState<{
+    site_id: string;
+    email: string;
+    setup_code?: string;
+    setup_expires?: string;
+  } | null>(null);
 
   const lockedSite = me?.role === "client" ? (me.site_id ?? "") : null;
   const effectiveSite = lockedSite || siteId.trim();
@@ -160,6 +167,7 @@ export function Licence() {
     setBusy(true);
     setError(null);
     setLicence(null);
+    setOnboard(null);
     try {
       const res = await fetch("/api/licenses/issue", {
         method: "POST",
@@ -167,6 +175,7 @@ export function Licence() {
         body: JSON.stringify({
           site_id: effectiveSite,
           customer,
+          ...(contactEmail.trim() ? { contact_email: contactEmail.trim() } : {}),
           packager_fp: fp,
           edition,
           ...(edition === "trial" ? { trial_days: effTrialDays } : { validity_days: effDays }),
@@ -176,6 +185,7 @@ export function Licence() {
       if (!res.ok) throw new Error(data?.error ?? `issuance failed (${res.status})`);
       const text = JSON.stringify(data.licence);
       setLicence(text);
+      setOnboard(data.client ?? null);
       // Auto-download the .lic file — no extra click.
       const blob = new Blob([text], { type: "application/json" });
       const a = document.createElement("a");
@@ -251,6 +261,18 @@ export function Licence() {
                 />
               </div>
             </div>
+            {lockedSite === null && (
+              <div className="grid gap-2">
+                <Label htmlFor="lic-contact">Contact email (required for new sites)</Label>
+                <Input
+                  id="lic-contact"
+                  type="email"
+                  placeholder="owner@example.com — becomes the site login"
+                  value={contactEmail}
+                  onChange={(e) => setContactEmail(e.target.value)}
+                />
+              </div>
+            )}
             <div className="grid gap-2">
               <Label htmlFor="lic-fp">Machine ID (packager_fp) — shown on the packager About screen</Label>
               <Input
@@ -338,6 +360,26 @@ export function Licence() {
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-4">
+            {onboard?.setup_code && (
+              <div className="grid gap-2 rounded-lg border bg-muted p-4">
+                <p className="text-sm font-medium">
+                  New client account <code>{onboard.site_id}</code> — one-time setup code, copy now:
+                </p>
+                <code className="break-all text-sm">{onboard.setup_code}</code>
+                <p className="text-xs text-muted-foreground">
+                  It will not be shown again. The customer logs in with Site ID + code + licence serial,
+                  then sets a password.
+                </p>
+                <div>
+                  <Button
+                    variant="outline"
+                    onClick={() => navigator.clipboard?.writeText(onboard.setup_code ?? "").catch(() => {})}
+                  >
+                    <HugeiconsIcon icon={Copy01Icon} size={16} /> Copy setup code
+                  </Button>
+                </div>
+              </div>
+            )}
             <div className="flex flex-wrap gap-2">
               <Button onClick={download}>
                 <HugeiconsIcon icon={Download01Icon} size={16} /> Download license.lic

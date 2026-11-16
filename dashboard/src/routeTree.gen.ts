@@ -15,6 +15,7 @@ import { Route as DownloadRouteImport } from './routes/download'
 import { Route as LicenceRouteImport } from './routes/licence'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as SSiteIdRouteImport } from './routes/s.$siteId'
+import { Route as SSiteIdLoginRouteImport } from './routes/s.$siteId.login'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -46,6 +47,11 @@ const SSiteIdRoute = SSiteIdRouteImport.update({
   path: '/s/$siteId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SSiteIdLoginRoute = SSiteIdLoginRouteImport.update({
+  id: '/login',
+  path: '/login',
+  getParentRoute: () => SSiteIdRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -53,7 +59,8 @@ export interface FileRoutesByFullPath {
   '/download': typeof DownloadRoute
   '/licence': typeof LicenceRoute
   '/login': typeof LoginRoute
-  '/s/$siteId': typeof SSiteIdRoute
+  '/s/$siteId': typeof SSiteIdRouteWithChildren
+  '/s/$siteId/login': typeof SSiteIdLoginRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -61,7 +68,8 @@ export interface FileRoutesByTo {
   '/download': typeof DownloadRoute
   '/licence': typeof LicenceRoute
   '/login': typeof LoginRoute
-  '/s/$siteId': typeof SSiteIdRoute
+  '/s/$siteId': typeof SSiteIdRouteWithChildren
+  '/s/$siteId/login': typeof SSiteIdLoginRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -70,13 +78,28 @@ export interface FileRoutesById {
   '/download': typeof DownloadRoute
   '/licence': typeof LicenceRoute
   '/login': typeof LoginRoute
-  '/s/$siteId': typeof SSiteIdRoute
+  '/s/$siteId': typeof SSiteIdRouteWithChildren
+  '/s/$siteId/login': typeof SSiteIdLoginRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/admin' | '/download' | '/licence' | '/login' | '/s/$siteId'
+  fullPaths:
+    | '/'
+    | '/admin'
+    | '/download'
+    | '/licence'
+    | '/login'
+    | '/s/$siteId'
+    | '/s/$siteId/login'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/admin' | '/download' | '/licence' | '/login' | '/s/$siteId'
+  to:
+    | '/'
+    | '/admin'
+    | '/download'
+    | '/licence'
+    | '/login'
+    | '/s/$siteId'
+    | '/s/$siteId/login'
   id:
     | '__root__'
     | '/'
@@ -85,6 +108,7 @@ export interface FileRouteTypes {
     | '/licence'
     | '/login'
     | '/s/$siteId'
+    | '/s/$siteId/login'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -93,7 +117,7 @@ export interface RootRouteChildren {
   DownloadRoute: typeof DownloadRoute
   LicenceRoute: typeof LicenceRoute
   LoginRoute: typeof LoginRoute
-  SSiteIdRoute: typeof SSiteIdRoute
+  SSiteIdRoute: typeof SSiteIdRouteWithChildren
 }
 
 declare module '@tanstack/react-router' {
@@ -140,8 +164,26 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SSiteIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/s/$siteId/login': {
+      id: '/s/$siteId/login'
+      path: '/login'
+      fullPath: '/s/$siteId/login'
+      preLoaderRoute: typeof SSiteIdLoginRouteImport
+      parentRoute: typeof SSiteIdRoute
+    }
   }
 }
+
+interface SSiteIdRouteChildren {
+  SSiteIdLoginRoute: typeof SSiteIdLoginRoute
+}
+
+const SSiteIdRouteChildren: SSiteIdRouteChildren = {
+  SSiteIdLoginRoute: SSiteIdLoginRoute,
+}
+
+const SSiteIdRouteWithChildren =
+  SSiteIdRoute._addFileChildren(SSiteIdRouteChildren)
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
@@ -149,7 +191,7 @@ const rootRouteChildren: RootRouteChildren = {
   DownloadRoute: DownloadRoute,
   LicenceRoute: LicenceRoute,
   LoginRoute: LoginRoute,
-  SSiteIdRoute: SSiteIdRoute,
+  SSiteIdRoute: SSiteIdRouteWithChildren,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

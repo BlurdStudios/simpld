@@ -8,14 +8,13 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
-  useNavigate,
   useParams,
-  useSearch,
 } from "@tanstack/react-router";
 import { AuthProvider, RequireAdmin, RequireAuth } from "@/lib/session";
 import { DashboardShell } from "@/components/shell";
 import { Landing } from "./routes/index";
 import { SiteViewer } from "./routes/s.$siteId";
+import { SiteLogin } from "./routes/s.$siteId.login";
 import { Login } from "./routes/login";
 import { Licence } from "./routes/licence";
 import { Downloads } from "./routes/download";
@@ -42,11 +41,18 @@ const landingRoute = createRoute({
 const siteRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/s/$siteId",
-  validateSearch: (s: Record<string, unknown>) => ({ key: (s.key as string) ?? "" }),
   component: () => {
     const { siteId } = useParams({ from: siteRoute.id });
-    const { key } = useSearch({ from: siteRoute.id });
-    return <SiteViewer siteId={siteId} viewerKey={key} />;
+    return <SiteViewer siteId={siteId} />;
+  },
+});
+
+const siteLoginRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/s/$siteId/login",
+  component: () => {
+    const { siteId } = useParams({ from: siteLoginRoute.id });
+    return <SiteLogin />;
   },
 });
 
@@ -92,6 +98,7 @@ const adminRoute = createRoute({
 const routeTree = rootRoute.addChildren([
   landingRoute,
   siteRoute,
+  siteLoginRoute,
   loginRoute,
   licenceRoute,
   downloadRoute,

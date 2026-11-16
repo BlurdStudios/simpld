@@ -16,6 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { slugifySiteId } from "@/lib/site-id";
 import {
   Table,
   TableBody,
@@ -51,6 +52,9 @@ interface AdminUser {
   site_id: string | null;
   disabled: boolean;
   created_at: string;
+  setup_pending?: boolean;
+  setup_expired?: boolean;
+  setup_expires?: string | null;
 }
 
 interface AdminKey {
@@ -127,6 +131,13 @@ function UsersTab({ onError }: { onError: (e: string | null) => void }) {
   const [password, setPassword] = useState("");
   const [role, setRole] = useState("client");
   const [siteId, setSiteId] = useState("");
+  const [resending, setResending] = useState<string | null>(null);
+  const [resent, setResent] = useState<{
+    site_id: string | null;
+    email: string;
+    setup_code: string;
+    setup_expires: string;
+  } | null>(null);
 
   async function refresh() {
     try {
@@ -169,6 +180,26 @@ function UsersTab({ onError }: { onError: (e: string | null) => void }) {
     }
   }
 
+  async function resendSetup(u: AdminUser) {
+    setResending(u.id);
+    setResent(null);
+    try {
+      const d = await api(`/api/admin/users/${u.id}/resend-setup`, { method: "POST", body: "{}" });
+      setResent({
+        site_id: d.site_id ?? u.site_id,
+        email: d.email ?? u.email,
+        setup_code: d.setup_code,
+        setup_expires: d.setup_expires,
+      });
+      onError(null);
+      await refresh();
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "resend failed");
+    } finally {
+      setResending(null);
+    }
+  }
+
   return (
     <Card>
       <CardHeader>
@@ -206,6 +237,27 @@ function UsersTab({ onError }: { onError: (e: string | null) => void }) {
             <HugeiconsIcon icon={PlusSignIcon} size={16} /> Create
           </Button>
         </form>
+        {resent && (
+          <div className="grid gap-2 rounded-lg border bg-muted p-4">
+            <p className="text-sm font-medium">
+              New setup code for <code>{resent.site_id}</code> ({resent.email}) — copy now:
+            </p>
+            <code className="break-all text-sm">{resent.setup_code}</code>
+            <p className="text-xs text-muted-foreground">
+              Expires {resent.setup_expires?.slice(0, 10)}. It will not be shown again —
+              the old code stopped working the moment this one was issued.
+            </p>
+            <div>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => navigator.clipboard?.writeText(resent.setup_code).catch(() => {})}
+              >
+                Copy code
+              </Button>
+            </div>
+          </div>
+        )}
         {loading ? (
           <Skeleton className="h-40" />
         ) : (
@@ -216,6 +268,7 @@ function UsersTab({ onError }: { onError: (e: string | null) => void }) {
                 <TableHead>Role</TableHead>
                 <TableHead>Site</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead>Setup</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
@@ -232,16 +285,37 @@ function UsersTab({ onError }: { onError: (e: string | null) => void }) {
                       {u.disabled ? "disabled" : "active"}
                     </Badge>
                   </TableCell>
+                  <TableCell>
+                    {u.role === "client" && u.setup_pending ? (
+                      <Badge variant="outline">
+                        {u.setup_expired ? "code expired" : "setup pending"}
+                      </Badge>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </TableCell>
                   <TableCell className="text-right">
-                    <Button variant="outline" size="sm" onClick={() => patch(u.id, { disabled: !u.disabled })}>
-                      {u.disabled ? "Enable" : "Disable"}
-                    </Button>
+                    <div className="flex justify-end gap-2">
+                      {u.role === "client" && u.setup_pending && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={resending === u.id}
+                          onClick={() => resendSetup(u)}
+                        >
+                          {resending === u.id ? "Sending…" : "Resend setup code"}
+                        </Button>
+                      )}
+                      <Button variant="outline" size="sm" onClick={() => patch(u.id, { disabled: !u.disabled })}>
+                        {u.disabled ? "Enable" : "Disable"}
+                      </Button>
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}
               {users.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-muted-foreground">No users yet.</TableCell>
+                  <TableCell colSpan={6} className="text-muted-foreground">No users yet.</TableCell>
                 </TableRow>
               )}
             </TableBody>
@@ -517,6 +591,21 @@ function LicencesTab({ onError }: { onError: (e: string | null) => void }) {
   const [changing, setChanging] = useState<string | null>(null);
   const [planPick, setPlanPick] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<string | null>(null);
+  const [issue, setIssue] = useState({
+    customer: "",
+    siteId: "",
+    contactEmail: "",
+    packagerFp: "",
+    edition: "pro",
+    validityDays: "365",
+  });
+  const [issuing, setIssuing] = useState(false);
+  const [issued, setIssued] = useState<{
+    site_id: string;
+    email: string;
+    setup_code?: string;
+    setup_expires?: string;
+  } | null>(null);
   async function refresh() {
     try {
       const d = await api("/api/licenses");
@@ -567,6 +656,42 @@ function LicencesTab({ onError }: { onError: (e: string | null) => void }) {
       setChanging(null);
     }
   }
+  async function issueLicence(e: React.FormEvent) {
+    e.preventDefault();
+    setIssuing(true);
+    setNotice(null);
+    setIssued(null);
+    try {
+      const res = await fetch("/api/licenses/issue", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          site_id: issue.siteId.trim(),
+          customer: issue.customer.trim(),
+          contact_email: issue.contactEmail.trim() || undefined,
+          packager_fp: issue.packagerFp.trim(),
+          edition: issue.edition,
+          validity_days: Number(issue.validityDays) || 365,
+        }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        const sug = Array.isArray(data?.suggestions) ? `: try ${data.suggestions.join(", ")}` : "";
+        throw new Error(`${data?.error ?? `issuance failed (${res.status})`}${sug}`);
+      }
+      setIssued(data.client ?? { site_id: data.licence.site_id, email: "" });
+      setNotice(
+        data.client?.setup_code
+          ? `Licence issued for ${data.licence.site_id} — hand over the setup code below.`
+          : `Licence issued for ${data.licence.site_id} (account already exists — no new setup code).`
+      );
+      await refresh();
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "issuance failed");
+    } finally {
+      setIssuing(false);
+    }
+  }
   const trackedSites = new Set(tracked.map((t) => t.site_id));
   const neverActivated = rows
     .filter((l) => !trackedSites.has(l.site_id))
@@ -596,6 +721,137 @@ function LicencesTab({ onError }: { onError: (e: string | null) => void }) {
       ))}
     </div>
     {notice && <p className="text-sm font-medium">{notice}</p>}
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <HugeiconsIcon icon={File01Icon} size={18} /> Issue licence + onboard site
+        </CardTitle>
+        <CardDescription>
+          First issue for a site creates its client account and a one-time setup code.
+          Re-issues for an existing site return no code.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-4">
+        <form onSubmit={issueLicence} className="grid gap-4">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-2">
+              <Label htmlFor="ad-customer">Company name</Label>
+              <Input
+                id="ad-customer"
+                placeholder="e.g. Ram Vendor"
+                value={issue.customer}
+                onChange={(e) => setIssue({ ...issue, customer: e.target.value })}
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="ad-site">Site ID</Label>
+              <div className="flex gap-2">
+                <Input
+                  id="ad-site"
+                  placeholder="e.g. ram-vendor"
+                  value={issue.siteId}
+                  onChange={(e) => setIssue({ ...issue, siteId: e.target.value })}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={!issue.customer.trim()}
+                  onClick={() => setIssue({ ...issue, siteId: slugifySiteId(issue.customer) })}
+                >
+                  Slug it
+                </Button>
+              </div>
+            </div>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-2">
+              <Label htmlFor="ad-contact">Contact email (required for new sites)</Label>
+              <Input
+                id="ad-contact"
+                type="email"
+                placeholder="owner@example.com"
+                value={issue.contactEmail}
+                onChange={(e) => setIssue({ ...issue, contactEmail: e.target.value })}
+              />
+              <p className="text-xs text-muted-foreground">
+                First licence for a site creates its login under this email. Re-issues need no email.
+              </p>
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="ad-fp">Machine ID (packager_fp, 32 hex chars)</Label>
+              <Input
+                id="ad-fp"
+                value={issue.packagerFp}
+                onChange={(e) => setIssue({ ...issue, packagerFp: e.target.value.trim() })}
+              />
+            </div>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-2">
+              <Label>Edition</Label>
+              <select
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm"
+                value={issue.edition}
+                onChange={(e) => setIssue({ ...issue, edition: e.target.value })}
+              >
+                {["simple", "pro", "premium", "trial"].map((ed) => (
+                  <option key={ed} value={ed}>{ed}</option>
+                ))}
+              </select>
+            </div>
+            <div className="grid gap-2">
+              <Label>Valid for</Label>
+              <select
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm"
+                value={issue.validityDays}
+                onChange={(e) => setIssue({ ...issue, validityDays: e.target.value })}
+              >
+                {[
+                  { label: "6 months", days: 182 },
+                  { label: "1 year", days: 365 },
+                  { label: "2 years", days: 730 },
+                  { label: "3 years", days: 1095 },
+                ].map((p) => (
+                  <option key={p.days} value={p.days}>{p.label}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div>
+            <Button disabled={issuing || !issue.siteId.trim() || !issue.packagerFp.trim()}>
+              {issuing ? "Issuing…" : "Issue licence"}
+            </Button>
+          </div>
+        </form>
+        {issued && (
+          <div className="grid gap-2 rounded-lg border bg-muted p-4">
+            <p className="text-sm font-medium">Site ID: <code>{issued.site_id}</code></p>
+            {issued.email && <p className="text-sm text-muted-foreground">Client login: <code>{issued.email}</code></p>}
+            {issued.setup_code ? (
+              <>
+                <p className="text-sm font-medium">One-time setup code — copy now:</p>
+                <code className="break-all text-sm">{issued.setup_code}</code>
+                <p className="text-xs text-muted-foreground">
+                  Expires {issued.setup_expires?.slice(0, 10)}. It will not be shown again —
+                  the customer logs in with Site ID + code + licence serial, then sets a password.
+                </p>
+                <div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => navigator.clipboard?.writeText(issued.setup_code ?? "").catch(() => {})}
+                  >
+                    Copy code
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">No new code — this site already has a client account.</p>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-base">

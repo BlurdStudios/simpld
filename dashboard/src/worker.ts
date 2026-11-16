@@ -5,8 +5,8 @@
 // Routes (see SYNC_CONTRACT.md v2):
 //   POST /api/push-day, POST /api/push-orders (factory, key-bound to site_id;
 //        keys resolve from the D1 api_keys table, SITE_KEYS env map fallback)
-//   GET  /api/s/:siteId          (viewer data; same key auth, buyer-scoped —
-//        or portal session: clients see their own site, admins any site)
+//   GET  /api/s/:siteId          (viewer data; portal session only —
+//        clients see their own site, admins any site; no ?key=/viewer keys)
 //   POST /api/auth/login|logout, GET /api/auth/me
 //   POST /api/admin/seed         (one-time bootstrap, token-gated)
 //   /api/admin/users|keys|sites  (vendor_admin only)
@@ -18,12 +18,12 @@
 import { accountsForEnv, initSchema, type AccountsStore, type D1Like } from "./lib/db";
 import { OfferStore } from "./lib/offers";
 import { handleDecideTrialRequest, handleHeartbeat, handleListTrialRequests, handleTrialRequest } from "./routes/api/licence-heartbeat";
-import { authorizeAsync, canAccessSite, sessionTokenFrom } from "./lib/auth";
+import { canAccessSite } from "./lib/auth";
 import { compositeKeyStore, getSessionUser, json, needAdmin, needAuth } from "./lib/portal";
 import { reportersForEnv, storeForEnv } from "./lib/store";
 import { handlePushDay } from "./routes/api/push-day";
 import { handlePushOrders } from "./routes/api/push-orders";
-import { handleLogin, handleLogout, handleMe } from "./routes/api/auth";
+import { handleLogin, handleLogout, handleMe, handleSetup } from "./routes/api/auth";
 import { handleSeed } from "./routes/api/admin-seed";
 import { handleAdminOverview } from "./routes/api/admin-overview";
 import { handleAdminUsers } from "./routes/api/admin-users";
@@ -112,6 +112,10 @@ export default {
       await ensureSchema(env, accounts);
       return handleLogin(req, accounts);
     }
+    if (req.method === "POST" && path === "/api/auth/setup") {
+      await ensureSchema(env, accounts);
+      return handleSetup(req, accounts);
+    }
     if (req.method === "POST" && path === "/api/auth/logout") return handleLogout(req, accounts);
     if (req.method === "GET" && path === "/api/auth/me") return handleMe(req, accounts);
     if (req.method === "POST" && path === "/api/admin/seed") return handleSeed(req, env, accounts);
@@ -120,18 +124,14 @@ export default {
     if (req.method === "GET" && viewer) {
       const siteId = decodeURIComponent(viewer[1]);
       const store = storeForEnv(env as Record<string, unknown>);
-      // Key auth first (factory + viewer keys, buyer-scoped).
-      if (req.headers.get("authorization") || req.headers.get("x-site-key")) {
-        const auth = await authorizeAsync(req, siteId, keys);
-        if (!auth.ok) return json({ error: auth.error }, auth.status);
-      } else if (sessionTokenFrom(req)) {
-        const me = await getSessionUser(req, accounts);
-        if (!me) return needAuth();
-        if (!canAccessSite({ id: me.id, email: me.email, role: me.role, site_id: me.site_id }, siteId)) {
-          return json({ error: "clients may only view their own site" }, 403);
-        }
-      } else {
-        return json({ error: "missing api key" }, 401);
+      // Session only. Viewer keys (?key= / Authorization header) are removed:
+      // every viewer call needs a logged-in session allowed to see the site.
+      // The factory push endpoints (/api/push-day, /api/push-orders) keep
+      // their API-key auth — unchanged.
+      const me = await getSessionUser(req, accounts);
+      if (!me) return needAuth();
+      if (!canAccessSite({ id: me.id, email: me.email, role: me.role, site_id: me.site_id }, siteId)) {
+        return json({ error: "clients may only view their own site" }, 403);
       }
       const snap = await store.loadSite(siteId);
       if (!snap) return json({ error: "no data pushed yet" }, 404);

@@ -23,33 +23,87 @@ import type { SiteSnapshot } from "@/lib/contract";
 
 // Viewer: GET /s/<site_id> read-only — yesterday + today production
 // (day_report payload), order loaded/target, stock counts. Buyer-scoped note.
+// Session only: log in as a client (own site) or vendor admin (any site).
 export const Route = createFileRoute("/s/$siteId")({
-  validateSearch: (s: Record<string, unknown>) => ({ key: (s.key as string) ?? "" }),
   component: SiteViewerRoute,
 });
 
 function SiteViewerRoute() {
   const { siteId } = Route.useParams();
-  const { key } = Route.useSearch();
-  return <SiteViewer siteId={siteId} viewerKey={key} />;
+  return <SiteViewer siteId={siteId} />;
 }
 
 function mockSnapshot(siteId: string): SiteSnapshot {
-  const today = new Date().toISOString().slice(0, 10);
-  const yd = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
-  const mk = (day: string) => ({
-    day,
-    reel_rows: [],
-    box_rows: [],
-    totals: { reel_count: 0, reel_net_kg: 0, box_count: 0, box_gross_kg: 0 },
-    by_job: {},
+  const days: Record<string, SiteSnapshot["days"][string]> = {};
+  const mkReel = (i: number, job: string, net: number) => ({
+    roll_code: `RC-${i.toString().padStart(4, "0")}`,
+    roll_label: `Roll ${i}`,
+    job_id: job,
+    net_kg: net,
   });
+  const mkBox = (i: number, job: string, gross: number, rolls: string[]) => ({
+    carton_no: `CT-${i.toString().padStart(4, "0")}`,
+    bundle_no: `B-${Math.ceil(i / 4)}`,
+    job_id: job,
+    num_reels: rolls.length,
+    total_gross_kg: gross,
+    linked_rolls: rolls,
+  });
+  const jobs = ["J-1042", "J-1043", "J-1044"];
+  for (let d = 0; d < 14; d++) {
+    const day = new Date(Date.now() - d * 86400000).toISOString().slice(0, 10);
+    const reelRows = [];
+    const boxRows = [];
+    let reelNet = 0;
+    let boxGross = 0;
+    for (let i = 0; i < 8 + (d % 5); i++) {
+      const job = jobs[i % jobs.length];
+      const net = 12 + (i % 6) * 3 + d;
+      reelRows.push(mkReel(d * 100 + i + 1, job, net));
+      reelNet += net;
+    }
+    for (let i = 0; i < 3 + (d % 3); i++) {
+      const job = jobs[i % jobs.length];
+      const rolls = reelRows.slice(i * 2, i * 2 + 2).map((r) => r.roll_code);
+      const gross = 24 + i * 7 + d;
+      boxRows.push(mkBox(d * 100 + i + 1, job, gross, rolls));
+      boxGross += gross;
+    }
+    const byJob: Record<string, { reels: number; reel_net_kg: number; boxes: number; box_gross_kg: number }> = {};
+    for (const j of jobs) {
+      const jr = reelRows.filter((r) => r.job_id === j);
+      const jb = boxRows.filter((b) => b.job_id === j);
+      byJob[j] = {
+        reels: jr.length,
+        reel_net_kg: jr.reduce((a, r) => a + r.net_kg, 0),
+        boxes: jb.length,
+        box_gross_kg: jb.reduce((a, b) => a + b.total_gross_kg, 0),
+      };
+    }
+    days[day] = {
+      day,
+      reel_rows: reelRows,
+      box_rows: boxRows,
+      totals: {
+        reel_count: reelRows.length,
+        reel_net_kg: reelNet,
+        box_count: boxRows.length,
+        box_gross_kg: boxGross,
+      },
+      by_job: byJob,
+    };
+  }
   return {
     site_id: siteId,
     pushed_at: new Date().toISOString(),
-    days: { [yd]: mk(yd), [today]: mk(today) },
-    orders: [],
-    stock_counts: { raw_rolls: 0, packed_cartons: 0, dispatched_cartons: 0 },
+    days,
+    orders: [
+      { order_id: "ORD-2041", buyer: "Acme Corp", target_qty: 5000, loaded_qty: 3820, status: "in_progress" },
+      { order_id: "ORD-2042", buyer: "Globex", target_qty: 2000, loaded_qty: 2000, status: "complete" },
+      { order_id: "ORD-2043", buyer: "Initech", target_qty: 3500, loaded_qty: 900, status: "in_progress" },
+      { order_id: "ORD-2044", buyer: "Umbrella", target_qty: 1200, loaded_qty: 0, status: "pending" },
+    ],
+    stock_counts: { raw_rolls: 47, packed_cartons: 18, dispatched_cartons: 62 },
   };
 }
 
@@ -78,22 +132,19 @@ function Stat({
   );
 }
 
-export function SiteViewer({ siteId, viewerKey }: { siteId: string; viewerKey: string }) {
+export function SiteViewer({ siteId }: { siteId: string }) {
   const [snap, setSnap] = useState<SiteSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [empty, setEmpty] = useState(false);
   const [mock, setMock] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      // Key-only viewers pass ?key=; logged-in users rely on their session
-      // cookie — an empty Bearer header would force the key path server-side
-      // and 401 instead of falling back to the session.
-      const headers: Record<string, string> = {};
-      if (viewerKey) headers.Authorization = `Bearer ${viewerKey}`;
+      // Session cookie auth only — no viewer keys.
       let res: Response;
       try {
-        res = await fetch(`/api/s/${encodeURIComponent(siteId)}`, { headers });
+        res = await fetch(`/api/s/${encodeURIComponent(siteId)}`);
       } catch {
         // Dev fallback: no Worker backend under `vite dev` — show mock shape.
         if (!cancelled) {
@@ -108,11 +159,11 @@ export function SiteViewer({ siteId, viewerKey }: { siteId: string; viewerKey: s
         return;
       }
       if (res.status === 401) {
-        if (!cancelled) setError("Invalid or revoked key — ask your vendor admin.");
+        if (!cancelled) setError("Log in to view this site.");
         return;
       }
       if (res.status === 404) {
-        if (!cancelled) setError("No data pushed for this site yet — sync from the packager first.");
+        if (!cancelled) setEmpty(true);
         return;
       }
       if (!res.ok) {
@@ -125,8 +176,17 @@ export function SiteViewer({ siteId, viewerKey }: { siteId: string; viewerKey: s
     return () => {
       cancelled = true;
     };
-  }, [siteId, viewerKey]);
+  }, [siteId]);
 
+  if (empty)
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">No data yet</CardTitle>
+          <CardDescription>Your figures will appear here after the first sync from the factory.</CardDescription>
+        </CardHeader>
+      </Card>
+    );
   if (error)
     return (
       <Card className="border-destructive">
