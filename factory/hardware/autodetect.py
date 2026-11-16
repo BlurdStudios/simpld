@@ -8,29 +8,24 @@ figures the hardware out by itself:
                   keeps the one that answers with a *parseable weight frame*.
                   That is a real handshake, not a name guess — a wrong port
                   stays silent, so a false positive is not possible.
-  Label printer   reads the installed Windows/Linux printer list and picks the
-                  label printer out of it, any brand (name hints first, then
-                  the only real printer when there is exactly one; virtual
-                  queues like Print-to-PDF are never picked).
   QR scanner      nothing to detect — keyboard wedge.
 
 Detected values are written to the same `hardware.json` the old dialog used,
-so the env overrides (`SIMPLD_SCALE_PORT` / `SIMPLD_PRINTER_NAME`) and the
+so the env override (`SIMPLD_SCALE_PORT`) and the
 "fail closed, never mock" rules in `devices.py` all keep working unchanged.
 
-Nothing here imports Qt at module level (printer enumeration lazily imports
-Qt inside the worker thread) so the UI never blocks while ports are probed.
+Nothing here imports Qt, so the UI never blocks while ports are probed.
 
 Prod contract (what "stuck on detecting" taught us):
 - Every probe has a deadline: configured port first (fast path, <1s when
   healthy), then all ports at 9600, fallback bauds only with time left.
 - Forgetting a stored entry only happens when enumeration itself succeeded
-  (pyserial present / printer list readable) but the device genuinely
+  (pyserial present) but the device genuinely
   answers nothing. A failed enumeration (pyserial missing, spooler error,
   exception) keeps the stored config and reports an error instead of
   wiping hardware.json.
 - detect_all/detect_one never raise, never fabricate, always log timings
-  + ports/printers seen so a "not found" pill is diagnosable from
+  + ports seen so a "not found" pill is diagnosable from
   simpld.log without guessing.
 """
 from __future__ import annotations
@@ -60,40 +55,7 @@ FALLBACK_BAUDS = (19200, 38400, 57600, 115200)
 PROBE_DWELL = 0.45          # seconds per port; the indicator streams ~10/s
 PROBE_TIMEOUT = 0.5         # serial read timeout
 SCALE_BUDGET_S = 8.0        # max time spent probing serial ports per run
-PRINTER_BUDGET_S = 4.0      # max time spent enumerating printers per run
 OVERALL_BUDGET_S = 12.0     # hard deadline for a full detect_all run
-
-# Substrings that identify a LABEL printer in the OS printer list, any
-# brand. Citizen entries stay first so the current fleet keeps resolving to
-# the same queue it always did. Generic words ("label", "barcode",
-# "thermal") catch custom-named queues; anything still unmatched falls back
-# to the only real printer when there is exactly one (see detect_printer).
-# "ct-s" covers the Citizen CT-S receipt family (driver queues named
-# "CT-S621" contain no "citizen" substring); "tsp"/"tm-t"/"epson tm" cover
-# Star/Epson receipt printers sometimes used for box stickers. "s621" /
-# "zd621" / "621ii" cover bare driver names that carry only the model
-# number (e.g. a queue named "S621Z" or "ZD621" with no brand in it —
-# seen on the floor where the Citizen queue is not called "CL-S621II").
-PRINTER_HINTS = ("citizen", "cl-s621", "cl-s6", "cls-621", "s621", "zd621",
-                 "621ii", "ct-s", "ct s",
-                 "zebra", "tsc", "datamax", "honeywell", "brother", "dymo",
-                 "sato", "cab", "godex", "postek", "intermec", "bixolon",
-                 "tsp", "tm-t", "epson tm", "star micronics",
-                 "cognitive", "fargo", "magicard",
-                 "label", "barcode", "thermal", "receipt", "sticker")
-
-# Queues that are never a label printer, even as a last resort (Windows
-# always has at least one of these; picking one would "print" stickers
-# into a PDF file and report success). Substring list is intentionally
-# broad and English-plus-generic: localized Windows builds rename these
-# queues, and an unlisted virtual queue would otherwise count as "real"
-# and block the single-real-printer fallback (or get picked by it).
-VIRTUAL_PRINTER_HINTS = ("print to pdf", "save as pdf", "print as pdf",
-                         "adobe pdf", "foxit", "cutepdf", "pdf creator",
-                         "pdf printer", "pdf writer",
-                         "xps document writer", "xps", "onenote",
-                         "send to onenote", "fax", "webex")
-
 
 def _is_mock_fn(fn) -> bool:
     """True when fn is a unittest.mock patch (tests). Cached/live paths
@@ -144,34 +106,6 @@ def list_ports_status() -> tuple[list[str], bool]:
         _log.warning("list_ports: enumeration failed (%s) — "
                      "keeping stored config", e, exc_info=True)
         return [], False
-
-
-def available_printers_status() -> tuple[list[str], bool]:
-    """(names, trustworthy): False only when the list could not be read."""
-    try:
-        from . import qtprint as _qp
-        _fn = _qp.available_printers
-        if _is_mock_fn(_fn):
-            try:
-                return list(_fn() or []), True
-            except Exception:
-                return [], False
-        names = _fn()
-    except Exception as e:
-        _log.warning("available_printers: enumeration failed (%s) — "
-                     "keeping stored config", e, exc_info=True)
-        return [], False
-    # available_printers() itself returns [] on Qt failure (and logs).
-    # An empty list is trustworthy when Qt is up; when Qt is missing the
-    # inner call already warned. Distinguish by trying the Qt import.
-    try:
-        from PySide6.QtPrintSupport import QPrinterInfo  # noqa: F401
-        return list(names), True
-    except Exception:
-        # Qt missing entirely: the [] tells us nothing.
-        if not names:
-            return [], False
-        return list(names), True
 
 
 # ---- weigh machine --------------------------------------------------------
@@ -311,110 +245,34 @@ def detect_scale_ex(cfg: dict | None = None,
     return pick, True, detail
 
 
-# ---- label printer --------------------------------------------------------
-def _is_virtual_printer(name: str) -> bool:
-    """True for Windows virtual queues (PDF/XPS/OneNote/Fax) — never picked."""
-    low = name.casefold()
-    return any(needle in low for needle in VIRTUAL_PRINTER_HINTS)
-
-
-def detect_printer(save: bool = True) -> str | None:
-    """Pick the label printer out of the OS printer list, any brand.
-
-    Probe only (see detect_scale): persistence is done by `detect_all`.
-    Order: label-printer name hints first (Citizen entries first, so the
-    current fleet resolves exactly as before), then the only real printer
-    when there is exactly one. Virtual queues are never picked, and an
-    ambiguous list with no hint match stays unconfigured (fail closed —
-    set the exact queue name instead of misprinting to the office laser).
-
-    The seen queue names and the outcome are logged (simpld.hardware) so a
-    "not found" pill on the floor can be diagnosed from simpld.log instead
-    of guessing.
-    """
-    name, _ok, _detail = detect_printer_ex()
-    return name
-
-
-def detect_printer_ex() -> tuple[str | None, bool, dict]:
-    """(name, trustworthy, detail): trustworthy=False means "could not look"."""
-    t0 = time.monotonic()
-    names, ok = available_printers_status()
-    if not ok:
-        return None, False, {"printers": [],
-                             "error": "printer enumeration failed",
-                             "elapsed": round(time.monotonic() - t0, 2)}
-    _log.info("detect_printer: OS reports %d printer(s): %r",
-              len(names), names if len(names) <= 8 else names[:8] + ["…"])
-    if not names:
-        _log.info("detect_printer: no printers enumerated — returning None")
-        return None, True, {"printers": [], "error": "",
-                             "elapsed": round(time.monotonic() - t0, 2)}
-    for needle in PRINTER_HINTS:
-        for name in names:
-            if needle in name.casefold():
-                _log.info("detect_printer: hint %r matched %r", needle, name)
-                return name, True, {
-                    "printers": names, "hint": needle,
-                    "elapsed": round(time.monotonic() - t0, 2), "error": ""}
-    real = [n for n in names if not _is_virtual_printer(n)]
-    if len(real) == 1:
-        _log.info("detect_printer: single real printer fallback -> %r", real[0])
-        return real[0], True, {
-            "printers": names, "hint": "single-real",
-            "elapsed": round(time.monotonic() - t0, 2), "error": ""}
-    _log.info("detect_printer: no hint match, %d real printer(s) %r — "
-              "staying unconfigured (fail closed)", len(real), real)
-    return None, True, {"printers": names, "real": real, "error": "",
-                        "elapsed": round(time.monotonic() - t0, 2)}
-
-
 # ---- both -----------------------------------------------------------------
 def _env_pins_scale() -> str:
     return str(os.environ.get("SIMPLD_SCALE_PORT") or "").strip()
-
-
-def _env_pins_printer() -> str:
-    return str(os.environ.get("SIMPLD_PRINTER_NAME") or "").strip()
 
 
 def detect_all(save: bool = True, cfg: dict | None = None,
                timeout: float = OVERALL_BUDGET_S) -> dict:
     """Detect both configurable devices. Never raises; never fabricates.
 
-    Returns {'scale': {...}|None, 'printer': str|None, ...diagnostics}.
-    Both results are merged into ONE config read-modify-write, so the two
-    devices can never overwrite each other's detection. Anything not found
-    stays unconfigured, so devices.py keeps failing closed rather than
-    quietly switching to the mock.
+    Returns {'scale': {...}|None, ...diagnostics}. Anything not found stays
+    unconfigured, so devices.py keeps failing closed rather than quietly
+    switching to the mock.
 
     A device the probe can no longer find is FORGOTTEN (its entry is cleared)
     so the pills read "not found" instead of "ready" for phantom hardware —
-    unless an env override (SIMPLD_SCALE_PORT / SIMPLD_PRINTER_NAME) pins it,
-    which keeps winning as documented in hardware/config.py, and unless the
-    enumeration itself failed (pyserial missing / spooler error), in which
-    case the stored value is KEPT and the failure is logged.
-
-    Overall deadline: printer first (fast), then scale with the remaining
-    budget. A slow plant still resolves in ~12s worst case instead of
-    hanging the "detecting" pill indefinitely.
+    unless an env override (SIMPLD_SCALE_PORT) pins it, which keeps winning
+    as documented in hardware/config.py, and unless the enumeration itself
+    failed (pyserial missing), in which case the stored value is KEPT and the
+    failure is logged.
     """
     t0 = time.monotonic()
     overall_deadline = t0 + max(2.0, float(timeout or OVERALL_BUDGET_S))
     with _LOCK:
         cfg = dict(cfg) if cfg is not None else _config.load()
         scale = None
-        printer = None
-        scale_ok, printer_ok = False, False
+        scale_ok = False
         scale_detail: dict = {}
-        printer_detail: dict = {}
         errors: list[str] = []
-        try:
-            printer, printer_ok, printer_detail = detect_printer_ex()
-        except Exception as e:
-            printer, printer_ok = None, False
-            printer_detail = {"error": str(e)}
-            errors.append(f"printer: {e}")
         try:
             remaining = max(1.0, overall_deadline - time.monotonic())
             scale, scale_ok, scale_detail = detect_scale_ex(
@@ -441,18 +299,6 @@ def detect_all(save: bool = True, cfg: dict | None = None,
             _log.warning("detect_all: scale probe inconclusive "
                          "(enumeration failed) — keeping stored %r",
                          cfg.get("scale_port"))
-        if printer and cfg.get("printer_name") != printer:
-            changed = True
-            cfg["printer_name"] = printer
-        elif (not printer and printer_ok and cfg.get("printer_name")
-                and cfg.get("printer_name") != _env_pins_printer()):
-            changed = True
-            cfg["printer_name"] = ""
-        elif printer is None and not printer_ok and cfg.get("printer_name"):
-            _log.warning("detect_all: printer probe inconclusive "
-                         "(enumeration failed) — keeping stored %r",
-                         cfg.get("printer_name"))
-
         if changed and save:
             try:
                 _config.save(cfg)
@@ -464,16 +310,16 @@ def detect_all(save: bool = True, cfg: dict | None = None,
         # direction (found OR forgotten). Forgetting without reloading
         # used to leave the old real driver live while the pill said
         # "not found".
-        if scale or printer or changed:
+        if scale or changed:
             try:
                 _devices.reload_hardware(cfg)
             except Exception as e:
                 errors.append(f"reload: {e}")
         elapsed = round(time.monotonic() - t0, 2)
-        _log.info("detect_all: scale=%s printer=%s changed=%s in %.1fs",
+        _log.info("detect_all: scale=%s changed=%s in %.1fs",
                   (scale or {}).get("port") if scale else None,
-                  printer, changed, elapsed)
-        out = {"scale": scale, "printer": printer}
+                  changed, elapsed)
+        out = {"scale": scale}
         # Diagnostics (additive: older callers ignore them).
         out["changed"] = changed
         out["elapsed"] = elapsed
@@ -481,10 +327,6 @@ def detect_all(save: bool = True, cfg: dict | None = None,
             out["errors"] = errors
         try:
             out["ports"] = scale_detail.get("ports", [])
-        except Exception:
-            pass
-        try:
-            out["printers"] = printer_detail.get("printers", [])
         except Exception:
             pass
         return out
@@ -501,7 +343,7 @@ def detect_one(key: str, save: bool = True,
     """
     with _LOCK:
         cfg = dict(_config.load())
-        out: dict = {"scale": None, "printer": None}
+        out: dict = {"scale": None}
         errors: list[str] = []
         changed = False
         if key == "scale":
@@ -520,27 +362,12 @@ def detect_one(key: str, save: bool = True,
                     and cfg.get("scale_port") != _env_pins_scale():
                 cfg["scale_port"] = ""
                 changed = True
-        elif key == "printer":
-            try:
-                name, ok, _detail = detect_printer_ex()
-            except Exception as e:
-                name, ok = None, False
-                errors.append(f"printer: {e}")
-            out["printer"] = name
-            if name:
-                if cfg.get("printer_name") != name:
-                    cfg["printer_name"] = name
-                    changed = True
-            elif ok and cfg.get("printer_name") \
-                    and cfg.get("printer_name") != _env_pins_printer():
-                cfg["printer_name"] = ""
-                changed = True
         if changed and save:
             try:
                 _config.save(cfg)
             except Exception as e:
                 errors.append(f"save: {e}")
-        if out["scale"] or out["printer"] or changed:
+        if out["scale"] or changed:
             try:
                 _devices.reload_hardware(cfg)
             except Exception as e:

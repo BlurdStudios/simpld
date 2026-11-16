@@ -138,12 +138,15 @@ def _detail_scale(cfg: dict) -> tuple[str, str]:
 def _detail_printer(cfg: dict) -> tuple[str, str]:
     if _devices.demo_mode(cfg):
         return "demo", "simulated"
-    name = str(cfg.get("printer_name") or "").strip()
-    if not name:
+    port = str(cfg.get("printer_port") or "").strip()
+    if not port:
+        from .vcom import find_vcom_port
+        port = find_vcom_port() or ""
+    if not port:
         return "setup", "not found"
     if _devices.is_mock_printer():
-        return "setup", f"{name} (inactive)"
-    return "ready", name
+        return "setup", f"{port} (inactive)"
+    return "ready", f"{port} · VCOM"
 
 
 def _detail_scanner() -> tuple[str, str]:
@@ -220,12 +223,7 @@ def device_status(key: str, cfg: dict | None = None) -> dict:
         # The one thing an operator can do next, spelled out in the tooltip
         # rather than crowding the pill. For the printer, add what the OS
         # actually reports so "not found" is diagnosable on the floor.
-        hint = "Click to detect again."
-        if key == PRINTER:
-            seen = _printer_seen_hint()
-            if seen:
-                hint += f" {seen}"
-        out["hint"] = hint
+        out["hint"] = "Click to detect again."
     elif state == "demo":
         out["hint"] = "Demo mode is on — this device is simulated."
     elif key == SCANNER and scanner_input_without_landing():
@@ -360,12 +358,8 @@ def scale_port_present(port: str) -> bool | None:
 
 
 # ---- live-check caches (the 5s strip poll must never block the UI) ---------
-# QPrinterInfo.availablePrinters() hits the OS spooler and can take
-# seconds on a sick print server; pyserial enumeration is fast but still
-# a syscall per tick. Cache both: a slow spooler then costs one slow tick,
-# not one frozen UI per 5s.
-_PRINTER_CACHE: dict = {"at": 0.0, "names": None}
-_PRINTER_TTL_S = 15.0
+# pyserial enumeration is fast but still a syscall per tick; cache it so the
+# 5s strip poll never costs a frozen UI.
 _PORTS_CACHE: dict = {"at": 0.0, "ports": None, "ok": False}
 _PORTS_TTL_S = 10.0
 
@@ -375,44 +369,6 @@ def _cache_fresh(entry_at: float, ttl: float) -> bool:
         return (time.monotonic() - float(entry_at)) < float(ttl)
     except Exception:
         return False
-
-
-def cached_printers() -> list[str] | None:
-    """Printer queue names, cached. None when currently unknowable."""
-    # Tests patch qtprint.available_printers per-case: bypass the TTL
-    # cache when mocked so one test's queues never leak into the next.
-    try:
-        from . import qtprint as _qp
-        from . import autodetect as _auto
-        _fn = _qp.available_printers
-        if _auto._is_mock_fn(_fn):
-            try:
-                return list(_fn() or [])
-            except Exception:
-                return None
-    except Exception:
-        pass
-    if _cache_fresh(_PRINTER_CACHE.get("at", 0.0), _PRINTER_TTL_S):
-        return _PRINTER_CACHE.get("names")
-    try:
-        from .qtprint import available_printers
-        names = list(available_printers() or [])
-    except Exception:
-        return _PRINTER_CACHE.get("names")
-    # available_printers() returns [] both when there are no queues AND
-    # when Qt is missing/broken. Only cache the empty verdict when Qt is
-    # actually importable; otherwise keep the previous value (which may
-    # be None = unknowable, never flapping).
-    try:
-        from PySide6.QtPrintSupport import QPrinterInfo  # noqa: F401
-        qt_ok = True
-    except Exception:
-        qt_ok = False
-    if names or qt_ok:
-        _PRINTER_CACHE["names"] = names
-        _PRINTER_CACHE["at"] = time.monotonic()
-        return names
-    return _PRINTER_CACHE.get("names")
 
 
 def cached_scale_port_present(port: str) -> bool | None:
@@ -458,36 +414,12 @@ def cached_scale_port_present(port: str) -> bool | None:
 def clear_live_caches() -> None:
     """Test aid: force the next live tick to re-enumerate."""
     try:
-        _PRINTER_CACHE["at"] = 0.0
         _PORTS_CACHE["at"] = 0.0
     except Exception:
         pass
 
 
-def _printer_seen_hint() -> str | None:
-    """Best-effort 'Seen N: a, b' summary for printer tooltips. None when
-    the printer list cannot be read (no QApplication yet, Qt missing, …).
 
-    Display-only: never raises, never blocks (uses the live-check cache).
-    Keeps the operator from guessing why detection says "not found".
-    """
-    try:
-        from PySide6.QtWidgets import QApplication
-        if QApplication.instance() is None:
-            return None
-        names = cached_printers()
-        if names is None:
-            return None
-    except Exception:
-        return None
-    if not names:
-        return "Seen 0 printers — check the driver install and spooler."
-    shown = ", ".join(names[:4])
-    if len(names) > 4:
-        shown += f" +{len(names) - 4} more"
-    if len(shown) > 90:
-        shown = shown[:87] + "…"
-    return f"Seen {len(names)}: {shown}."
 
 
 def live_device_status(key: str, cfg: dict | None = None) -> dict:
@@ -520,30 +452,18 @@ def live_device_status(key: str, cfg: dict | None = None) -> dict:
                 return {**spec, "state": "setup", "detail": "not found",
                         "hint": "Click to detect again."}
         elif key == PRINTER:
-            name = str(cfg.get("printer_name") or "")
-            seen = cached_printers()
-            if seen is None:
-                return spec  # unknowable right now — keep last verdict
-            if name not in seen:
-                hint = "Click to detect again."
-                shown = ", ".join(seen[:4])
-                if len(seen) > 4:
-                    shown += f" +{len(seen) - 4} more"
-                if shown:
-                    if len(shown) > 90:
-                        shown = shown[:87] + "…"
-                    hint += f" Seen {len(seen)}: {shown}."
-                else:
-                    hint += " Seen 0 printers."
+            from .vcom import find_vcom_port
+            port = (str(cfg.get("printer_port") or "").strip()
+                    or find_vcom_port() or "")
+            if not port:
                 return {**spec, "state": "setup", "detail": "not found",
-                        "hint": hint}
-            if usb_printer_present() is False:
-                # Queue present, no USB printer class on this PC. Most
-                # likely a network/shared queue — stay ready, note it.
-                return {**spec,
-                        "hint": "Queue seen · no USB printer class on this PC "
-                                "(normal for network/shared queues). "
-                                "Check the cable if printing fails."}
+                        "hint": "Click to detect again. Connect the Citizen "
+                                "serial/USB cable and set VCOM mode."}
+            present = cached_scale_port_present(port)
+            if present is False:
+                return {**spec, "state": "setup", "detail": "not found",
+                        "hint": "Click to detect again. Serial port "
+                                f"{port} is not connected."}
     except Exception:
         pass
     return spec

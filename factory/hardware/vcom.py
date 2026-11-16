@@ -87,6 +87,79 @@ def zpl_bitmap(pil_img, x: int, y: int, stock_w_dots: int,
     return job.encode("ascii")
 
 
+def _load_layout(template_id: str) -> dict:
+    """Layout dict for one template from the settings table, defaults when unavailable."""
+    try:
+        from . import layout as _layout
+        from factory import services as _svc
+        keys = ["stock_w_mm", "stock_h_mm", "dpi", "content_x_mm",
+                "content_y_mm", "content_w_mm", "content_h_mm",
+                "margin_locked", "units", "fit_mode"]
+        tid = str(template_id or "").strip().lower() or "reel"
+        settings = {}
+        for k in keys:
+            try:
+                settings[f"label.{tid}.{k}"] = _svc.get_setting(
+                    f"label.{tid}.{k}", "")
+            except Exception:
+                settings[f"label.{tid}.{k}"] = ""
+        return _layout.get_layout(tid, settings)
+    except Exception:
+        from . import layout as _layout
+        tid = str(template_id or "").strip().lower()
+        if tid not in _layout.DEFAULTS:
+            tid = "reel"
+        d = dict(_layout.DEFAULTS[tid])
+        d["template_id"] = tid
+        return d
+
+
+def _reel_image(data: dict, layout: dict | None = None):
+    from . import labels as LabelArt
+    try:
+        job, reel = data["job"], data["reel"]
+    except (KeyError, TypeError):
+        raise ValueError("Incomplete reel label data: need {'job': job, 'reel': reel}")
+    for key in ("job_no", "job_name"):
+        if key not in job:
+            raise ValueError(f"Incomplete reel label data: job lacks {key!r}")
+    for key in ("gross", "core", "net", "created_at", "roll_no"):
+        if key not in reel:
+            raise ValueError(f"Incomplete reel label data: reel lacks {key!r}")
+    lay = layout or _load_layout("reel")
+    return LabelArt.render_reel(
+        job, reel, width_mm=float(lay["content_w_mm"]),
+        height_mm=float(lay["content_h_mm"]), dpi=int(lay["dpi"]))
+
+
+def _carton_image(data: dict, layout: dict | None = None):
+    from . import labels as LabelArt
+    detail = data.get("detail", data) if isinstance(data, dict) else None
+    if not isinstance(detail, dict):
+        raise ValueError("Incomplete box label data: need {'detail': carton_detail}")
+    for key in ("job_no", "job_name", "carton_no", "bundle_no",
+                "packed_at", "total_gross", "qr"):
+        if key not in detail:
+            raise ValueError(f"Incomplete box label data: detail lacks {key!r}")
+    lay = layout or _load_layout("carton")
+    return LabelArt.render_carton(
+        detail, width_mm=float(lay["content_w_mm"]),
+        height_mm=float(lay["content_h_mm"]), dpi=int(lay["dpi"]))
+
+
+def _client_image(data: dict, layout: dict | None = None):
+    from . import labels as LabelArt
+    detail = data.get("detail", data) if isinstance(data, dict) else None
+    if not isinstance(detail, dict):
+        raise ValueError("Incomplete client label data: need {'detail': client_label_detail}")
+    for key in ("customer", "packed_at", "client_box_no", "coils"):
+        if key not in detail:
+            raise ValueError(f"Incomplete client label data: detail lacks {key!r}")
+    lay = layout or _load_layout("client")
+    return LabelArt.render_client_box(
+        detail, width_mm=float(lay["content_w_mm"]), dpi=int(lay["dpi"]))
+
+
 class VcomCitizen(PrinterInterface):
     """Label printer on a VCOM port, sending ZPL bitmaps (Citizen CL-S621)."""
 
@@ -105,7 +178,6 @@ class VcomCitizen(PrinterInterface):
                 "(self-test page: DPL or ZPL). Nothing was sent.")
 
     def _print(self, template_id: str, image, data_label: str) -> bool:
-        from .qtprint import _load_layout
         from . import layout as _layout
         self._require_language()
         port = self._target()
@@ -121,16 +193,13 @@ class VcomCitizen(PrinterInterface):
         return True
 
     def print_reel_label(self, data: dict) -> bool:
-        from .qtprint import QtCitizenCLS621, _load_layout
         lay = _load_layout("reel")
-        return self._print("reel", QtCitizenCLS621._reel_image(data, lay), "reel")
+        return self._print("reel", _reel_image(data, lay), "reel")
 
     def print_carton_label(self, data: dict) -> bool:
-        from .qtprint import QtCitizenCLS621, _load_layout
         lay = _load_layout("carton")
-        return self._print("carton", QtCitizenCLS621._carton_image(data, lay), "carton")
+        return self._print("carton", _carton_image(data, lay), "carton")
 
     def print_client_label(self, data: dict) -> bool:
-        from .qtprint import QtCitizenCLS621, _load_layout
         lay = _load_layout("client")
-        return self._print("client", QtCitizenCLS621._client_image(data, lay), "client")
+        return self._print("client", _client_image(data, lay), "client")

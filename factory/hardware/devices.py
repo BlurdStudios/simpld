@@ -1,6 +1,6 @@
 """Shared hardware instances, initialized from existing config (no new knobs).
 
-Blank scale_port / printer_name means NOT CONFIGURED: weighing and printing
+Blank scale_port / printer_port means NOT CONFIGURED: weighing and printing
 are blocked by the UI gates (require_scale/require_printer) instead of
 creating mock records. The mock drivers in factory/hardware/mock.py are
 retained ONLY for test compatibility (SIMPLD_ALLOW_MOCK=1 in tests) and for
@@ -90,18 +90,12 @@ def build_scale(cfg: dict):
 
 
 def build_printer(cfg: dict):
-    """Real Citizen (installed Qt printer) when named, else the log mock."""
+    """Citizen CL-S621 over its VCOM serial port (the only printer mode)."""
     if demo_mode(cfg):
         return _mock.MockCitizenCLS621()
-    if str(cfg.get("printer_mode") or "").strip().lower() == "vcom":
-        from .vcom import VcomCitizen
-        return VcomCitizen(str(cfg.get("printer_port") or "").strip(),
-                           int(cfg.get("printer_baud") or 9600))
-    name = str(cfg.get("printer_name") or "").strip()
-    if not name:
-        return _mock.MockCitizenCLS621()
-    from .qtprint import QtCitizenCLS621
-    return QtCitizenCLS621(name)
+    from .vcom import VcomCitizen
+    return VcomCitizen(str(cfg.get("printer_port") or "").strip(),
+                       int(cfg.get("printer_baud") or 9600))
 
 
 def reload_hardware(cfg: dict | None = None) -> dict:
@@ -151,9 +145,12 @@ def scale_configured(cfg: dict | None = None) -> bool:
 
 
 def printer_configured(cfg: dict | None = None) -> bool:
-    """True when a real printer name is configured (blank blocks printing)."""
+    """True when the printer's serial (VCOM) port is configured or found."""
     cfg = cfg if cfg is not None else _config.load()
-    return bool(str(cfg.get("printer_name") or "").strip())
+    if str(cfg.get("printer_port") or "").strip():
+        return True
+    from .vcom import find_vcom_port
+    return find_vcom_port() is not None
 
 
 def mock_allowed() -> bool:
@@ -219,7 +216,7 @@ def require_printer(cfg: dict | None = None) -> None:
 
 def _override_suffix() -> str:
     """Short note when env vars override the stored file (env wins)."""
-    active = [k for k in ("SIMPLD_SCALE_PORT", "SIMPLD_PRINTER_NAME",
+    active = [k for k in ("SIMPLD_SCALE_PORT",
                           "SIMPLD_DEMO",
                           "SIMPLD_HW_JSON", "SIMPLD_DATA_DIR")
               if os.environ.get(k)]
@@ -237,7 +234,7 @@ def mode_text(cfg: dict | None = None) -> str:
         scale = ("mock" if is_mock_scale()
                  else f"scale {cfg.get('scale_port')}:{cfg.get('scale_baud', 9600)}")
         printer = ("log only" if is_mock_printer()
-                   else f"printer {cfg.get('printer_name')}")
+                   else f"printer VCOM {cfg.get('printer_port') or 'auto'}")
         base = f"Real: {scale} · {printer}"
     if init_error:
         base += f" · CONFIG ERROR: {init_error}"

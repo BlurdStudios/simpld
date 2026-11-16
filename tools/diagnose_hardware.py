@@ -40,33 +40,6 @@ def main() -> int:
     except Exception as e:
         print(f"simpld VERSION: unreadable ({e})")
 
-    section("1. OS printer queues (label-printer detection reads ONLY this)")
-    try:
-        from PySide6.QtWidgets import QApplication
-        app = QApplication.instance() or QApplication([])
-        from factory.hardware.qtprint import available_printers
-        names = available_printers()
-        print(f"count={len(names)}")
-        for n in names:
-            print(f"  - {n!r}")
-        try:
-            from PySide6.QtPrintSupport import QPrinterInfo
-            from PySide6.QtGui import QPageSize
-            for n in names:
-                sizes = QPrinterInfo.printerInfo(n).supportedPageSizes()
-                print(f"  page sizes for {n!r}: {len(sizes)}")
-                for s in sizes:
-                    m = s.size(QPageSize.Millimeter)
-                    print(f"    {s.name()!r}  {m.width():.2f} x {m.height():.2f} mm")
-        except Exception as e:
-            print(f"page size listing failed ({e!r})")
-        try:
-            from factory.hardware import autodetect as Auto
-            print(f"hint match -> {Auto.detect_printer()!r}")
-        except Exception as e:
-            print(f"detect_printer: raised {e!r}")
-    except Exception as e:
-        print(f"Qt printer enumeration unavailable ({e!r})")
 
     section("2. USB printer-class presence (advisory only)")
     try:
@@ -87,7 +60,7 @@ def main() -> int:
 
     section("4. stored hardware.json + env overrides (what the app uses)")
     for var in ("SIMPLD_HW_JSON", "SIMPLD_DATA_DIR", "SIMPLD_SCALE_PORT",
-                "SIMPLD_PRINTER_NAME", "SIMPLD_DEMO", "SIMPLD_MOCK_QR"):
+                "SIMPLD_DEMO", "SIMPLD_MOCK_QR"):
         if os.environ.get(var):
             print(f"env {var}={os.environ[var]!r}")
     try:
@@ -95,7 +68,7 @@ def main() -> int:
         cfg = C.load()
         print(f"path={C._default_path()}")
         print(json.dumps({k: cfg.get(k) for k in
-                          ("scale_port", "scale_baud", "printer_name",
+                          ("scale_port", "scale_baud", "printer_port",
                            "demo_mode", "mock_qr")}, indent=2))
     except Exception as e:
         print(f"config unreadable ({e!r})")

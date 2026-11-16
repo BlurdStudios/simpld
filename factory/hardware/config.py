@@ -2,7 +2,6 @@
 
 Windows factory PC example:
   SIMPLD_SCALE_PORT=COM3 python3 run.py
-  SIMPLD_PRINTER_NAME="Citizen CL-S621" python3 run.py
 
 File wins over defaults, env wins over file (so a shortcut can pin COM3
 without editing JSON on the floor).
@@ -40,10 +39,8 @@ DEFAULTS = {
     "scale_bytesize": 8,
     "scale_parity": "N",
     "scale_stopbits": 1,
-    # Citizen CL-S621 (USB): Windows printer share name from driver install.
-    "printer_name": "",        # e.g. "Citizen CL-S621". "" = file-log/mock
-    "printer_mode": "qt",      # "qt" = installed OS queue (printer_name); "vcom" = COM port (printer_port)
-    "printer_port": "",        # e.g. "COM5" on Windows; VCOM mode only
+    # Citizen CL-S621 over VCOM (serial) port.
+    "printer_port": "",        # Citizen VCOM serial port, e.g. "COM5"; "" = auto by USB ID
     "printer_baud": 9600,
     "demo_mode": False,        # explicit demo switch: simulate scale+printer (no hardware)
     "mock_qr": False,          # test aid: show a Dispatch button that loads the
@@ -89,8 +86,6 @@ def load(path: str | None = None) -> dict:
     # env overrides (deploy without editing files)
     if os.environ.get("SIMPLD_SCALE_PORT"):
         cfg["scale_port"] = os.environ["SIMPLD_SCALE_PORT"]
-    if os.environ.get("SIMPLD_PRINTER_NAME"):
-        cfg["printer_name"] = os.environ["SIMPLD_PRINTER_NAME"]
     if os.environ.get("SIMPLD_DEMO") == "1" and demo_build_enabled():
         cfg["demo_mode"] = True
     if "SIMPLD_MOCK_QR" in os.environ:

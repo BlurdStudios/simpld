@@ -25,7 +25,7 @@ from factory.hardware import devices as DEV
 from factory.hardware import config as HWC
 from factory.hardware import status as HWStatus
 from factory.hardware.essae import EssaeDS215, parse_weight_line
-from factory.hardware.qtprint import QtCitizenCLS621
+from factory.hardware.vcom import VcomCitizen
 from tests._auth_helper import ensure_default_users
 
 
@@ -156,10 +156,9 @@ def test_real_open_failure_errors():
 # ----- selection: explicit mock default, real when configured -----
 def test_blank_config_selects_mock():
     assert isinstance(DEV.build_scale({"scale_port": ""}), HW.MockEssaeDS215)
-    assert isinstance(
-        DEV.build_printer({"printer_name": ""}), HW.MockCitizenCLS621)
-    assert DEV.mode_text({"scale_port": "", "printer_name": ""}).startswith(
-        "Demo/mock")
+    assert isinstance(DEV.build_printer({"printer_port": ""}), VcomCitizen)
+    assert DEV.mode_text({"scale_port": "", "printer_port": ""}).startswith(
+        "Real:")
 
 
 def test_configured_port_selects_real_scale():
@@ -167,439 +166,30 @@ def test_configured_port_selects_real_scale():
     assert isinstance(d, EssaeDS215) and d.port == "COM3" and d.baud == 9600
 
 
-def test_configured_printer_selects_real_driver():
-    p = DEV.build_printer({"printer_name": "Citizen CL-S621"})
-    assert isinstance(p, QtCitizenCLS621)
-    assert p.printer_name == "Citizen CL-S621"
+def test_configured_printer_selects_vcom_port():
+    p = DEV.build_printer({"printer_port": "COM5", "printer_baud": 9600})
+    assert isinstance(p, VcomCitizen)
+    assert p.port == "COM5" and p.baud == 9600
 
 
 def test_reload_swaps_shared_instances_without_restart():
     old_s, old_p = HW.scale, HW.printer
     try:
         DEV.reload_hardware({"scale_port": "COM3", "scale_baud": 9600,
-                             "printer_name": "Citizen CL-S621"})
+                             "printer_port": "COM5"})
         assert isinstance(HW.scale, EssaeDS215)
-        assert isinstance(HW.printer, QtCitizenCLS621)
+        assert isinstance(HW.printer, VcomCitizen)
         assert "COM3" in DEV.mode_text(
-            {"scale_port": "COM3", "printer_name": "Citizen CL-S621"})
+            {"scale_port": "COM3", "printer_port": "COM5"})
         DEV.reload_hardware({"scale_port": "", "scale_baud": 9600,
-                             "printer_name": ""})
+                             "printer_port": ""})
         assert isinstance(HW.scale, HW.MockEssaeDS215)
-        assert isinstance(HW.printer, HW.MockCitizenCLS621)
+        assert isinstance(HW.printer, VcomCitizen)
     finally:
         HW.scale, HW.printer = old_s, old_p
 
 
 # ----- Qt printing with fakes: render + painter verified, no real jobs -----
-def _fake_qt(monkey_state, begin_ok=True):
-    from PySide6 import QtPrintSupport as PS
-    from PySide6 import QtGui as G
-    from PySide6.QtCore import QRect
-
-    class FakePrinter:
-        HighResolution = 2
-        DevicePixel = 0
-        instances = []
-
-        def __init__(self, mode):
-            self.calls = []
-            FakePrinter.instances.append(self)
-
-        def setPrinterName(self, n):
-            self.calls.append(("name", n))
-
-        def setDocName(self, n):
-            self.calls.append(("doc", n))
-
-        def setFullPage(self, on):
-            self.calls.append(("fullpage", on))
-
-        def setResolution(self, dpi):
-            self.calls.append(("resolution", dpi))
-
-        def setPageLayout(self, layout):
-            self.calls.append(("layout", layout))
-            monkey_state["layout"] = layout
-
-        def pageLayout(self):
-            return monkey_state["layout"]
-
-        def pageRect(self, unit):
-            # Derive the printable area from the requested page layout so the
-            # same fake covers the 100x50 Citizen and the 210mm-wide client stock.
-            lay = monkey_state.get("layout")
-            if lay is not None:
-                try:
-                    full = lay.fullRect(G.QPageLayout.Millimeter)
-                    return QRect(0, 0,
-                                 int(round(full.width() / 25.4 * 203)),
-                                 int(round(full.height() / 25.4 * 203)))
-                except Exception:
-                    pass
-            return QRect(0, 0, 799, 399)  # 100x50mm @203dpi full-bleed
-
-        def resolution(self):
-            return 203
-
-    class FakePainter:
-        def __init__(self):
-            monkey_state["painter"] = self
-            self.drawn = []
-
-        def begin(self, printer):
-            monkey_state["printer"] = printer
-            return begin_ok
-
-        def drawImage(self, rect, img):
-            self.drawn.append((rect, img))
-
-        def end(self):
-            monkey_state["ended"] = True
-            return True
-
-    monkey_state["FakePrinter"] = FakePrinter
-    p1 = _mock.patch.object(PS, "QPrinter", FakePrinter)
-    p2 = _mock.patch.object(G, "QPainter", FakePainter)
-    p3 = _mock.patch("factory.hardware.qtprint.printer_exists",
-                     lambda name: True)
-    return p1, p2, p3
-
-
-def _job_reel_detail():
-    job = {"job_no": 4169, "job_name": "QT JOB"}
-    reel = {"gross": 11.38, "core": 0.28, "net": 11.10,
-            "created_at": "2026-10-10 10:00:00", "roll_no": 1}
-    detail = {"job_no": 4169, "job_name": "QT JOB", "carton_no": "C0007",
-              "bundle_no": 1, "packed_at": "2026-10-10 10:00:00",
-              "num_reels": 0, "total_gross": 10.5, "total_core": 0,
-              "total_net": 10.5, "reels": [], "qr": "VASAVI:C0007"}
-    return job, reel, detail
-
-
-def test_real_print_renders_complete_data_and_paints_stock():
-    from PySide6 import QtGui as G
-    from factory.hardware import labels as L
-    st = {}
-    job, reel, detail = _job_reel_detail()
-    rendered = {}
-    real_reel, real_carton = L.render_reel, L.render_carton
-    def spy_reel(j, r, **k):
-        rendered["reel"] = (j, r)
-        return real_reel(j, r, **k)
-
-    def spy_carton(d, **k):
-        rendered["carton"] = d
-        return real_carton(d, **k)
-
-    p1, p2, p3 = _fake_qt(st)
-    with p1, p2, p3, \
-            _mock.patch.object(L, "render_reel", spy_reel), \
-            _mock.patch.object(L, "render_carton", spy_carton):
-        assert QtCitizenCLS621("Citizen").print_reel_label(
-            {"job": job, "reel": reel}) is True
-        assert rendered["reel"] == (job, reel), "must render complete job+reel"
-        assert QtCitizenCLS621("Citizen").print_carton_label(
-            {"detail": detail}) is True
-        assert rendered["carton"] == detail, "must render complete detail"
-    # fixed 100x50mm @203dpi, zero margins, painter begin/end honored
-    lay = st["layout"]
-    from PySide6.QtGui import QPageLayout as _PL
-    assert lay.orientation() == _PL.Portrait, \
-        "Qt rotates custom sizes: Portrait keeps 100-wide stock as-is"
-    try:
-        full = lay.fullRect(_PL.Millimeter)
-        assert abs(full.width() - 100.0) < 1.0, full
-        assert abs(full.height() - 50.0) < 1.0, full
-    except AssertionError:
-        raise
-    except Exception:
-        pass
-    ps = lay.pageSize()
-    try:
-        size_mm = ps.size(G.QPageSize.Millimeter)
-        assert abs(size_mm.width() - 100.0) < 0.5, size_mm
-        assert abs(size_mm.height() - 50.0) < 0.5, size_mm
-    except Exception:
-        pts = ps.sizePoints()
-        assert abs(pts.width() - 283.5) < 1.0, pts
-        assert abs(pts.height() - 141.7) < 1.0, pts
-    try:
-        margins = lay.margins()
-    except TypeError:
-        margins = lay.margins(G.QPageLayout.Millimeter)
-    assert margins.left() == 0 and margins.top() == 0, margins
-    assert margins.right() == 0 and margins.bottom() == 0, margins
-    assert st.get("ended") is True
-    assert st["painter"].drawn, "label image must be painted"
-    rect = st["painter"].drawn[-1][0]
-    # 1:1 content-box draw: default 3mm margins @203dpi -> origin (24,24),
-    # content 94x44mm art (label_px truncates to 751x351).
-    assert abs(rect.x() - 24) < 4 and abs(rect.y() - 24) < 4, rect
-    assert abs(rect.width() - 751) < 4 and abs(rect.height() - 351) < 4, rect
-    calls = st["FakePrinter"].instances[-1].calls
-    assert ("fullpage", False) in calls, \
-        "printable-local origin so the 2.50mm hardware left offset needs no shift"
-    assert ("resolution", 203) in calls, "must request 203dpi"
-
-
-def test_real_print_drifted_ticket_prints_11_with_state():
-    """Acceptance 8: driver ticket 102.5x50 still prints 1:1 (state=proceed).
-
-    The old hard exception ('reports a 102.5x50.0mm page, not the stock')
-    is gone: auto-repair runs, the job prints at the content origin with
-    no scaling, and the log line carries scale=1.0.
-    """
-    from PySide6 import QtGui as G
-    from PySide6.QtCore import QRect
-    st: dict = {}
-    job, reel, _detail = _job_reel_detail()
-
-    class DriftPrinter:
-        HighResolution = 2
-        DevicePixel = 0
-        instances: list = []
-
-        def __init__(self, mode):
-            DriftPrinter.instances.append(self)
-
-        def setPrinterName(self, n): pass
-
-        def setDocName(self, n): pass
-
-        def setFullPage(self, on): pass
-
-        def setResolution(self, dpi): pass
-
-        def setPageLayout(self, layout):
-            st["layout"] = layout
-
-        def pageLayout(self):
-            # Driver ignores our 100.1x50.05 ticket, keeps 102.5x50.0 form.
-            from PySide6.QtGui import QPageLayout as _PL, QPageSize as _PS
-            from PySide6.QtCore import QSizeF, QMarginsF
-            return _PL(_PS(QSizeF(102.5, 50.0), _PS.Millimeter),
-                       _PL.Portrait, QMarginsF(0, 0, 0, 0))
-
-        def pageRect(self, unit):
-            return QRect(0, 0, 799, 399)
-
-        def resolution(self):
-            return 203
-
-    class DriftPainter:
-        def __init__(self):
-            st["painter"] = self
-            self.drawn = []
-
-        def begin(self, printer):
-            return True
-
-        def drawImage(self, rect, img):
-            self.drawn.append((rect, img))
-
-        def end(self):
-            st["ended"] = True
-            return True
-
-    from PySide6 import QtPrintSupport as PS
-    p1 = _mock.patch.object(PS, "QPrinter", DriftPrinter)
-    p2 = _mock.patch.object(G, "QPainter", DriftPainter)
-    p3 = _mock.patch("factory.hardware.qtprint.printer_exists",
-                      lambda name: True)
-    with p1, p2, p3:
-        assert QtCitizenCLS621("Citizen CL-S621Z").print_reel_label(
-            {"job": job, "reel": reel}) is True
-    assert st.get("ended") is True
-    rect = st["painter"].drawn[-1][0]
-    assert abs(rect.x() - 24) < 4 and abs(rect.y() - 24) < 4, rect
-    assert abs(rect.width() - 751) < 4 and abs(rect.height() - 351) < 4, rect
-
-
-def test_origin_quirk_driver_repaired_to_ticket_minus_origin(caplog):
-    """ticket = label − origin: driver reports paper + 2.5mm origin.
-
-    First ticket (100.1) reads back 102.6; the single repair tickets
-    97.5, which reads back 100.1 -> state=repaired, print proceeds 1:1.
-    """
-    import logging
-    from PySide6 import QtGui as G
-    from PySide6.QtCore import QRect, QSizeF, QMarginsF
-    from PySide6.QtGui import QPageLayout as _PL, QPageSize as _PS
-    st: dict = {}
-    job, reel, _detail = _job_reel_detail()
-
-    class QuirkPrinter:
-        HighResolution = 2
-        DevicePixel = 0
-
-        def __init__(self, mode):
-            st.setdefault("tickets", [])
-
-        def setPrinterName(self, n): pass
-
-        def setDocName(self, n): pass
-
-        def setFullPage(self, on): pass
-
-        def setResolution(self, dpi): pass
-
-        def setPageLayout(self, layout):
-            full = layout.fullRect(_PL.Millimeter)
-            st["tickets"].append(
-                (round(full.width(), 2), round(full.height(), 2)))
-
-        def pageLayout(self):
-            # quirk: reported page = ticketed paper + 2.5mm origin.
-            # (A stub: real QPageLayout clamps custom margins, so the
-            # origin is reported directly like a driver would.)
-            from PySide6.QtCore import QRectF, QMarginsF
-            tw, th = st["tickets"][-1]
-
-            class _Geom:
-                def fullRect(self, unit):
-                    return QRectF(0, 0, tw + 2.5, th)
-
-                def margins(self, unit=None):
-                    return QMarginsF(2.5, 0.0, 0.0, 0.0)
-
-            return _Geom()
-
-        def pageRect(self, unit):
-            return QRect(0, 0, 769, 400)  # real CL-S621 printable
-
-        def resolution(self):
-            return 203
-
-    class QuirkPainter:
-        def __init__(self):
-            st["painter"] = self
-            self.drawn = []
-
-        def begin(self, printer):
-            return True
-
-        def drawImage(self, rect, img):
-            self.drawn.append((rect, img))
-
-        def end(self):
-            st["ended"] = True
-            return True
-
-    from PySide6 import QtPrintSupport as PS
-    p1 = _mock.patch.object(PS, "QPrinter", QuirkPrinter)
-    p2 = _mock.patch.object(G, "QPainter", QuirkPainter)
-    p3 = _mock.patch("factory.hardware.qtprint.printer_exists",
-                      lambda name: True)
-    from factory.hardware import layout as _L
-    p4 = _mock.patch("factory.hardware.qtprint._load_layout",
-                      lambda t: dict(_L.DEFAULTS[t], template_id=t))
-    with p1, p2, p3, p4:
-        with caplog.at_level(logging.INFO, logger="simpld.hardware"):
-            assert QtCitizenCLS621("Citizen CL-S621Z").print_reel_label(
-                {"job": job, "reel": reel}) is True
-    assert st.get("ended") is True
-    assert len(st["tickets"]) == 3, st["tickets"]
-    assert abs(st["tickets"][0][0] - 100.10) < 0.3, st["tickets"]
-    assert abs(st["tickets"][1][0] - 97.59) < 0.3, st["tickets"]
-    assert abs(st["tickets"][2][0] - 100.0) < 0.05, st["tickets"]
-    assert "paper repaired: ticket=97.50x50.00" in caplog.text, caplog.text
-    assert "state=repaired" in caplog.text, caplog.text
-    rect = st["painter"].drawn[-1][0]
-    assert abs(rect.x() - 24) < 4 and abs(rect.y() - 24) < 4, rect
-
-
-def test_real_client_label_print_uses_wide_custom_stock():
-    """Type-3 wide client sticker: 210 x content-height, zero margins.
-
-    The real Qt path tickets the exact custom paper size (not 100x50
-    Citizen stock) and paints the full-resolution 203dpi art 1:1 at the
-    content origin — no scaling, and no hard fail when the driver page
-    drifts (auto-repair + proceed instead).
-    """
-    from PySide6.QtGui import QPageLayout as _PL
-    detail = {
-        "customer": "PARLE AGRO PVT LTD",
-        "customer_po": "4500048181",
-        "batch_no": "SVSF/OCT-16",
-        "product_name": "APPY FIZZ 160ML NECK 10 RS",
-        "packed_at": "2026-10-20 10:00:00",
-        "client_box_no": 1,
-        "num_coils": 3,
-        "coils": [
-            {"roll_no": 1, "pieces": 38740, "gross": 8.68, "core": 0.28,
-             "net": 8.40, "mfg_date": "2026-10-16 08:00:00"},
-            {"roll_no": 2, "pieces": 38740, "gross": 8.64, "core": 0.28,
-             "net": 8.36, "mfg_date": "2026-10-16 09:00:00"},
-            {"roll_no": 3, "pieces": 38740, "gross": 8.78, "core": 0.28,
-             "net": 8.50, "mfg_date": "2026-10-16 10:00:00"},
-        ],
-        "total_pieces": 116220,
-        "total_gross": 26.10,
-        "total_tare": 0.84,
-        "total_net": 25.26,
-    }
-    st = {}
-    p1, p2, p3 = _fake_qt(st)
-    with p1, p2, p3:
-        assert QtCitizenCLS621("Wide").print_client_label(
-            {"detail": detail}) is True
-
-    lay = st["layout"]
-    assert lay.orientation() == _PL.Portrait, \
-        "210mm-wide stock is already wider than tall; keep it Portrait"
-    full = lay.fullRect(_PL.Millimeter)
-    assert abs(full.width() - 210.0) < 1.0, full
-    assert abs(full.height() - 92.0) < 1.0, full
-    margins = lay.margins(_PL.Millimeter)
-    assert (margins.left(), margins.top(), margins.right(),
-            margins.bottom()) == (0, 0, 0, 0), margins
-
-    assert st.get("ended") is True
-    assert st["painter"].drawn, "wide label image must be painted"
-    rect = st["painter"].drawn[-1][0]
-    # 1:1 at the content origin: default 3mm margins @203dpi -> (24,24);
-    # art is 204mm wide (1630px truncated) x row-driven 92mm (735px).
-    assert abs(rect.x() - 24) < 4 and abs(rect.y() - 24) < 4, rect
-    assert abs(rect.width() - 1630) < 4 and abs(rect.height() - 735) < 4, rect
-    calls = st["FakePrinter"].instances[-1].calls
-    assert ("fullpage", False) in calls
-    assert ("resolution", 203) in calls
-
-
-def test_real_print_failures_never_report_success():
-    st = {}
-    job, reel, _detail = _job_reel_detail()
-    # painter refused
-    p1, p2, p3 = _fake_qt(st, begin_ok=False)
-    with p1, p2, p3:
-        try:
-            QtCitizenCLS621("Citizen").print_reel_label({"job": job, "reel": reel})
-        except RuntimeError:
-            pass
-        else:
-            raise SystemExit("FAIL: refused painter must raise")
-    # unknown installed printer
-    with _mock.patch("factory.hardware.qtprint.printer_exists", lambda n: False):
-        try:
-            QtCitizenCLS621("Ghost").print_carton_label({"detail": _detail})
-        except RuntimeError as e:
-            assert "not found" in str(e)
-        else:
-            raise SystemExit("FAIL: missing printer must raise")
-    # truncated payloads rejected, not printed as fabricated labels
-    q1, q2, q3 = _fake_qt({})
-    with q1, q2, q3:
-        for bad in ({"job_no": 1}, {"carton_no": "C1"}, {}, {"detail": {"qr": "x"}}):
-            try:
-                QtCitizenCLS621("Citizen").print_reel_label(bad)
-                QtCitizenCLS621("Citizen").print_carton_label(bad)
-            except (ValueError, RuntimeError):
-                pass
-            else:
-                raise SystemExit(f"FAIL: truncated payload accepted: {bad}")
-
-
-# ----- UI: mock toggle, Read/Stop errors, mode indication -----
 def _blank_hw_config():
     """Point SIMPLD_HW_JSON at a blank temp config.
 
@@ -797,7 +387,7 @@ def test_autodetect_finds_scale_by_probing_ports():
     assert hits[0]["weight"] == 4.25, hits
 
 
-def test_autodetect_persists_scale_and_printer():
+def test_autodetect_persists_scale():
     """A successful probe writes hardware.json and goes live without restart."""
     from factory.hardware import autodetect as Auto
     tmp = os.path.join(tempfile.mkdtemp(prefix="simpld-auto-"), "hardware.json")
@@ -813,15 +403,10 @@ def test_autodetect_persists_scale_and_printer():
         with _mock.patch("factory.hardware.essae.list_ports",
                          return_value=["COM4"]), \
              _mock.patch.object(EssaeDS215, "_read_lines",
-                               Answering._read_lines), \
-             _mock.patch("factory.hardware.qtprint.available_printers",
-                         return_value=["Citizen CL-S621II",
-                                       "Microsoft Print to PDF"]):
+                               Answering._read_lines):
             result = Auto.detect_all(save=True)
         assert result["scale"] and result["scale"]["port"] == "COM4", result
-        assert result["printer"] == "Citizen CL-S621II", result
         assert HWC.load(tmp)["scale_port"] == "COM4"
-        assert HWC.load(tmp)["printer_name"] == "Citizen CL-S621II"
         assert isinstance(HW.scale, EssaeDS215), "detection must apply live"
         assert getattr(HW.scale, "port", None) == "COM4", \
             "wrong scale must never be selected"
@@ -851,14 +436,10 @@ def test_autodetect_no_answer_stays_unconfigured():
     try:
         with _mock.patch("factory.hardware.essae.list_ports",
                          return_value=["COM1", "COM2"]), \
-             _mock.patch.object(EssaeDS215, "_read_lines", Silent._read_lines), \
-             _mock.patch("factory.hardware.qtprint.available_printers",
-                         return_value=["Microsoft Print to PDF"]):
+             _mock.patch.object(EssaeDS215, "_read_lines", Silent._read_lines):
             result = Auto.detect_all(save=True)
         assert result["scale"] is None, result
-        assert result["printer"] is None, "non-Citizen printer must not be picked"
         assert HWC.load(tmp)["scale_port"] == ""
-        assert HWC.load(tmp)["printer_name"] == ""
         assert isinstance(HW.scale, HW.MockEssaeDS215), "no silent real fallback"
         try:
             DEV.require_scale()
@@ -888,11 +469,9 @@ def test_autodetect_forgets_devices_that_stopped_answering():
     old_json = os.environ.get("SIMPLD_HW_JSON")
     old_s, old_p = HW.scale, HW.printer
     old_port = os.environ.pop("SIMPLD_SCALE_PORT", None)
-    old_name = os.environ.pop("SIMPLD_PRINTER_NAME", None)
     os.environ["SIMPLD_HW_JSON"] = tmp
     with open(tmp, "w") as f:
-        json.dump({"scale_port": "COM7", "scale_baud": 9600,
-                   "printer_name": "Citizen-CLS621"}, f)
+        json.dump({"scale_port": "COM7", "scale_baud": 9600}, f)
 
     class Silent(EssaeDS215):
         def _read_lines(self, dwell=0.8):
@@ -901,15 +480,11 @@ def test_autodetect_forgets_devices_that_stopped_answering():
     try:
         with _mock.patch("factory.hardware.essae.list_ports",
                           return_value=["COM7"]), \
-              _mock.patch.object(EssaeDS215, "_read_lines", Silent._read_lines), \
-              _mock.patch("factory.hardware.qtprint.available_printers",
-                          return_value=["Microsoft Print to PDF"]):
+              _mock.patch.object(EssaeDS215, "_read_lines", Silent._read_lines):
             result = Auto.detect_all(save=True)
         assert result["scale"] is None, result
-        assert result["printer"] is None, result
         cfg = HWC.load(tmp)
         assert cfg["scale_port"] == "", cfg
-        assert cfg["printer_name"] == "", cfg
     finally:
         if old_json is None:
             os.environ.pop("SIMPLD_HW_JSON", None)
@@ -917,8 +492,6 @@ def test_autodetect_forgets_devices_that_stopped_answering():
             os.environ["SIMPLD_HW_JSON"] = old_json
         if old_port is not None:
             os.environ["SIMPLD_SCALE_PORT"] = old_port
-        if old_name is not None:
-            os.environ["SIMPLD_PRINTER_NAME"] = old_name
         HW.scale, HW.printer = old_s, old_p
 
 
@@ -929,13 +502,10 @@ def test_autodetect_keeps_env_pinned_config_when_nothing_answers():
     old_json = os.environ.get("SIMPLD_HW_JSON")
     old_s, old_p = HW.scale, HW.printer
     old_port = os.environ.get("SIMPLD_SCALE_PORT")
-    old_name = os.environ.get("SIMPLD_PRINTER_NAME")
     os.environ["SIMPLD_HW_JSON"] = tmp
     os.environ["SIMPLD_SCALE_PORT"] = "COM9"
-    os.environ["SIMPLD_PRINTER_NAME"] = "Pinned Printer"
     with open(tmp, "w") as f:
-        json.dump({"scale_port": "COM7", "scale_baud": 9600,
-                   "printer_name": "Citizen-CLS621"}, f)
+        json.dump({"scale_port": "COM7", "scale_baud": 9600}, f)
 
     class Silent(EssaeDS215):
         def _read_lines(self, dwell=0.8):
@@ -944,15 +514,11 @@ def test_autodetect_keeps_env_pinned_config_when_nothing_answers():
     try:
         with _mock.patch("factory.hardware.essae.list_ports",
                           return_value=["COM9"]), \
-              _mock.patch.object(EssaeDS215, "_read_lines", Silent._read_lines), \
-              _mock.patch("factory.hardware.qtprint.available_printers",
-                          return_value=["Microsoft Print to PDF"]):
+              _mock.patch.object(EssaeDS215, "_read_lines", Silent._read_lines):
             result = Auto.detect_all(save=True)
         assert result["scale"] is None, result
-        assert result["printer"] is None, result
         cfg = HWC.load(tmp)
         assert cfg["scale_port"] == "COM9", cfg
-        assert cfg["printer_name"] == "Pinned Printer", cfg
     finally:
         if old_json is None:
             os.environ.pop("SIMPLD_HW_JSON", None)
@@ -962,60 +528,7 @@ def test_autodetect_keeps_env_pinned_config_when_nothing_answers():
             os.environ.pop("SIMPLD_SCALE_PORT", None)
         else:
             os.environ["SIMPLD_SCALE_PORT"] = old_port
-        if old_name is None:
-            os.environ.pop("SIMPLD_PRINTER_NAME", None)
-        else:
-            os.environ["SIMPLD_PRINTER_NAME"] = old_name
         HW.scale, HW.printer = old_s, old_p
-
-
-def test_detect_printer_picks_any_brand_not_citizen_only():
-    """The Citizen-only gate is gone: any label printer matches by hints."""
-    from factory.hardware import autodetect as Auto
-    with _mock.patch("factory.hardware.qtprint.available_printers",
-                      return_value=["Microsoft Print to PDF", "Zebra ZD421"]):
-        assert Auto.detect_printer() == "Zebra ZD421"
-    with _mock.patch("factory.hardware.qtprint.available_printers",
-                      return_value=["Office Laser", "Shipping Label Printer"]):
-        assert Auto.detect_printer() == "Shipping Label Printer"
-    # Citizen still wins when several label printers are installed.
-    with _mock.patch("factory.hardware.qtprint.available_printers",
-                      return_value=["Zebra ZD421", "Citizen CL-S621II"]):
-        assert Auto.detect_printer() == "Citizen CL-S621II"
-    # Citizen CT-S receipt family (queue named without "citizen").
-    with _mock.patch("factory.hardware.qtprint.available_printers",
-                      return_value=["Office Laser", "CT-S621"]):
-        assert Auto.detect_printer() == "CT-S621"
-    # Star/Epson receipt printers used for box stickers.
-    with _mock.patch("factory.hardware.qtprint.available_printers",
-                      return_value=["Office Laser", "Star TSP143"]):
-        assert Auto.detect_printer() == "Star TSP143"
-
-
-def test_detect_printer_ignores_extra_virtual_queues():
-    """Alternate/localized PDF queues never count as real printers."""
-    from factory.hardware import autodetect as Auto
-    with _mock.patch("factory.hardware.qtprint.available_printers",
-                      return_value=["Save as PDF", "Adobe PDF", "HP LaserJet Pro"]):
-        assert Auto.detect_printer() == "HP LaserJet Pro"
-    with _mock.patch("factory.hardware.qtprint.available_printers",
-                      return_value=["Adobe PDF", "Foxit Reader PDF Printer"]):
-        assert Auto.detect_printer() is None
-
-
-def test_detect_printer_matches_bare_model_names():
-    """Floor queues named with only the model number (no brand words).
-
-    Seen on the floor: a queue called "S621Z" (no "citizen"/"cl-s621"
-    in it) and Zebra ZD621 queues without "Zebra" — both must match.
-    """
-    from factory.hardware import autodetect as Auto
-    with _mock.patch("factory.hardware.qtprint.available_printers",
-                      return_value=["Office Laser", "S621Z"]):
-        assert Auto.detect_printer() == "S621Z"
-    with _mock.patch("factory.hardware.qtprint.available_printers",
-                      return_value=["Office Laser", "ZD621"]):
-        assert Auto.detect_printer() == "ZD621"
 
 
 def test_scanner_attempts_without_landing():
@@ -1048,116 +561,66 @@ def test_scanner_session_resets_on_logout():
     assert not HWStatus.scanner_input_without_landing()
 
 
-def test_detect_printer_falls_back_to_only_real_printer():
-    """No hint match + exactly one non-virtual printer: take it."""
-    from factory.hardware import autodetect as Auto
-    with _mock.patch("factory.hardware.qtprint.available_printers",
-                      return_value=["Microsoft Print to PDF", "HP LaserJet Pro"]):
-        assert Auto.detect_printer() == "HP LaserJet Pro"
-
-
-def test_detect_printer_never_picks_virtual_or_ambiguous():
-    """Virtual queues are never picked; ambiguous lists stay unconfigured
-    (fail closed) instead of misprinting to the office laser."""
-    from factory.hardware import autodetect as Auto
-    with _mock.patch("factory.hardware.qtprint.available_printers",
-                      return_value=["Microsoft Print to PDF"]):
-        assert Auto.detect_printer() is None
-    with _mock.patch("factory.hardware.qtprint.available_printers",
-                      return_value=["Microsoft Print to PDF", "HP LaserJet",
-                                    "Epson WorkForce"]):
-        assert Auto.detect_printer() is None
-    with _mock.patch("factory.hardware.qtprint.available_printers",
-                      return_value=[]):
-        assert Auto.detect_printer() is None
-
-
 def _live_cfg(**kw):
-    cfg = {"scale_port": "", "scale_baud": 9600, "printer_name": "",
+    cfg = {"scale_port": "", "scale_baud": 9600, "printer_port": "",
            "demo_mode": False, "mock_qr": False}
     cfg.update(kw)
     return cfg
 
 
-def _live_mocks(ports, printers, usb):
-    """Stacked patches for live-status tests (fully offline)."""
+def _live_mocks(ports):
+    """Stacked patches for live-status tests (fully offline).
+
+    One serial port list drives both the scale and the printer (VCOM).
+    """
     return (
         _mock.patch.object(DEV, "init_error", None),
         _mock.patch("factory.hardware.devices.is_mock_scale",
-                      return_value=False),
+                    return_value=False),
         _mock.patch("factory.hardware.devices.is_mock_printer",
-                      return_value=False),
+                    return_value=False),
         _mock.patch("factory.hardware.essae.list_ports",
-                      return_value=ports),
-        _mock.patch("factory.hardware.qtprint.available_printers",
-                      return_value=printers),
-        _mock.patch("factory.hardware.status.usb_printer_present",
-                      return_value=usb),
+                    return_value=ports),
     )
 
 
 def test_live_status_ready_when_everything_attached():
-    cfg = _live_cfg(scale_port="COM4", printer_name="Citizen X")
-    a, b, c, d, e, f = _live_mocks(["COM4"], ["Citizen X"], True)
-    with a, b, c, d, e, f:
+    cfg = _live_cfg(scale_port="COM4", printer_port="COM5")
+    a, b, c, d = _live_mocks(["COM4", "COM5"])
+    with a, b, c, d:
         states = [s["state"] for s in HWStatus.station_live_status("packaging", cfg)]
     assert states == ["ready", "ready"], states
 
 
 def test_live_status_unplugged_scale_reads_not_found():
     """Pulled serial adapter: port gone from enumeration -> setup."""
-    cfg = _live_cfg(scale_port="COM4", printer_name="Citizen X")
-    a, b, c, d, e, f = _live_mocks(["COM9"], ["Citizen X"], True)
-    with a, b, c, d, e, f:
+    cfg = _live_cfg(scale_port="COM4", printer_port="COM5")
+    a, b, c, d = _live_mocks(["COM9", "COM5"])
+    with a, b, c, d:
         specs = HWStatus.station_live_status("packaging", cfg)
     assert specs[0]["state"] == "setup", specs
     assert specs[0]["detail"] == "not found", specs
     assert specs[1]["state"] == "ready", specs
 
 
-def test_live_status_renamed_queue_reads_not_found():
-    cfg = _live_cfg(scale_port="COM4", printer_name="Citizen X")
-    a, b, c, d, e, f = _live_mocks(["COM4"], ["Some Other Printer"], True)
-    with a, b, c, d, e, f:
+def test_live_status_unplugged_printer_reads_not_found():
+    """Printer serial port gone: the printer pill says not connected."""
+    cfg = _live_cfg(scale_port="COM4", printer_port="COM5")
+    a, b, c, d = _live_mocks(["COM4"])
+    with a, b, c, d:
         specs = HWStatus.station_live_status("packaging", cfg)
     assert specs[0]["state"] == "ready", specs
     assert specs[1]["state"] == "setup", specs
     assert specs[1]["detail"] == "not found", specs
-
-
-def test_live_status_usb_gone_stays_ready_with_note():
-    """Queue present but no USB printer class (network/shared queue).
-
-    Regression: the live check used to flip a correctly-detected printer
-    back to setup/"not found" within one poll tick whenever no USBPRINT
-    device was enumerated — so network/shared queues could never show
-    ready. The queue list is authoritative now; the USB scan is advisory
-    (an actually-unplugged USB printer fails explicitly at print time).
-    """
-    cfg = _live_cfg(scale_port="COM4", printer_name="Citizen X")
-    a, b, c, d, e, f = _live_mocks(["COM4"], ["Citizen X"], False)
-    with a, b, c, d, e, f:
-        specs = HWStatus.station_live_status("packaging", cfg)
-    assert specs[0]["state"] == "ready", specs
-    assert specs[1]["state"] == "ready", specs
-    assert "USB" in (specs[1].get("hint") or ""), specs
-
-
-def test_live_status_missing_queue_names_seen_printers():
-    """Queue gone: the hint names what the OS actually reports."""
-    cfg = _live_cfg(scale_port="COM4", printer_name="Citizen X")
-    a, b, c, d, e, f = _live_mocks(["COM4"], ["Office Laser"], True)
-    with a, b, c, d, e, f:
-        specs = HWStatus.station_live_status("packaging", cfg)
-    assert specs[1]["state"] == "setup", specs
-    assert "Office Laser" in (specs[1].get("hint") or ""), specs
+    assert "COM5" in (specs[1].get("hint") or ""), specs
 
 
 def test_live_status_unknowable_keeps_last_verdict():
-    """USB presence unknowable (None): never flap a working pill."""
-    cfg = _live_cfg(scale_port="COM4", printer_name="Citizen X")
-    a, b, c, d, e, f = _live_mocks(["COM4"], ["Citizen X"], None)
-    with a, b, c, d, e, f:
+    """Port list unreadable: never flap a working pill."""
+    cfg = _live_cfg(scale_port="COM4", printer_port="COM5")
+    a, b, c, _d = _live_mocks(None)
+    with a, b, c, _mock.patch("factory.hardware.essae.list_ports",
+                              side_effect=RuntimeError("enum failed")):
         states = [s["state"] for s in HWStatus.station_live_status("packaging", cfg)]
     assert states == ["ready", "ready"], states
 
@@ -1223,21 +686,18 @@ def test_autodetect_concurrent_runs_do_not_clobber():
 
     def run():
         try:
-            with _mock.patch("factory.hardware.essae.list_ports",
-                             return_value=["COM6"]), \
-                 _mock.patch.object(EssaeDS215, "_read_lines",
-                                   Answering._read_lines), \
-                 _mock.patch("factory.hardware.qtprint.available_printers",
-                             return_value=["Citizen CL-S621II"]):
-                Auto.detect_all(save=True)
+            Auto.detect_all(save=True)
         except Exception as e:          # pragma: no cover
             errs.append(e)
 
     try:
+        # Patches are applied once, here, not per thread: concurrent
+        # patch/unpatch from several threads restores the real functions
+        # under the others and makes the test flaky.
         with _mock.patch("factory.hardware.essae.list_ports",
                          return_value=["COM6"]), \
-             _mock.patch("factory.hardware.qtprint.available_printers",
-                         return_value=["Citizen CL-S621II"]):
+             _mock.patch.object(EssaeDS215, "_read_lines",
+                                Answering._read_lines):
             threads = []
             for _ in range(4):
                 t = threading.Thread(target=run)
@@ -1248,7 +708,6 @@ def test_autodetect_concurrent_runs_do_not_clobber():
         assert not errs, errs
         cfg = HWC.load(tmp)
         assert cfg["scale_port"] == "COM6", cfg
-        assert cfg["printer_name"] == "Citizen CL-S621II", cfg
     finally:
         if old_json is None:
             os.environ.pop("SIMPLD_HW_JSON", None)
@@ -1279,33 +738,13 @@ if __name__ == "__main__":
     test_stored_configs_use_stable_data_root()
     test_read_scale_real_success_writes_measured()
     test_autodetect_finds_scale_by_probing_ports()
-    test_autodetect_persists_scale_and_printer()
+    test_autodetect_persists_scale()
     test_autodetect_no_answer_stays_unconfigured()
     test_autodetect_forgets_devices_that_stopped_answering()
     test_autodetect_keeps_env_pinned_config_when_nothing_answers()
-    test_detect_printer_picks_any_brand_not_citizen_only()
-    test_detect_printer_ignores_extra_virtual_queues()
-    test_detect_printer_falls_back_to_only_real_printer()
-    test_detect_printer_never_picks_virtual_or_ambiguous()
     test_live_status_ready_when_everything_attached()
     test_live_status_unplugged_scale_reads_not_found()
-    test_live_status_renamed_queue_reads_not_found()
-    test_live_status_usb_gone_stays_ready_with_note()
-    test_live_status_missing_queue_names_seen_printers()
     test_live_status_unknowable_keeps_last_verdict()
     test_sysfs_usb_printer_scan()
     test_autodetect_concurrent_runs_do_not_clobber()
     print("test_hardware_real PASS")
-
-
-def _listed_size_for(printer_name, w_mm, h_mm, tol_mm=0.05):
-    """Test stand-in for the queue's listed page sizes: the exact stock."""
-    from PySide6.QtCore import QSizeF
-    from PySide6.QtGui import QPageSize
-    return QPageSize(QSizeF(float(w_mm), float(h_mm)), QPageSize.Millimeter)
-
-
-@pytest.fixture(autouse=True)
-def _stub_queue_page_sizes(monkeypatch):
-    monkeypatch.setattr(QtCitizenCLS621, "_supported_size",
-                        staticmethod(_listed_size_for))
