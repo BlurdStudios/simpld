@@ -576,6 +576,29 @@ test("releases: 501 without R2; upload/list/download + downgrade guard with R2",
   assert.ok(latestRaw);
   const latest = JSON.parse(new TextDecoder().decode(latestRaw));
   assert.deepEqual(Object.keys(latest).sort(), ["file", "notes", "sha256", "version"]);
+
+  // CI service-token path (RELEASES_UPLOAD_TOKEN): uploads without a
+  // session; a wrong bearer is rejected before the session gate.
+  const tokEnv = testEnv(memoryR2());
+  tokEnv.RELEASES_UPLOAD_TOKEN = "tok-ci-secret-1";
+  await initSchema(tokEnv.DB as D1Like);
+  const tokUpload = (token: string | null) => {
+    const f = new FormData();
+    f.set(
+      "file",
+      new File([new TextEncoder().encode("ci-installer-bytes") as unknown as BlobPart], "Simpld-Setup-2.0.0.exe", { type: "application/octet-stream" }),
+    );
+    f.set("notes", "ci upload");
+    const headers = new Headers(token === null ? {} : { authorization: `Bearer ${token}` });
+    return worker.fetch(new Request("http://x/api/admin/releases", { method: "POST", headers, body: f }), tokEnv);
+  };
+  r = await tokUpload("tok-ci-secret-1");
+  assert.equal(r.status, 201);
+  assert.equal((await r.json()).release.version, "2.0.0");
+  r = await tokUpload("wrong-token");
+  assert.equal(r.status, 403);
+  r = await tokUpload(null); // no bearer -> session gate still applies
+  assert.equal(r.status, 401);
 });
 
 // ---------- customer onboarding (phase 1) ----------

@@ -7,7 +7,8 @@
 //
 //   GET /api/releases            list (session auth; client: any site)
 //   GET /api/releases/file/:name installer bytes (session auth)
-//   POST /api/admin/releases     multipart upload (vendor_admin only):
+//   POST /api/admin/releases     multipart upload (vendor_admin session OR
+//        the RELEASES_UPLOAD_TOKEN service bearer used by CI):
 //        fields: file (Simpld-Setup-X.Y.Z.exe), notes?, force? ("1" allows downgrade)
 
 import { validateReleaseManifest, type ReleaseManifest } from "../../lib/contract";
@@ -81,6 +82,30 @@ export async function handleDownloadRelease(r2: R2Like | null, name: string): Pr
       "Content-Disposition": `attachment; filename="${name}"`,
     },
   });
+}
+
+// Service-token auth for CI (release publishing). Reads the Authorization
+// bearer and compares it (SHA-256 both sides + constant-time XOR) against
+// env.RELEASES_UPLOAD_TOKEN:
+//   null   no bearer sent  -> caller falls through to session auth
+//   true   token matches   -> CI may upload
+//   false  bearer present but wrong -> caller must reject with 403
+export async function serviceTokenState(
+  req: Request,
+  env: Record<string, string | undefined>,
+): Promise<null | boolean> {
+  const m = /^Bearer\s+(.+)$/.exec((req.headers.get("Authorization") ?? "").trim());
+  if (!m) return null;
+  const expected = env.RELEASES_UPLOAD_TOKEN;
+  if (!expected) return false;
+  const enc = new TextEncoder();
+  const [got, want] = await Promise.all([
+    sha256HexBytes(enc.encode(m[1])),
+    sha256HexBytes(enc.encode(expected)),
+  ]);
+  let diff = 0;
+  for (let i = 0; i < got.length; i++) diff |= got.charCodeAt(i) ^ want.charCodeAt(i);
+  return diff === 0;
 }
 
 export async function handleUploadRelease(req: Request, r2: R2Like | null): Promise<Response> {

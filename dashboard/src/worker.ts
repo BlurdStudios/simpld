@@ -35,6 +35,7 @@ import {
   handleDownloadRelease,
   handleListReleases,
   handleUploadRelease,
+  serviceTokenState,
   type R2Like,
 } from "./routes/api/releases";
 
@@ -219,8 +220,15 @@ export default {
       return handleAdminSites(req, accounts, path.slice("/api/admin/sites".length));
     }
     if (path === "/api/admin/releases" && req.method === "POST") {
-      const denied = await admin();
-      if (denied) return denied;
+      // CI service-token path: a valid RELEASES_UPLOAD_TOKEN bearer uploads
+      // without a session; a wrong bearer is rejected; no bearer falls
+      // through to the vendor_admin session check.
+      const tok = await serviceTokenState(req, env);
+      if (tok === false) return json({ error: "invalid release upload token" }, 403);
+      if (tok !== true) {
+        const denied = await admin();
+        if (denied) return denied;
+      }
       return handleUploadRelease(req, r2ForEnv(env));
     }
 

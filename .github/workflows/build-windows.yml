@@ -330,3 +330,37 @@ jobs:
           }
           if ($LASTEXITCODE -ne 0) { throw "publishing to $mirror failed" }
           echo "Published ${{ github.ref_name }} to $mirror"
+
+      # The customer portal's Downloads page reads the dashboard's R2 release
+      # store, so CI must keep it in step with the mirror (they go stale
+      # otherwise). Shares the same release-notes.md written above.
+      # Service-token auth: see dashboard/src/routes/api/releases.ts.
+      - name: Publish installer to the dashboard R2 store (version tags only)
+        if: github.ref_type == 'tag' && matrix.edition == 'prod'
+        shell: pwsh
+        env:
+          UPLOAD_TOKEN: ${{ secrets.RELEASES_UPLOAD_TOKEN }}
+          DASHBOARD_URL: https://simpld-dashboard.blurdagency.workers.dev
+        run: |
+          if (-not $env:UPLOAD_TOKEN) {
+            throw "RELEASES_UPLOAD_TOKEN is not set. Add the shared token to the source repo's secrets AND 'wrangler secret put' it on the dashboard worker."
+          }
+          $exe = (Get-ChildItem dist/Simpld-Setup-*.exe | Select-Object -First 1)
+          if (-not $exe) { throw "installer missing" }
+          $notes = if (Test-Path release-notes.md) { (Get-Content release-notes.md -Raw) -replace "`r?`n", " " } else { "" }
+          $code = curl.exe -sS -o dash-upload.json -w "%{http_code}" `
+            -X POST "$env:DASHBOARD_URL/api/admin/releases" `
+            -H "Authorization: Bearer $env:UPLOAD_TOKEN" `
+            -F "file=@$($exe.FullName)" `
+            -F "notes=$notes"
+          if ($LASTEXITCODE -ne 0) { throw "upload to the dashboard failed (curl exit $LASTEXITCODE)" }
+          if ($code -eq "409") {
+            # Re-running an old tag: the store already holds a newer release.
+            echo "Dashboard already has a newer release — downgrade guard skipped the upload."
+          } elseif ($code -ne "201") {
+            Get-Content dash-upload.json | Out-String | Write-Output
+            throw "dashboard release upload failed with HTTP $code (expected 201)"
+          } else {
+            echo "Uploaded $($exe.Name) to the dashboard R2 release store"
+          }
+          Remove-Item dash-upload.json -Force -ErrorAction SilentlyContinue
