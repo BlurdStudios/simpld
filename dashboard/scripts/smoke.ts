@@ -603,6 +603,81 @@ test("releases: 501 without R2; upload/list/download + downgrade guard with R2",
 
 // ---------- customer onboarding (phase 1) ----------
 
+test("trial: request (site key) -> approve (admin) -> heartbeat offer -> ack", async () => {
+  // The full trial-extension loop. Auth is the site's own push key for the
+  // factory side ("the user key itself"); the vendor decides in a session.
+  const env = testEnv();
+  await initSchema(env.DB as D1Like);
+  const accounts = accountsForEnv(env);
+  const admin = await accounts.createUser("root@v.y", "password1", "vendor_admin", null);
+  const { token: adminTok } = await accounts.createSession(admin.id);
+  const adminCookie = `simpld_session=${adminTok}`;
+  const client = await accounts.createUser("c@site-a.x", "password11", "client", "site-a");
+  let r = await worker.fetch(
+    req("/api/admin/keys", { method: "POST", cookie: adminCookie, body: JSON.stringify({ user_id: client.id, site_id: "site-a", label: "p", confirm: true }) }),
+    env
+  );
+  assert.equal(r.status, 201);
+  const { key } = await r.json();
+  const keyReq = (path: string, body: Record<string, unknown>) =>
+    worker.fetch(
+      req(path, { method: "POST", headers: { Authorization: `Bearer ${key}` }, body: JSON.stringify(body) }),
+      env
+    );
+
+  // Approval extends the site's EXISTING trial licence — log one first.
+  await accounts.logLicence({
+    site_id: "site-a", customer: "Site A", serial: "SIMPLD-TRIAL-1", edition: "trial",
+    packager_fp: "fp-a", max_stations: 3, issued: "2026-11-01", expires: "2026-12-01",
+    max_version: "2.x", issued_by: "test",
+  });
+
+  // 1) the factory asks for more trial days — key auth required
+  r = await keyReq("/api/trial-request", { site_id: "site-a", days: 14, reason: "machine broke" });
+  assert.equal(r.status, 201);
+  const { id } = await r.json();
+  r = await worker.fetch(
+    req("/api/trial-request", { method: "POST", headers: { Authorization: "Bearer nope" }, body: JSON.stringify({ site_id: "site-a", days: 14 }) }),
+    env
+  );
+  assert.equal(r.status, 401);
+
+  // 2) heartbeat before the decision: no offer yet
+  r = await keyReq("/api/licence-heartbeat", { site_id: "site-a" });
+  assert.equal((await r.json()).offer, null);
+
+  // 3) the vendor sees the request pending
+  r = await worker.fetch(req("/api/trial-requests", { cookie: adminCookie }), env);
+  assert.equal(r.status, 200);
+  assert.ok(((await r.json()).requests as Array<{ id: string }>).some((q) => q.id === id));
+
+  // 4) approval issues a fresh trial licence as a one-time offer
+  r = await worker.fetch(
+    req("/api/trial-requests/decide", { method: "POST", cookie: adminCookie, body: JSON.stringify({ id, approve: true }) }),
+    env
+  );
+  assert.equal(r.status, 201);
+  const approved = await r.json();
+  assert.equal(approved.status, "approved");
+  assert.ok(approved.serial);
+  // double-decide is refused
+  r = await worker.fetch(
+    req("/api/trial-requests/decide", { method: "POST", cookie: adminCookie, body: JSON.stringify({ id, approve: true }) }),
+    env
+  );
+  assert.equal(r.status, 409);
+
+  // 5) the next heartbeat delivers the offer; it verifies with the vendor key
+  r = await keyReq("/api/licence-heartbeat", { site_id: "site-a" });
+  const hb = await r.json();
+  assert.equal(hb.offer.serial, approved.serial);
+  assert.equal((await verifyLicence(hb.offer.licence, { pubkeyB64: TEST_PUB_B64 })).ok, true);
+
+  // 6) the factory acks; the offer is consumed (one-time delivery)
+  r = await keyReq("/api/licence-heartbeat", { site_id: "site-a", ack_serial: approved.serial });
+  assert.equal((await r.json()).offer, null);
+});
+
 test("onboarding: slugify + suggestions + bloom pre-check", async () => {
   assert.equal(slugifySiteId("Ram Vendor"), "ram-vendor");
   assert.equal(slugifySiteId("  Vasavi   Foods!! "), "vasavi-foods");

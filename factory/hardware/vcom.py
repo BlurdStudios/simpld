@@ -26,18 +26,13 @@ CITIZEN_VID = 0x2730
 CITIZEN_PID = 0x0FFF
 
 
-def find_vcom_port() -> str | None:
-    """The Citizen's COM port by USB ID, wherever it is plugged in.
+def match_citizen_port(ports) -> str | None:
+    """Pick the Citizen's COM port from an already-enumerated port list.
 
     Matches VID/PID first, then the Citizen description. Returns None when
-    no Citizen COM port exists, and never guesses when more than one does.
+    no Citizen COM port is in the list, and never guesses when more than
+    one is. Pure filter — no enumeration, so callers can use a cached list.
     """
-    try:
-        from serial.tools import list_ports
-        ports = list(list_ports.comports())
-    except Exception as e:
-        _log.warning("vcom: port enumeration failed (%s)", e)
-        return None
     hits = [p.device for p in ports
             if (p.vid, p.pid) == (CITIZEN_VID, CITIZEN_PID)]
     if not hits:
@@ -48,6 +43,17 @@ def find_vcom_port() -> str | None:
     if len(hits) > 1:
         _log.warning("vcom: %d Citizen COM ports %r — not guessing", len(hits), hits)
     return None
+
+
+def find_vcom_port() -> str | None:
+    """The Citizen's COM port by USB ID, wherever it is plugged in."""
+    try:
+        from serial.tools import list_ports
+        ports = list(list_ports.comports())
+    except Exception as e:
+        _log.warning("vcom: port enumeration failed (%s)", e)
+        return None
+    return match_citizen_port(ports)
 
 
 def send_bytes(port: str, data: bytes, baud: int = VCOM_BAUD) -> None:

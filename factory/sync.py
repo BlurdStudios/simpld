@@ -6,10 +6,11 @@ to the vendor-hosted dashboard (see SYNC_CONTRACT.md + dashboard/):
     POST <SYNC_URL>/api/push-day    {site_id, day_report}
     POST <SYNC_URL>/api/push-orders {site_id, orders, stock_counts}
 
-Config (env, read per call so key rotation needs no restart):
-    SIMPLD_SYNC_URL      e.g. https://simpld-dashboard.workers.dev
-    SIMPLD_SYNC_SITE_ID  e.g. vasavi-f1
-    SIMPLD_SYNC_KEY      Bearer API key for this site (never logged)
+Config (read per call so key rotation needs no restart):
+    SIMPLD_SYNC_URL      override; default is the vendor dashboard (fixed)
+    SIMPLD_SYNC_SITE_ID  override; default is the installed licence's site_id
+    SIMPLD_SYNC_KEY      Bearer API key for this site (vendor-provisioned,
+                         never logged, never a UI input)
 
 Behavior: timeout + key from env, tokens redacted on error. Airplane mode /
 no internet: queue payloads to <app_data>/sync_queue.json, log only, floor
@@ -28,21 +29,40 @@ from datetime import datetime
 
 TIMEOUT = 15.0
 
+# The vendor dashboard is fixed (like the update mirror) — the operator is
+# never asked for it. Env/settings remain as overrides for staging/testing.
+DEFAULT_SYNC_URL = "https://simpld-dashboard.blurdagency.workers.dev"
+
+
+def _licence_site_id() -> str:
+    """Site ID from the installed licence (the licence IS the verification —
+    it is signature-checked offline; no site-id input anywhere)."""
+    try:
+        from . import license as _lic
+        st = _lic.license_status()
+        return str(((st or {}).get("lic") or {}).get("site_id") or "").strip()
+    except Exception:
+        return ""
+
 
 def _cfg() -> tuple[str, str, str]:
-    """Env vars win (ops override); otherwise the values saved in Settings."""
+    """(url, site, key) — env wins, then saved settings, then defaults that
+    need no user input: the vendor dashboard URL is a constant and the site
+    ID comes from the installed licence. The push key is provisioned by the
+    vendor (env or settings) — it is never an input in the UI."""
     url = (os.environ.get("SIMPLD_SYNC_URL") or "").strip()
     site = (os.environ.get("SIMPLD_SYNC_SITE_ID") or "").strip()
     key = (os.environ.get("SIMPLD_SYNC_KEY") or "").strip()
-    if not (url and site and key):
-        try:
-            from . import services as _svc
-            url = url or (_svc.get_setting("sync.url", "") or "").strip()
-            site = site or (_svc.get_setting("sync.site_id", "") or "").strip()
-            key = key or (_svc.get_setting("sync.key", "") or "").strip()
-        except Exception:
-            pass
-    return url.rstrip("/"), site, key
+    try:
+        from . import services as _svc
+        url = url or (_svc.get_setting("sync.url", "") or "").strip()
+        site = site or (_svc.get_setting("sync.site_id", "") or "").strip()
+        key = key or (_svc.get_setting("sync.key", "") or "").strip()
+    except Exception:
+        pass
+    url = (url or DEFAULT_SYNC_URL).rstrip("/")
+    site = site or _licence_site_id()
+    return url, site, key
 
 
 def configured() -> bool:

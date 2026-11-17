@@ -7,9 +7,9 @@ re-runs detection for everything detectable (the scale).
 There is no Devices dialog and no port dropdown. `autodetect.detect_all()`
 probes the serial ports for the weigh machine in a worker thread, so the
 UI never blocks while ports are opened. The label printer has NO detection
-logic (owner request): it is a direct USB-to-serial (VCOM) device that is
-never "online" in any OS-printer sense — its COM port is set once in
-Settings → Devices and trusted.
+UI (owner request): it is a direct USB-to-serial (VCOM) device that is
+never "online" in any OS-printer sense — a hardware.json port overrides,
+else it is found quietly by USB ID. No settings page invites fiddling.
 
 Detection is deliberately honest: the scale pill says "not found" when
 nothing answers and never invents a port. The fail-closed behaviour in

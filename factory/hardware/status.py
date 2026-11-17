@@ -137,16 +137,45 @@ def _detail_scale(cfg: dict) -> tuple[str, str]:
     return "ready", f"{port} · {cfg.get('scale_baud', 9600)}"
 
 
+def _cached_port_objects() -> list | None:
+    """Enumerated serial port objects (pyserial), shared 10s cache with the
+    scale's port check (the 5s strip poll must never block the UI).
+    None when enumeration is unavailable."""
+    if _cache_fresh(_PORTS_CACHE.get("at", 0.0), _PORTS_TTL_S) \
+            and "objs" in _PORTS_CACHE:
+        return list(_PORTS_CACHE["objs"])
+    try:
+        from serial.tools import list_ports as _lp
+        objs = list(_lp.comports())
+    except Exception:
+        return None
+    _PORTS_CACHE["objs"] = objs
+    _PORTS_CACHE["ports"] = [p.device for p in objs]
+    _PORTS_CACHE["ok"] = True
+    _PORTS_CACHE["at"] = time.monotonic()
+    return list(objs)
+
+
 def _detail_printer(cfg: dict) -> tuple[str, str]:
-    """Config-driven only. The printer is a direct USB-to-serial (VCOM)
-    device — it is never "online" in any OS-printer sense, so nothing is
-    scanned or probed: a configured COM port is trusted until a print
-    fails on it (and that error names the port)."""
+    """Calm, config-first pill. No detection UI exists for the printer
+    (owner request): a set hardware.json port is trusted; otherwise the
+    Citizen is found quietly by USB ID from the shared port cache. When
+    neither resolves, the pill says so without nagging — it never flips
+    ready→setup on a poll tick, and a real failure surfaces at print time
+    with the port named in the error."""
     if _devices.demo_mode(cfg):
         return "demo", "simulated"
     port = str(cfg.get("printer_port") or "").strip()
     if not port:
-        return "setup", "not configured"
+        objs = _cached_port_objects()
+        if objs:
+            try:
+                from .vcom import match_citizen_port
+                port = match_citizen_port(objs) or ""
+            except Exception:
+                port = ""
+    if not port:
+        return "setup", "printer not connected"
     if _devices.is_mock_printer():
         return "setup", f"{port} (inactive)"
     return "ready", f"{port} · VCOM"
@@ -228,9 +257,9 @@ def device_status(key: str, cfg: dict | None = None) -> dict:
     out = {"key": key, "state": state, "detail": detail, **spec}
     if state == "setup":
         # The one thing an operator can do next, spelled out in the tooltip
-        # rather than crowding the pill. The printer has nothing to detect
-        # (VCOM COM port, set manually): the pill points at Settings.
-        out["hint"] = ("Set the label printer's COM port in Settings → Devices."
+        # rather than crowding the pill. The printer has no setup UI (owner
+        # request) — it is found automatically once its USB cable is in.
+        out["hint"] = ("Connect the label printer — it is found automatically."
                        if key == PRINTER else "Click to detect again.")
     elif state == "demo":
         out["hint"] = "Demo mode is on — this device is simulated."

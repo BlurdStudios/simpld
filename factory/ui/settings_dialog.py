@@ -1,21 +1,34 @@
 """Settings: one dialog, a sidebar of areas, a Back button.
 
-Areas: General, Printer, Sync, Licence, Updates, User, About. Each area is
-its own page so a setting only lives in one place.
+Areas: General, Sync, Licence, Updates, User, About. Each area is its own
+page so a setting only lives in one place, all built from the shared theme
+(nav rows, white cards, semantic buttons — same visual language as the
+main window).
+
+Deliberately ABSENT by owner request:
+  Printer — the label printer has NO setup UI and NO detection loop. It is
+  a direct USB-to-serial (VCOM) device: a hardware.json port overrides,
+  otherwise it is found quietly by USB ID. Settings would only invite
+  fiddling.
+  Sync inputs — the licence IS the verification: the site ID comes from
+  the installed licence and the dashboard address is fixed. One button
+  runs sync now.
+About is a page here, not a separate dialog.
 """
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QDialog, QHBoxLayout, QVBoxLayout, QLabel, QPushButton,
-                               QListWidget, QListWidgetItem, QStackedWidget, QLineEdit,
-                               QFormLayout, QSpinBox, QMessageBox, QWidget, QFrame)
+                               QStackedWidget, QLineEdit, QSpinBox,
+                               QMessageBox, QWidget, QFrame, QScrollArea)
 
-from factory.ui.styles import style_button
+from factory.ui import brand as _brand
+from factory.ui.styles import style_button, set_banner
 
-AREAS = ("General", "Printer", "Sync", "Licence", "Updates", "User", "About")
+AREAS = ("General", "Sync", "Licence", "Updates", "User", "About")
 
 
-def _page(title: str) -> tuple[QWidget, QVBoxLayout]:
+def _page(title: str, desc: str = "") -> tuple[QWidget, QVBoxLayout]:
     w = QWidget()
     lay = QVBoxLayout(w)
     lay.setContentsMargins(18, 14, 18, 14)
@@ -23,6 +36,11 @@ def _page(title: str) -> tuple[QWidget, QVBoxLayout]:
     h = QLabel(title)
     h.setProperty("page", "title")
     lay.addWidget(h)
+    if desc:
+        d = QLabel(desc)
+        d.setProperty("page", "desc")
+        d.setWordWrap(True)
+        lay.addWidget(d)
     return w, lay
 
 
@@ -33,11 +51,47 @@ def _hint(text: str) -> QLabel:
     return lbl
 
 
+def _card() -> tuple[QFrame, QVBoxLayout]:
+    """A themed white card (frame.root) — the standard container everywhere
+    else in the app; settings pages are built from these."""
+    card = QFrame()
+    card.setProperty("card", True)
+    cl = QVBoxLayout(card)
+    cl.setContentsMargins(16, 14, 16, 14)
+    cl.setSpacing(8)
+    return card, cl
+
+
+def _kv_row(key: str, value: str, wrap: bool = False) -> QHBoxLayout:
+    """One label/value row inside a card (caption + value)."""
+    row = QHBoxLayout()
+    row.setSpacing(10)
+    a = QLabel(key)
+    a.setProperty("field", "caption")
+    a.setFixedWidth(120)
+    a.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+    b = QLabel(value)
+    b.setProperty("hint", True)
+    b.setWordWrap(wrap)
+    row.addWidget(a)
+    row.addWidget(b, 1)
+    return row
+
+
+def _button(text: str, kind: str, tip: str = "") -> QPushButton:
+    btn = QPushButton(text)
+    btn.setMinimumHeight(40)
+    style_button(btn, kind)
+    if tip:
+        btn.setToolTip(tip)
+    return btn
+
+
 class SettingsDialog(QDialog):
     def __init__(self, parent=None, user: dict | None = None, role: str = ""):
         super().__init__(parent)
-        self.setWindowTitle("Settings")
-        self.setMinimumSize(760, 480)
+        self.setWindowTitle(f"Settings — {_brand.PRODUCT_NAME}")
+        self.setMinimumSize(760, 500)
         self._user = user or {}
         self._role = role or ""
         root = QVBoxLayout(self)
@@ -45,12 +99,31 @@ class SettingsDialog(QDialog):
         root.setSpacing(12)
         body = QHBoxLayout()
         body.setSpacing(14)
-        self.nav = QListWidget()
-        self.nav.setFixedWidth(180)
+
+        # Sidebar — same quiet nav rows as the main window (white active
+        # card, ink text), not a default list widget.
+        side = QFrame()
+        side.setObjectName("sidebar")
+        side.setFixedWidth(180)
+        side_lay = QVBoxLayout(side)
+        side_lay.setContentsMargins(10, 10, 10, 10)
+        side_lay.setSpacing(4)
+        self._nav_buttons: list[QPushButton] = []
+        for i, area in enumerate(AREAS):
+            b = QPushButton(area)
+            b.setCheckable(True)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            style_button(b, "nav")
+            b.clicked.connect(lambda _=False, idx=i: self._select(idx))
+            side_lay.addWidget(b)
+            self._nav_buttons.append(b)
+        side_lay.addStretch(1)
+        body.addWidget(side)
+
+        # Pages scroll when a small window clips them.
         self.stack = QStackedWidget()
         builders = {
             "General": self._build_general,
-            "Printer": self._build_printer,
             "Sync": self._build_sync,
             "Licence": self._build_licence,
             "Updates": self._build_updates,
@@ -58,25 +131,31 @@ class SettingsDialog(QDialog):
             "About": self._build_about,
         }
         for area in AREAS:
-            self.nav.addItem(QListWidgetItem(area))
-            self.stack.addWidget(builders[area]())
-        self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
-        self.nav.setCurrentRow(0)
-        body.addWidget(self.nav)
+            page = builders[area]()
+            sc = QScrollArea()
+            sc.setWidgetResizable(True)
+            sc.setWidget(page)
+            self.stack.addWidget(sc)
         body.addWidget(self.stack, 1)
         root.addLayout(body, 1)
+
         foot = QHBoxLayout()
-        self.btn_back = QPushButton("← Back")
-        self.btn_back.setMinimumHeight(40)
-        style_button(self.btn_back, "secondary")
+        self.btn_back = _button("← Back", "secondary", "Close Settings.")
         self.btn_back.clicked.connect(self.accept)
         foot.addWidget(self.btn_back)
         foot.addStretch(1)
         root.addLayout(foot)
 
+        self._select(0)
+
+    def _select(self, idx: int) -> None:
+        self.stack.setCurrentIndex(idx)
+        for j, b in enumerate(self._nav_buttons):
+            b.setChecked(j == idx)
+
     # ----- General ------------------------------------------------------
     def _build_general(self) -> QWidget:
-        w, lay = _page("General")
+        w, lay = _page("General", "How this PC runs Simpl'd.")
         try:
             from factory.hardware import devices as DEV
             mode = DEV.mode_text()
@@ -87,82 +166,43 @@ class SettingsDialog(QDialog):
             backend = "LAN dispatcher" if DA.is_lan() else "This PC (local database)"
         except Exception:
             backend = "unknown"
-        form = QFormLayout()
-        form.addRow("Data source", QLabel(backend))
-        form.addRow("Devices", QLabel(mode))
-        lay.addLayout(form)
-        lay.addWidget(_hint("The weigh machine is auto-detected from the station "
-                            "strips. The label printer has no detection — set its "
-                            "COM port under Printer."))
+        card, cl = _card()
+        cl.addLayout(_kv_row("Data source", backend))
+        cl.addLayout(_kv_row("Devices", mode, wrap=True))
+        lay.addWidget(card)
+        lay.addWidget(_hint(
+            "The weigh machine is auto-detected from the station strips. "
+            "The label printer needs no setup — it is found automatically "
+            "on its USB port."))
         lay.addStretch(1)
         return w
-
-    # ----- Printer ------------------------------------------------------
-    def _build_printer(self) -> QWidget:
-        from factory.hardware import config as HWC
-        w, lay = _page("Printer")
-        cfg = HWC.load()
-        self.p_port = QLineEdit(str(cfg.get("printer_port") or ""))
-        self.p_port.setPlaceholderText("The printer's VCOM COM port, e.g. COM5")
-        self.p_baud = QSpinBox()
-        self.p_baud.setRange(1200, 115200)
-        self.p_baud.setValue(int(cfg.get("printer_baud") or 9600))
-        form = QFormLayout()
-        form.addRow("Serial port (VCOM)", self.p_port)
-        form.addRow("Baud rate", self.p_baud)
-        lay.addLayout(form)
-        lay.addWidget(_hint("Citizen CL-S621 over its VCOM serial port. Printing is "
-                            "only enabled once the printer language (DPL/ZPL) is set."))
-        btn = QPushButton("Save printer settings")
-        btn.setMinimumHeight(40)
-        style_button(btn, "primary")
-        btn.clicked.connect(self._save_printer)
-        lay.addWidget(btn, 0, Qt.AlignLeft)
-        lay.addStretch(1)
-        return w
-
-    def _save_printer(self):
-        from factory.hardware import config as HWC
-        from factory.hardware import devices as DEV
-        cfg = HWC.load()
-        cfg["printer_port"] = self.p_port.text().strip()
-        cfg["printer_baud"] = int(self.p_baud.value())
-        HWC.save(cfg)
-        DEV.reload_hardware(cfg)
-        QMessageBox.information(self, "Printer", "Printer settings saved.")
 
     # ----- Sync ---------------------------------------------------------
     def _build_sync(self) -> QWidget:
-        from factory import services as SVC
-        w, lay = _page("Sync (vendor dashboard)")
-        self.s_url = QLineEdit(SVC.get_setting("sync.url", "") or "")
-        self.s_url.setPlaceholderText("https://simpld-dashboard.workers.dev")
-        self.s_site = QLineEdit(SVC.get_setting("sync.site_id", "") or "")
-        self.s_site.setPlaceholderText("e.g. vasavi-f1")
-        self.s_key = QLineEdit(SVC.get_setting("sync.key", "") or "")
-        self.s_key.setEchoMode(QLineEdit.Password)
-        form = QFormLayout()
-        form.addRow("Dashboard address", self.s_url)
-        form.addRow("Site ID", self.s_site)
-        form.addRow("Site key", self.s_key)
-        lay.addLayout(form)
-        self.s_status = _hint("")
-        lay.addWidget(self.s_status)
+        from factory import sync as SYNC
+        w, lay = _page("Sync", "Push production to the vendor dashboard.")
+        card, cl = _card()
+        url, site, _key = SYNC._cfg()
+        cl.addLayout(_kv_row("Dashboard", url, wrap=True))
+        cl.addLayout(_kv_row("Site", site or "— (from your licence)"))
         row = QHBoxLayout()
-        btn_save = QPushButton("Save sync settings")
-        btn_save.setMinimumHeight(40)
-        style_button(btn_save, "primary")
-        btn_save.clicked.connect(self._save_sync)
-        btn_test = QPushButton("Sync now")
-        btn_test.setMinimumHeight(40)
-        style_button(btn_test, "secondary")
-        btn_test.clicked.connect(self._sync_now)
-        row.addWidget(btn_save)
-        row.addWidget(btn_test)
-        row.addStretch(1)
-        lay.addLayout(row)
-        lay.addWidget(_hint("The site key is stored on this PC only. The factory works "
-                            "fully offline; sync is outbound only."))
+        row.setSpacing(10)
+        cap = QLabel("Last sync")
+        cap.setProperty("field", "caption")
+        self.s_status = QLabel("")
+        self.s_status.setProperty("hint", True)
+        self.s_status.setWordWrap(True)
+        row.addWidget(cap)
+        row.addWidget(self.s_status, 1)
+        cl.addLayout(row)
+        lay.addWidget(card)
+
+        btn = _button("Sync now", "primary", "Push today's data to the vendor dashboard now.")
+        btn.clicked.connect(self._sync_now)
+        lay.addWidget(btn, 0, Qt.AlignmentFlag.AlignLeft)
+        lay.addWidget(_hint(
+            "Verified by your licence — the site ID comes with it, nothing to "
+            "enter. The factory works fully offline; sync is outbound only."))
         lay.addStretch(1)
         self._refresh_sync_status()
         return w
@@ -172,27 +212,20 @@ class SettingsDialog(QDialog):
             from factory import sync as SYNC
             last = SYNC.last_sync()
             if not SYNC.configured():
-                self.s_status.setText("Not set up yet — enter the address, site ID and key, then save.")
+                self.s_status.setText("Waiting for the vendor to finish setting "
+                                      "up sync for this PC.")
             elif last.get("at"):
                 ok = "ok" if last.get("ok") else "failed"
-                self.s_status.setText(f"Last sync: {last['at']} ({ok})")
+                self.s_status.setText(f"{last['at']} ({ok})")
             else:
                 self.s_status.setText("Set up. Not yet pushed.")
         except Exception as e:
             self.s_status.setText(f"Sync status unavailable: {e}")
 
-    def _save_sync(self):
-        from factory import services as SVC
-        SVC.set_setting("sync.url", self.s_url.text().strip().rstrip("/"))
-        SVC.set_setting("sync.site_id", self.s_site.text().strip())
-        SVC.set_setting("sync.key", self.s_key.text().strip())
-        self._refresh_sync_status()
-        QMessageBox.information(self, "Sync", "Sync settings saved.")
-
     def _sync_now(self):
         from factory import sync as SYNC
-        self._save_sync()
         if not SYNC.configured():
+            self._refresh_sync_status()
             return
         try:
             SYNC.push_now()
@@ -202,36 +235,40 @@ class SettingsDialog(QDialog):
 
     # ----- Licence ------------------------------------------------------
     def _build_licence(self) -> QWidget:
-        w, lay = _page("Licence")
-        self.l_text = _hint("")
-        self.l_text.setProperty("hint", False)
-        lay.addWidget(self.l_text)
-        btn = QPushButton("Enter licence key")
-        btn.setMinimumHeight(40)
-        style_button(btn, "primary")
+        w, lay = _page("Licence", "This copy's licence and trial.")
+        card, cl = _card()
+        self.l_text = QLabel("")
+        self.l_text.setProperty("hint", True)
+        self.l_text.setWordWrap(True)
+        cl.addWidget(self.l_text)
+        btn = _button("Enter licence key", "primary",
+                      "Paste the key or import the licence file from the vendor.")
         btn.clicked.connect(self._enter_key)
-        lay.addWidget(btn, 0, Qt.AlignLeft)
-        lay.addWidget(_hint("Paste the key or import the licence file from the vendor. "
-                            "A licence sent by the vendor is installed automatically."))
-        lay.addSpacing(8)
+        cl.addWidget(btn, 0, Qt.AlignmentFlag.AlignLeft)
+        cl.addWidget(_hint("A licence sent by the vendor is installed "
+                           "automatically at the next heartbeat."))
+        lay.addWidget(card)
+
+        tcard, tl = _card()
+        tl.addWidget(QLabel("Need more trial time?"))
         req = QHBoxLayout()
+        req.setSpacing(8)
         self.t_days = QSpinBox()
         self.t_days.setRange(1, 90)
         self.t_days.setValue(14)
         self.t_days.setSuffix(" days")
         self.t_reason = QLineEdit()
         self.t_reason.setPlaceholderText("Reason (optional)")
-        btn_req = QPushButton("Request trial extension")
-        btn_req.setMinimumHeight(40)
-        style_button(btn_req, "secondary")
+        btn_req = _button("Request trial extension", "secondary",
+                          "Asks the vendor — appears on your licence once approved.")
         btn_req.clicked.connect(self._request_trial)
-        req.addWidget(QLabel("Extra trial:"))
         req.addWidget(self.t_days)
         req.addWidget(self.t_reason, 1)
         req.addWidget(btn_req)
-        lay.addLayout(req)
+        tl.addLayout(req)
         self.t_status = _hint("")
-        lay.addWidget(self.t_status)
+        tl.addWidget(self.t_status)
+        lay.addWidget(tcard)
         lay.addStretch(1)
         self._refresh_licence()
         return w
@@ -263,13 +300,13 @@ class SettingsDialog(QDialog):
     # ----- Updates ------------------------------------------------------
     def _build_updates(self) -> QWidget:
         from factory.version import VERSION
-        w, lay = _page("Updates")
-        lay.addWidget(QLabel(f"Installed version: {VERSION}"))
-        btn = QPushButton("Check for updates")
-        btn.setMinimumHeight(40)
-        style_button(btn, "primary")
+        w, lay = _page("Updates", "Keep this PC on the current release.")
+        card, cl = _card()
+        cl.addLayout(_kv_row("Installed version", VERSION))
+        btn = _button("Check for updates", "primary")
         btn.clicked.connect(self._check_updates)
-        lay.addWidget(btn, 0, Qt.AlignLeft)
+        cl.addWidget(btn, 0, Qt.AlignmentFlag.AlignLeft)
+        lay.addWidget(card)
         lay.addStretch(1)
         return w
 
@@ -279,14 +316,15 @@ class SettingsDialog(QDialog):
 
     # ----- User ---------------------------------------------------------
     def _build_user(self) -> QWidget:
-        w, lay = _page("User")
+        w, lay = _page("User", "Who is signed in on this PC.")
+        card, cl = _card()
         name = str(self._user.get("username") or "—")
-        lay.addWidget(QLabel(f"Signed in as: {name}  ·  role: {self._role or '—'}"))
-        btn = QPushButton("Sign out")
-        btn.setMinimumHeight(40)
-        style_button(btn, "secondary")
+        cl.addLayout(_kv_row("Signed in as", name))
+        cl.addLayout(_kv_row("Role", self._role or "—"))
+        lay.addWidget(card)
+        btn = _button("Sign out", "danger")
         btn.clicked.connect(self._sign_out)
-        lay.addWidget(btn, 0, Qt.AlignLeft)
+        lay.addWidget(btn, 0, Qt.AlignmentFlag.AlignLeft)
         lay.addStretch(1)
         return w
 
@@ -298,14 +336,66 @@ class SettingsDialog(QDialog):
 
     # ----- About --------------------------------------------------------
     def _build_about(self) -> QWidget:
-        from factory.version import VERSION
-        from factory.ui.splash import AboutDialog
+        """About inline (no separate dialog): identity lockup, the facts,
+        and the licence card with the trial countdown."""
         w, lay = _page("About")
-        lay.addWidget(QLabel(f"Simpl'd · version {VERSION}"))
-        btn = QPushButton("Show details")
-        btn.setMinimumHeight(40)
-        style_button(btn, "secondary")
-        btn.clicked.connect(lambda: AboutDialog(self).exec())
-        lay.addWidget(btn, 0, Qt.AlignLeft)
+        holder = QHBoxLayout()
+        holder.addStretch(1)
+        holder.addWidget(_brand.lockup(size=28, mark_px=44, parent=True))
+        holder.addStretch(1)
+        lay.addLayout(holder)
+
+        card, cl = _card()
+        cl.addLayout(_kv_row("Version", _brand.VERSION))
+        cl.addLayout(_kv_row("Product of", _brand.PARENT_NAME))
+        cl.addLayout(_kv_row("Works offline", "Yes — no data leaves this computer"))
+        cl.addLayout(_kv_row("Storage", "Local SQLite database on this PC"))
+        lay.addWidget(card)
+
+        # Licence card (same content the old About dialog carried).
+        try:
+            from factory import license as _LIC
+            _st = _LIC.license_status()
+            _disp = _LIC.license_display(_st)
+            _mid = _LIC.machine_fingerprint()
+        except Exception as _e:
+            _LIC, _st, _disp, _mid = None, {}, f"Licence check failed: {_e}", "?"
+        lic_card, lc = _card()
+        cap = QLabel("LICENCE")
+        cap.setProperty("field", "caption")
+        lc.addWidget(cap)
+        lic_lbl = QLabel(_disp)
+        lic_lbl.setProperty("hint", True)
+        lic_lbl.setWordWrap(True)
+        lc.addWidget(lic_lbl)
+        # Trial countdown (vivid), same wording as the old dialog.
+        try:
+            _lic_d = (_st or {}).get("lic") or {}
+            if _LIC is not None and str(_lic_d.get("edition") or "") == "trial":
+                _left = _LIC.license_days_left(_lic_d)
+                _trial_lbl = QLabel("")
+                _trial_lbl.setWordWrap(True)
+                if _left is not None:
+                    if _left < 0:
+                        _trial_lbl.setText(f"Trial expired {-_left}d ago — contact your vendor for a full key.")
+                        set_banner(_trial_lbl, "err")
+                        lc.addWidget(_trial_lbl)
+                    elif _left == 0:
+                        _trial_lbl.setText("Trial expires TODAY — back up your data and contact your vendor.")
+                        set_banner(_trial_lbl, "warn")
+                        lc.addWidget(_trial_lbl)
+                    else:
+                        _trial_lbl.setText(f"Trial: {_left} day{'s' if _left != 1 else ''} left"
+                                           f" (expires {_lic_d.get('expires')}).")
+                        set_banner(_trial_lbl, "warn" if _left <= 3 else "info")
+                        lc.addWidget(_trial_lbl)
+        except Exception:
+            pass
+        mid_lbl = QLabel(f"Machine ID: {_mid}")
+        mid_lbl.setProperty("hint", True)
+        mid_lbl.setWordWrap(True)
+        mid_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        lc.addWidget(mid_lbl)
+        lay.addWidget(lic_card)
         lay.addStretch(1)
         return w
