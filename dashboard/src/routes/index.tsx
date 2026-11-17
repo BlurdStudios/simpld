@@ -105,7 +105,7 @@ export function Landing() {
           <CardDescription>Licence issuance, downloads and site viewing need a login.</CardDescription>
         </CardHeader>
         <CardContent>
-          <Link to="/login" search={{ redirect: "/" }}>
+          <Link to="/admin/login" search={{ redirect: "/" }}>
             <Button className="w-full">Log in</Button>
           </Link>
         </CardContent>

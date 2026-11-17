@@ -4,7 +4,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { DeliveryTruck01Icon } from "@hugeicons/core-free-icons";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { EmptyState, ErrorState, OrdersTable, SiteHeading } from "@/components/site-portal";
+import { EmptyState, OrdersTable, SiteGate, SiteHeading } from "@/components/site-portal";
 import { boneStyle, mockSnapshot, useSiteSnapshot } from "@/lib/site-data";
 
 export const Route = createFileRoute("/s/$siteId/orders")({
@@ -18,8 +18,8 @@ function SiteOrdersRoute() {
 
 export function SiteOrders({ siteId }: { siteId: string }) {
   const state = useSiteSnapshot(siteId);
-  if (state.status === "error")
-    return <ErrorState title="Cannot open viewer" description={state.message} />;
+  if (state.status === "error" || state.status === "unauthenticated" || state.status === "forbidden")
+    return <SiteGate state={state} siteId={siteId} title="Cannot open viewer" />;
   if (state.status === "empty")
     return <EmptyState title="No data yet" description={state.message} />;
 

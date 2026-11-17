@@ -4,7 +4,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { Download01Icon } from "@hugeicons/core-free-icons";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { EmptyState, ErrorState, ReleaseList, SiteHeading } from "@/components/site-portal";
+import { EmptyState, ReleaseList, SiteGate, SiteHeading } from "@/components/site-portal";
 import { boneStyle, MOCK_RELEASES, useSiteReleases } from "@/lib/site-data";
 
 export const Route = createFileRoute("/s/$siteId/downloads")({
@@ -18,8 +18,8 @@ function SiteDownloadsRoute() {
 
 export function SiteDownloads({ siteId }: { siteId: string }) {
   const state = useSiteReleases();
-  if (state.status === "error")
-    return <ErrorState title="Cannot open downloads" description={state.message} />;
+  if (state.status === "error" || state.status === "unauthenticated" || state.status === "forbidden")
+    return <SiteGate state={state} siteId={siteId} title="Cannot open downloads" />;
   if (state.status === "empty")
     return <EmptyState title="No downloads yet" description={state.message} />;
 

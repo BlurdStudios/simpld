@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { Navigate } from "@tanstack/react-router";
+import { Link } from "@tanstack/react-router";
 
 export interface Me {
   id: string;
@@ -38,7 +38,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       await fetch("/api/auth/logout", { method: "POST" });
     } finally {
       setMe(null);
-      window.location.href = "/login";
+      window.location.href = "/admin/login";
     }
   }, []);
 
@@ -73,31 +73,42 @@ export function useMe(): Me | null | undefined {
 
 export async function logout(): Promise<void> {
   await fetch("/api/auth/logout", { method: "POST" });
-  window.location.href = "/login";
+  window.location.href = "/admin/login";
 }
 
-/** Render children only when logged in; otherwise redirect to /login. */
+/** Shared 403 card for protected pages that must never redirect to a login. */
+export function Restricted({ detail }: { detail?: string }) {
+  return (
+    <div className="flex min-h-[40vh] flex-col items-center justify-center gap-2 text-center">
+      <p className="text-4xl font-bold">403</p>
+      <p className="text-lg font-semibold">Restricted content</p>
+      <p className="text-sm text-muted-foreground">Please contact your administrator.</p>
+      {detail && <p className="text-sm text-muted-foreground">{detail}</p>}
+      <Link
+        to="/admin/login"
+        className="text-sm text-muted-foreground underline underline-offset-4 hover:text-foreground"
+      >
+        Vendor staff? Log in
+      </Link>
+    </div>
+  );
+}
+
+/** Render children only when logged in; otherwise show the shared 403. */
 export function RequireAuth({ children }: { children: React.ReactNode }) {
   const { me } = useAuth();
   if (me === undefined) return null;
-  if (me === null) return <Navigate to="/login" search={{ redirect: window.location.pathname }} />;
+  if (me === null) return <Restricted />;
   return <>{children}</>;
 }
 
-/** Render children only for vendor_admin; logged-out -> login, client -> 403. */
+/** Render children only for vendor_admin; everyone else gets the shared 403. */
 export function RequireAdmin({ children }: { children: React.ReactNode }) {
   const { me } = useAuth();
   if (me === undefined) return null;
-  if (me === null) return <Navigate to="/login" search={{ redirect: window.location.pathname }} />;
+  if (me === null) return <Restricted />;
   if (me.role !== "vendor_admin") {
-    return (
-      <div className="flex min-h-[40vh] flex-col items-center justify-center gap-2 text-center">
-        <p className="text-4xl font-bold">403</p>
-        <p className="text-sm text-muted-foreground">
-          Vendor admin only — signed in as {me.email}.
-        </p>
-      </div>
-    );
+    return <Restricted detail={`Vendor admin only — signed in as ${me.email}.`} />;
   }
   return <>{children}</>;
 }

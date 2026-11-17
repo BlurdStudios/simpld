@@ -28,32 +28,45 @@ export type LoadState<T> =
   | { status: "loading" }
   | { status: "ready"; data: T; mock: boolean }
   | { status: "empty"; message: string }
-  | { status: "error"; message: string };
+  | { status: "error"; message: string }
+  | { status: "unauthenticated" }
+  | { status: "forbidden" };
 
+// What the shared fetcher returns: the LoadState variants plus a network
+// failure marker, which only the snapshot hook turns into dev mock data.
 type FetchResult =
-  | { kind: "response"; status: number; data: unknown }
-  | { kind: "network-error" }
-  | { kind: "timeout" };
+  | { status: "ready"; data: unknown }
+  | { status: "empty"; message: string }
+  | { status: "error"; message: string }
+  | { status: "unauthenticated" }
+  | { status: "forbidden" }
+  | { status: "network-error" };
 
-/** One fetch with a hard deadline. A network error and a timeout are told
- *  apart via `controller.signal.aborted`, so the caller can keep the dev-mock
- *  fallback for a missing backend while still timing out a hung one. */
-async function fetchSiteJson(url: string): Promise<FetchResult> {
+/** One fetch with a hard deadline. HTTP status is mapped here, once: a 401 is
+ *  an auth gate, a 403 is restricted content; timeouts and 5xx stay errors.
+ *  A network error is told apart via `controller.signal.aborted` so the caller
+ *  can keep the dev-mock fallback for a missing backend. */
+async function fetchSiteJson(
+  url: string,
+  { label, emptyMessage }: { label: string; emptyMessage?: string }
+): Promise<FetchResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
     const res = await fetch(url, { signal: controller.signal });
+    if (res.status === 401) return { status: "unauthenticated" };
+    if (res.status === 403) return { status: "forbidden" };
+    if (res.status === 404 && emptyMessage) return { status: "empty", message: emptyMessage };
+    if (!res.ok) return { status: "error", message: `${label} failed (${res.status}).` };
     const data = await res.json().catch(() => null);
-    return { kind: "response", status: res.status, data };
+    return { status: "ready", data };
   } catch {
-    return controller.signal.aborted ? { kind: "timeout" } : { kind: "network-error" };
+    return controller.signal.aborted
+      ? { status: "error", message: `Request timed out after ${TIMEOUT_MS / 1000} seconds.` }
+      : { status: "network-error" };
   } finally {
     clearTimeout(timer);
   }
-}
-
-function timeoutMessage(): string {
-  return `Request timed out after ${TIMEOUT_MS / 1000} seconds.`;
 }
 
 // ---------- snapshot fixtures (Overview / Production / Orders / Stock) ----------
@@ -146,34 +159,21 @@ export function useSiteSnapshot(siteId: string): LoadState<SiteSnapshot> {
     let live = true;
     setState({ status: "loading" });
     (async () => {
-      const res = await fetchSiteJson(`/api/s/${encodeURIComponent(siteId)}`);
+      const res = await fetchSiteJson(`/api/s/${encodeURIComponent(siteId)}`, {
+        label: "Viewer request",
+        emptyMessage: "Your figures will appear here after the first sync from the factory.",
+      });
       if (!live) return;
-      if (res.kind === "timeout") {
-        setState({ status: "error", message: timeoutMessage() });
-        return;
-      }
-      if (res.kind === "network-error") {
+      if (res.status === "network-error") {
         // Dev fallback: no Worker backend under `vite dev` — show mock shape.
         setState({ status: "ready", data: mockSnapshot(siteId), mock: true });
         return;
       }
-      if (res.status === 403) {
-        setState({ status: "error", message: "This login cannot view this site." });
+      if (res.status === "ready") {
+        setState({ status: "ready", data: res.data as SiteSnapshot, mock: false });
         return;
       }
-      if (res.status === 401) {
-        setState({ status: "error", message: "Log in to view this site." });
-        return;
-      }
-      if (res.status === 404) {
-        setState({ status: "empty", message: "Your figures will appear here after the first sync from the factory." });
-        return;
-      }
-      if (!res.status || res.status < 200 || res.status >= 300) {
-        setState({ status: "error", message: `Viewer request failed (${res.status}).` });
-        return;
-      }
-      setState({ status: "ready", data: res.data as SiteSnapshot, mock: false });
+      setState(res);
     })();
     return () => {
       live = false;
@@ -228,21 +228,14 @@ export function useSiteLicences(siteId: string): LoadState<LicenceLogRow[]> {
     let live = true;
     setState({ status: "loading" });
     (async () => {
-      const res = await fetchSiteJson("/api/licenses");
+      const res = await fetchSiteJson("/api/licenses", { label: "Licence request" });
       if (!live) return;
-      if (res.kind !== "response") {
-        setState({
-          status: "error",
-          message: res.kind === "timeout" ? timeoutMessage() : "Licence request failed.",
-        });
+      if (res.status === "network-error") {
+        setState({ status: "error", message: "Licence request failed." });
         return;
       }
-      if (res.status === 401 || res.status === 403) {
-        setState({ status: "error", message: "Log in to view your licence." });
-        return;
-      }
-      if (res.status < 200 || res.status >= 300) {
-        setState({ status: "error", message: `Licence request failed (${res.status}).` });
+      if (res.status !== "ready") {
+        setState(res);
         return;
       }
       const raw = (res.data as { licences?: unknown } | null)?.licences;
@@ -289,21 +282,14 @@ export function useSiteReleases(): LoadState<{ releases: ReleaseManifest[]; late
     let live = true;
     setState({ status: "loading" });
     (async () => {
-      const res = await fetchSiteJson("/api/releases");
+      const res = await fetchSiteJson("/api/releases", { label: "Releases request" });
       if (!live) return;
-      if (res.kind !== "response") {
-        setState({
-          status: "error",
-          message: res.kind === "timeout" ? timeoutMessage() : "Releases request failed.",
-        });
+      if (res.status === "network-error") {
+        setState({ status: "error", message: "Releases request failed." });
         return;
       }
-      if (res.status === 401 || res.status === 403) {
-        setState({ status: "error", message: "Log in to view downloads." });
-        return;
-      }
-      if (res.status < 200 || res.status >= 300) {
-        setState({ status: "error", message: `Releases request failed (${res.status}).` });
+      if (res.status !== "ready") {
+        setState(res);
         return;
       }
       const data = (res.data ?? {}) as { releases?: unknown; latest?: unknown };

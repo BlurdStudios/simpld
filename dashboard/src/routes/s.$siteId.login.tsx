@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { createFileRoute, useNavigate, useParams } from "@tanstack/react-router";
+import { Navigate, createFileRoute, useNavigate, useParams } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Login01Icon, Key01Icon } from "@hugeicons/core-free-icons";
 import { Button } from "@/components/ui/button";
@@ -15,10 +15,15 @@ export const Route = createFileRoute("/s/$siteId/login")({
 export function SiteLogin() {
   const { siteId } = useParams({ from: "/s/$siteId/login" });
   const navigate = useNavigate();
-  const { refresh } = useAuth();
+  const { me, refresh } = useAuth();
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // Already signed in with access to this site — no need to log in again.
+  if (me === undefined) return null;
+  if (me && (me.role === "vendor_admin" || me.site_id === siteId))
+    return <Navigate to="/s/$siteId" params={{ siteId }} replace />;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();

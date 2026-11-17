@@ -4,7 +4,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { Key01Icon } from "@hugeicons/core-free-icons";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { EmptyState, ErrorState, LicenceTable, SiteHeading } from "@/components/site-portal";
+import { EmptyState, LicenceTable, SiteGate, SiteHeading } from "@/components/site-portal";
 import { boneStyle, mockLicences, useSiteLicences } from "@/lib/site-data";
 
 export const Route = createFileRoute("/s/$siteId/licence")({
@@ -18,8 +18,8 @@ function SiteLicenceRoute() {
 
 export function SiteLicence({ siteId }: { siteId: string }) {
   const state = useSiteLicences(siteId);
-  if (state.status === "error")
-    return <ErrorState title="Cannot load licences" description={state.message} />;
+  if (state.status === "error" || state.status === "unauthenticated" || state.status === "forbidden")
+    return <SiteGate state={state} siteId={siteId} title="Cannot load licences" />;
   if (state.status === "empty")
     return <EmptyState title="No licence on file" description={state.message} />;
 

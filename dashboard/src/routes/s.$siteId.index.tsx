@@ -9,8 +9,8 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   EmptyState,
-  ErrorState,
   LatestDaySummary,
+  SiteGate,
   SiteHeading,
   Stat,
 } from "@/components/site-portal";
@@ -78,8 +78,8 @@ function OverviewContent({ snap, mock }: { snap: SiteSnapshot; mock: boolean }) 
 
 export function SiteOverview({ siteId }: { siteId: string }) {
   const state = useSiteSnapshot(siteId);
-  if (state.status === "error")
-    return <ErrorState title="Cannot open viewer" description={state.message} />;
+  if (state.status === "error" || state.status === "unauthenticated" || state.status === "forbidden")
+    return <SiteGate state={state} siteId={siteId} title="Cannot open viewer" />;
   if (state.status === "empty")
     return <EmptyState title="No data yet" description={state.message} />;
 

@@ -2,6 +2,7 @@
 // boneyard fixtures render the same components, so captured bones match.
 
 import { useEffect, useState } from "react";
+import { Navigate } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   PackageIcon,
@@ -24,6 +25,8 @@ import {
 } from "@/components/ui/table";
 import type { DayReport, OrderProgress, ReleaseManifest, StockCounts } from "@/lib/contract";
 import type { LicenceLogRow } from "@/lib/db";
+import type { LoadState } from "@/lib/site-data";
+import { Restricted } from "@/lib/session";
 
 // ---------- shared cards ----------
 
@@ -100,6 +103,24 @@ export function ErrorState({ title, description }: { title: string; description:
       </CardHeader>
     </Card>
   );
+}
+
+/** Shared gate for customer pages: 401 goes to this site's own login, 403 is
+ *  restricted content, other failures keep the page's error card. */
+export function SiteGate<T>({
+  state,
+  siteId,
+  title = "Cannot open viewer",
+}: {
+  state: LoadState<T>;
+  siteId: string;
+  title?: string;
+}) {
+  if (state.status === "unauthenticated")
+    return <Navigate to="/s/$siteId/login" params={{ siteId }} replace />;
+  if (state.status === "forbidden") return <Restricted />;
+  if (state.status === "error") return <ErrorState title={title} description={state.message} />;
+  return null;
 }
 
 function TotalsStrip({ totals }: { totals: DayReport["totals"] }) {

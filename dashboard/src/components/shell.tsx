@@ -143,7 +143,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             </Button>
           </div>
         ) : (
-          <Link to="/login" search={{ redirect: location.pathname }} onClick={() => setOpen(false)}>
+          <Link to="/admin/login" search={{ redirect: location.pathname }} onClick={() => setOpen(false)}>
             <Button className="w-full">Log in</Button>
           </Link>
         )}
@@ -169,7 +169,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
               {me.role === "vendor_admin" ? "admin" : (me.site_id ?? "client")}
             </Badge>
           ) : (
-            <Link to="/login" search={{ redirect: "/" }}>
+            <Link to="/admin/login" search={{ redirect: "/" }}>
               <Button size="sm">Log in</Button>
             </Link>
           )}

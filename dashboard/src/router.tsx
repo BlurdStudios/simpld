@@ -5,6 +5,7 @@
 // Keep the two route trees in sync when adding a page.
 import {
   Link,
+  Navigate,
   Outlet,
   createRootRoute,
   createRoute,
@@ -21,10 +22,10 @@ import { SiteStock } from "./routes/s.$siteId.stock";
 import { SiteLicence } from "./routes/s.$siteId.licence";
 import { SiteDownloads } from "./routes/s.$siteId.downloads";
 import { SiteLogin } from "./routes/s.$siteId.login";
-import { Login } from "./routes/login";
+import { AdminLogin } from "./routes/admin.login";
 import { Licence } from "./routes/licence";
 import { Downloads } from "./routes/download";
-import { Admin } from "./routes/admin";
+import { Admin } from "./routes/admin.index";
 
 const rootRoute = createRootRoute({
   component: () => (
@@ -129,7 +130,7 @@ const loginRoute = createRoute({
   validateSearch: (s: Record<string, unknown>) => ({
     redirect: (s.redirect as string) ?? "/",
   }),
-  component: Login,
+  component: () => <Navigate to="/admin/login" replace />,
 });
 
 const licenceRoute = createRoute({
@@ -152,15 +153,34 @@ const downloadRoute = createRoute({
   ),
 });
 
+// Bare layout, mirroring src/routes/admin.tsx — the page is the index child
+// and the vendor login is the /login child.
 const adminRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/admin",
+  component: () => <Outlet />,
+});
+
+const adminIndexRoute = createRoute({
+  getParentRoute: () => adminRoute,
+  path: "/",
   component: () => (
     <RequireAdmin>
       <Admin />
     </RequireAdmin>
   ),
 });
+
+const adminLoginRoute = createRoute({
+  getParentRoute: () => adminRoute,
+  path: "/login",
+  validateSearch: (s: Record<string, unknown>): { redirect?: string } => ({
+    redirect: typeof s.redirect === "string" ? s.redirect : undefined,
+  }),
+  component: AdminLogin,
+});
+
+const adminRouteWithChildren = adminRoute.addChildren([adminIndexRoute, adminLoginRoute]);
 
 const routeTree = rootRoute.addChildren([
   landingRoute,
@@ -169,7 +189,7 @@ const routeTree = rootRoute.addChildren([
   loginRoute,
   licenceRoute,
   downloadRoute,
-  adminRoute,
+  adminRouteWithChildren,
 ]);
 
 export function getRouter() {
