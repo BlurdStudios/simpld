@@ -231,7 +231,11 @@ def test_no_mock_helpers_blank_config_blocks_weighing():
         from factory.hardware import status as HWStatus
         strip = pg.findChild(DeviceStrip)
         assert strip is not None, "packaging page must show a device strip"
-        states = {d["key"]: d["state"] for d in HWStatus.station_status("packaging")}
+        # Hermetic: blank config must read setup even on a bench where a real
+        # Citizen is attached over raw USB (this test pins NO hardware).
+        with _mock.patch("factory.hardware.vcom.citizen_usb_present",
+                         return_value=False):
+            states = {d["key"]: d["state"] for d in HWStatus.station_status("packaging")}
         assert set(states) == {"scale", "printer"}, states
         assert all(s == "setup" for s in states.values()), states
         # Blank config (mock not test-enabled) blocks weighing with guidance.
@@ -635,6 +639,115 @@ def test_sysfs_usb_printer_scan():
     assert not hasattr(HWStatus, "_windows_usbprint_present")
 
 
+# ---- Linux raw-USB transport (the Citizen makes no tty node there) ------
+
+def test_match_citizen_port_pure_matching():
+    """The VID/PID -> description -> never-guess filter, no enumeration.
+
+    Pure filter over a caller-supplied port list, so the pill cache and
+    tests can feed it anything with .device/.vid/.pid/.description.
+    """
+    from factory.hardware import vcom as V
+
+    class P:
+        def __init__(self, device, vid=None, pid=None, description=""):
+            self.device, self.vid, self.pid = device, vid, pid
+            self.description = description
+
+    hit = P("COM7", vid=V.CITIZEN_VID, pid=V.CITIZEN_PID)
+    assert V.match_citizen_port([P("COM3", vid=0x1234, pid=0x5678), hit]) == "COM7"
+    # description fallback when the IDs are hidden (some hubs report 0/None)
+    desc = P("COM8", vid=0, pid=0, description="Citizen CL-S621")
+    assert V.match_citizen_port([desc]) == "COM8"
+    assert V.match_citizen_port([P("COM3", vid=0x1234, pid=0x5678,
+                                   description=None)]) is None
+    # two Citizens on the bus: never guess
+    two = [P("COM7", vid=V.CITIZEN_VID, pid=V.CITIZEN_PID),
+           P("COM9", vid=V.CITIZEN_VID, pid=V.CITIZEN_PID)]
+    assert V.match_citizen_port(two) is None
+    # no Citizen at all
+    assert V.match_citizen_port([P("COM3", vid=0x1234, pid=0x5678)]) is None
+
+
+def test_send_bytes_empty_port_routes_to_raw_usb():
+    """No configured port (the Linux reality — the Citizen makes no tty
+    node): the bytes go over raw USB, the same write the CUPS backend
+    does. Nothing touches serial."""
+    from factory.hardware import vcom as V
+    calls = []
+    with _mock.patch.object(V, "citizen_usb_send",
+                            side_effect=calls.append):
+        V.send_bytes("", b"ZPL-job")
+    assert calls == [b"ZPL-job"]
+
+
+def test_send_bytes_explicit_port_uses_serial():
+    """A pinned or USB-ID-found port stays serial VCOM (Windows path):
+    opened at the given baud, written, flushed, closed."""
+    from factory.hardware import vcom as V
+    made = {}
+
+    class FakeSer:
+        def __init__(self, port, baudrate=None, timeout=None, write_timeout=None):
+            made["port"], made["baud"] = port, baudrate
+            made["written"] = []
+
+        def write(self, data):
+            made["written"].append(data)
+
+        def flush(self):
+            made["flushed"] = True
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    import serial as serial_mod
+    with _mock.patch.object(serial_mod, "Serial", FakeSer):
+        V.send_bytes("COM5", b"ZPL-job", baud=19200)
+    assert made["port"] == "COM5" and made["baud"] == 19200, made
+    assert made["written"] == [b"ZPL-job"], made
+    assert made["flushed"] is True, made
+
+
+def test_printer_configured_usb_fallback():
+    """The configured-gate passes on raw-USB presence alone (Linux, no
+    serial node to find), and a pinned port wins without any probing."""
+    cfg = {"printer_port": ""}
+    with _mock.patch("factory.hardware.vcom.find_vcom_port", return_value=None), \
+         _mock.patch("factory.hardware.vcom.citizen_usb_present",
+                     return_value=True):
+        assert DEV.printer_configured(cfg) is True
+    with _mock.patch("factory.hardware.vcom.find_vcom_port", return_value=None), \
+         _mock.patch("factory.hardware.vcom.citizen_usb_present",
+                     return_value=False):
+        assert DEV.printer_configured(cfg) is False
+    # pinned port: short-circuits before any bus work
+    boom = AssertionError("pinned port must not probe")
+    with _mock.patch("factory.hardware.vcom.find_vcom_port",
+                     side_effect=boom), \
+         _mock.patch("factory.hardware.vcom.citizen_usb_present",
+                     side_effect=boom):
+        assert DEV.printer_configured({"printer_port": "COM5"}) is True
+
+
+def test_detail_printer_usb_pill():
+    """Linux, no serial node anywhere: the pill shows the calm
+    'USB · VCOM' ready state from the cached USB probe, and setup only
+    when the printer is truly absent. No nagging either way."""
+    cfg = _live_cfg()  # blank printer_port
+    with _mock.patch.object(HWStatus, "_cached_port_objects", return_value=[]), \
+         _mock.patch("factory.hardware.vcom.citizen_usb_present",
+                     return_value=True):
+        assert HWStatus._detail_printer(cfg) == ("ready", "USB · VCOM")
+    with _mock.patch.object(HWStatus, "_cached_port_objects", return_value=[]), \
+         _mock.patch("factory.hardware.vcom.citizen_usb_present",
+                     return_value=False):
+        assert HWStatus._detail_printer(cfg) == ("setup", "printer not connected")
+
+
 def test_read_scale_real_success_writes_measured():
     p = _fresh_db()
     job = S.create_job("REAL OK JOB", core_wt=0.280, path=p)
@@ -719,10 +832,8 @@ if __name__ == "__main__":
     test_real_open_failure_errors()
     test_blank_config_selects_mock()
     test_configured_port_selects_real_scale()
-    test_configured_printer_selects_real_driver()
+    test_configured_printer_selects_vcom_port()
     test_reload_swaps_shared_instances_without_restart()
-    test_real_print_renders_complete_data_and_paints_stock()
-    test_real_print_failures_never_report_success()
     test_no_mock_helpers_blank_config_blocks_weighing()
     test_read_scale_real_error_invalidates_weight_and_action()
     test_genuine_zero_stop_sets_zero_not_stale()
@@ -737,7 +848,15 @@ if __name__ == "__main__":
     test_autodetect_keeps_env_pinned_config_when_nothing_answers()
     test_live_status_ready_when_everything_attached()
     test_live_status_unplugged_scale_reads_not_found()
+    test_live_status_printer_config_trusted_no_flip()
     test_live_status_unknowable_keeps_last_verdict()
     test_sysfs_usb_printer_scan()
+    test_match_citizen_port_pure_matching()
+    test_send_bytes_empty_port_routes_to_raw_usb()
+    test_send_bytes_explicit_port_uses_serial()
+    test_printer_configured_usb_fallback()
+    test_detail_printer_usb_pill()
+    test_scanner_attempts_without_landing()
+    test_scanner_session_resets_on_logout()
     test_autodetect_concurrent_runs_do_not_clobber()
     print("test_hardware_real PASS")

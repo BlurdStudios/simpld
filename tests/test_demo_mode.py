@@ -10,6 +10,7 @@ import sys
 import tempfile
 
 import pytest
+from unittest import mock as _mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -98,8 +99,12 @@ def test_demo_disabled_in_prod_frozen_build(monkeypatch, tmp_path):
     assert devices.demo_mode({"demo_mode": True}) is False
     with pytest.raises(RuntimeError):
         devices.require_scale({"demo_mode": True})
-    with pytest.raises(RuntimeError):
-        devices.require_printer({"demo_mode": True})
+    # Hermetic: pin the USB probe off — on a bench with a real Citizen
+    # attached (raw USB, no serial node) the gate correctly passes.
+    with _mock.patch("factory.hardware.vcom.citizen_usb_present",
+                     return_value=False):
+        with pytest.raises(RuntimeError):
+            devices.require_printer({"demo_mode": True})
     monkeypatch.setenv("SIMPLD_DEMO", "1")
     assert HWC.load(str(tmp_path / "hardware.json"))["demo_mode"] is False
 
@@ -140,8 +145,12 @@ def test_demo_mode_off_keeps_fail_closed(monkeypatch):
     monkeypatch.setattr(_db, "_is_frozen", lambda: True)
     with pytest.raises(RuntimeError):
         devices.require_scale({"demo_mode": False})
-    with pytest.raises(RuntimeError):
-        devices.require_printer({"demo_mode": False})
+    # Hermetic: pin the USB probe off (real bench may have the Citizen
+    # attached over raw USB — then the gate correctly passes).
+    with _mock.patch("factory.hardware.vcom.citizen_usb_present",
+                     return_value=False):
+        with pytest.raises(RuntimeError):
+            devices.require_printer({"demo_mode": False})
 
 
 def test_mock_scale_demo_simulation():

@@ -1,15 +1,16 @@
 """Settings: one dialog, a sidebar of areas, a Back button.
 
-Areas: General, Sync, Licence, Updates, User, About. Each area is its own
-page so a setting only lives in one place, all built from the shared theme
-(nav rows, white cards, semantic buttons — same visual language as the
-main window).
+Areas: General, Sync, Licence, User, About. Each area is its own page so a
+setting only lives in one place, all built from the shared theme (nav rows,
+white cards, semantic buttons — same visual language as the main window).
+Updates is part of About (one less place to look): the facts card carries
+the version row with a Check-for-updates button.
 
 Deliberately ABSENT by owner request:
   Printer — the label printer has NO setup UI and NO detection loop. It is
   a direct USB-to-serial (VCOM) device: a hardware.json port overrides,
-  otherwise it is found quietly by USB ID. Settings would only invite
-  fiddling.
+  otherwise it is found quietly by USB ID (or raw USB on Linux). Settings
+  would only invite fiddling.
   Sync inputs — the licence IS the verification: the site ID comes from
   the installed licence and the dashboard address is fixed. One button
   runs sync now.
@@ -25,7 +26,7 @@ from PySide6.QtWidgets import (QDialog, QHBoxLayout, QVBoxLayout, QLabel, QPushB
 from factory.ui import brand as _brand
 from factory.ui.styles import style_button, set_banner
 
-AREAS = ("General", "Sync", "Licence", "Updates", "User", "About")
+AREAS = ("General", "Sync", "Licence", "User", "About")
 
 
 def _page(title: str, desc: str = "") -> tuple[QWidget, QVBoxLayout]:
@@ -126,7 +127,6 @@ class SettingsDialog(QDialog):
             "General": self._build_general,
             "Sync": self._build_sync,
             "Licence": self._build_licence,
-            "Updates": self._build_updates,
             "User": self._build_user,
             "About": self._build_about,
         }
@@ -297,48 +297,11 @@ class SettingsDialog(QDialog):
             if self.parent() is not None and hasattr(self.parent(), "_refresh_license_banner"):
                 self.parent()._refresh_license_banner()
 
-    # ----- Updates ------------------------------------------------------
-    def _build_updates(self) -> QWidget:
-        from factory.version import VERSION
-        w, lay = _page("Updates", "Keep this PC on the current release.")
-        card, cl = _card()
-        cl.addLayout(_kv_row("Installed version", VERSION))
-        btn = _button("Check for updates", "primary")
-        btn.clicked.connect(self._check_updates)
-        cl.addWidget(btn, 0, Qt.AlignmentFlag.AlignLeft)
-        lay.addWidget(card)
-        lay.addStretch(1)
-        return w
-
-    def _check_updates(self):
-        from factory.ui import update_ui
-        update_ui.check_now(self)
-
-    # ----- User ---------------------------------------------------------
-    def _build_user(self) -> QWidget:
-        w, lay = _page("User", "Who is signed in on this PC.")
-        card, cl = _card()
-        name = str(self._user.get("username") or "—")
-        cl.addLayout(_kv_row("Signed in as", name))
-        cl.addLayout(_kv_row("Role", self._role or "—"))
-        lay.addWidget(card)
-        btn = _button("Sign out", "danger")
-        btn.clicked.connect(self._sign_out)
-        lay.addWidget(btn, 0, Qt.AlignmentFlag.AlignLeft)
-        lay.addStretch(1)
-        return w
-
-    def _sign_out(self):
-        self.accept()
-        parent = self.parent()
-        if parent is not None and hasattr(parent, "_do_logout"):
-            parent._do_logout()
-
     # ----- About --------------------------------------------------------
     def _build_about(self) -> QWidget:
-        """About inline (no separate dialog): identity lockup, the facts,
-        and the licence card with the trial countdown."""
-        w, lay = _page("About")
+        """About inline (no separate dialog), and Updates merged in: the
+        facts card's version row carries the Check-for-updates button."""
+        w, lay = _page("About", "Version, licence and updates.")
         holder = QHBoxLayout()
         holder.addStretch(1)
         holder.addWidget(_brand.lockup(size=28, mark_px=44, parent=True))
@@ -346,7 +309,12 @@ class SettingsDialog(QDialog):
         lay.addLayout(holder)
 
         card, cl = _card()
-        cl.addLayout(_kv_row("Version", _brand.VERSION))
+        ver_row = _kv_row("Version", _brand.VERSION)
+        btn_upd = _button("Check for updates", "primary",
+                          "Checks the vendor mirror for a newer installer.")
+        btn_upd.clicked.connect(self._check_updates)
+        ver_row.addWidget(btn_upd, 0, Qt.AlignmentFlag.AlignRight)
+        cl.addLayout(ver_row)
         cl.addLayout(_kv_row("Product of", _brand.PARENT_NAME))
         cl.addLayout(_kv_row("Works offline", "Yes — no data leaves this computer"))
         cl.addLayout(_kv_row("Storage", "Local SQLite database on this PC"))
@@ -399,3 +367,28 @@ class SettingsDialog(QDialog):
         lay.addWidget(lic_card)
         lay.addStretch(1)
         return w
+
+    def _check_updates(self):
+        from factory.ui import update_ui
+        update_ui.check_now(self)
+
+    # ----- User ---------------------------------------------------------
+    def _build_user(self) -> QWidget:
+        w, lay = _page("User", "Who is signed in on this PC.")
+        card, cl = _card()
+        name = str(self._user.get("username") or "—")
+        cl.addLayout(_kv_row("Signed in as", name))
+        cl.addLayout(_kv_row("Role", self._role or "—"))
+        lay.addWidget(card)
+        btn = _button("Sign out", "danger")
+        btn.clicked.connect(self._sign_out)
+        lay.addWidget(btn, 0, Qt.AlignmentFlag.AlignLeft)
+        lay.addStretch(1)
+        return w
+
+    def _sign_out(self):
+        self.accept()
+        parent = self.parent()
+        if parent is not None and hasattr(parent, "_do_logout"):
+            parent._do_logout()
+

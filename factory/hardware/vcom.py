@@ -1,11 +1,13 @@
-"""Label printing over a VCOM (serial) port.
+"""Label printing over VCOM — serial on Windows, raw USB on Linux.
 
-The Citizen CL-S621 in VCOM mode appears as a COM port (Windows: via the
-Citizen VCOM driver; Linux: no COM node, see tools/cups/citizenusb). This
-module only moves bytes. The label command language is NOT defined here:
-it must match the printer's emulation (Datamax/DPL or Zebra/ZPL), which is
-read from the printer's self-test page. Until that is configured, every
-print raises, so nothing is ever sent as a guessed command.
+The Citizen CL-S621 in VCOM mode appears as a COM port on Windows (via the
+Citizen VCOM driver). On Linux it presents a vendor-specific bulk interface
+and NEVER creates a tty node, so the bytes go straight over USB bulk OUT
+(the same sequence the proven tools/cups/citizenusb CUPS backend uses).
+This module only moves bytes. The label command language is NOT defined
+here: it must match the printer's emulation (Datamax/DPL or Zebra/ZPL),
+which is read from the printer's self-test page. Until that is configured,
+every print raises, so nothing is ever sent as a guessed command.
 """
 from __future__ import annotations
 
@@ -24,6 +26,15 @@ EMULATION: str | None = "ZPL"
 
 CITIZEN_VID = 0x2730
 CITIZEN_PID = 0x0FFF
+
+# Raw-USB transport (Linux): this printer presents a vendor-specific bulk
+# interface (ff/ff/ff) and NEVER creates a tty node, so serial VCOM is
+# Windows-only. On Linux the bytes go straight over bulk OUT 0x02 — the
+# exact sequence tools/cups/citizenusb (CUPS backend) uses in production.
+USB_IFACE = 0
+USB_EP_OUT = 0x02
+USB_WRITE_TIMEOUT_MS = 10000
+USB_CHUNK = 16384
 
 
 def match_citizen_port(ports) -> str | None:
@@ -56,10 +67,104 @@ def find_vcom_port() -> str | None:
     return match_citizen_port(ports)
 
 
+# ---- raw-USB transport (Linux) ---------------------------------------------
+# The Citizen never exposes a serial node on Linux (interface 0 is
+# ff/ff/ff vendor bulk), so "VCOM mode" there means: write the bytes
+# straight to bulk OUT 0x02 over libusb. Sequence mirrors the proven
+# tools/cups/citizenusb CUPS backend. Windows keeps the real COM port
+# from the Citizen VCOM driver — serial path, unchanged.
+_USB_CACHE: dict = {"at": 0.0, "present": False}
+_USB_TTL_S = 10.0
+
+
+def citizen_usb_present() -> bool:
+    """A Citizen attached over raw USB right now? Cached 10s so the 5s
+    pill poll never scans the bus each tick."""
+    import time
+    now = time.monotonic()
+    if now - float(_USB_CACHE.get("at", 0.0)) < _USB_TTL_S:
+        return bool(_USB_CACHE.get("present"))
+    present = False
+    try:
+        import usb.core
+        dev = usb.core.find(idVendor=CITIZEN_VID, idProduct=CITIZEN_PID)
+        present = dev is not None
+    except Exception as e:
+        _log.warning("vcom: USB probe failed (%s)", e)
+        present = False
+    _USB_CACHE["at"] = now
+    _USB_CACHE["present"] = present
+    return present
+
+
+def citizen_usb_send(data: bytes) -> None:
+    """Write label bytes to the Citizen over raw USB (Linux path).
+
+    Raises RuntimeError with an operator-actionable message — the caller
+    surfaces it and the label stays pending, never half-sent as success.
+    """
+    try:
+        import usb.core
+        import usb.util
+    except Exception as e:
+        raise RuntimeError(
+            f"PyUSB missing — without a serial port the label printer is "
+            f"driven over raw USB: install pyusb ({e})") from e
+    try:
+        dev = usb.core.find(idVendor=CITIZEN_VID, idProduct=CITIZEN_PID)
+    except Exception as e:
+        raise RuntimeError(f"USB bus probe failed: {e}") from e
+    if dev is None:
+        raise RuntimeError(
+            "Label printer not found on USB — connect the Citizen and try again.")
+    try:
+        # A kernel driver (usblp/hid) on interface 0 must step aside for
+        # the print, then is free to reclaim on process exit.
+        try:
+            if dev.is_kernel_driver_active(USB_IFACE):
+                dev.detach_kernel_driver(USB_IFACE)
+        except Exception:
+            pass
+        try:
+            dev.set_configuration()
+        except Exception:
+            pass
+        try:
+            usb.util.claim_interface(dev, USB_IFACE)
+        except Exception as e:
+            raise RuntimeError(
+                "Could not claim the printer's USB interface — is another "
+                f"print queue holding it? ({e})") from e
+        view = memoryview(data)
+        for off in range(0, len(view), USB_CHUNK):
+            dev.write(USB_EP_OUT, view[off:off + USB_CHUNK].tobytes(),
+                      timeout=USB_WRITE_TIMEOUT_MS)
+    except RuntimeError:
+        raise
+    except PermissionError as e:
+        raise RuntimeError(
+            "No permission to open the label printer over USB — add your "
+            f"user to the 'lp' group (or install a udev rule): {e}") from e
+    except Exception as e:
+        raise RuntimeError(f"USB write to the Citizen failed: {e}") from e
+    finally:
+        try:
+            usb.util.dispose_resources(dev)
+        except Exception:
+            pass
+
+
 def send_bytes(port: str, data: bytes, baud: int = VCOM_BAUD) -> None:
-    """Write raw bytes to a COM port and wait for them to leave the PC."""
+    """Write raw label bytes to the printer and wait for them to leave.
+
+    Transport: an explicit port means serial VCOM (Windows COM port from
+    the Citizen driver, or a pinned node). An EMPTY port means the
+    zero-config path — on Linux there is no serial node at all, so the
+    bytes go over raw USB bulk (same as the CUPS backend).
+    """
     if not port:
-        raise RuntimeError("VCOM port not configured")
+        citizen_usb_send(data)
+        return
     try:
         import serial
     except Exception as e:
@@ -174,7 +279,9 @@ class VcomCitizen(PrinterInterface):
         self.baud = int(baud or VCOM_BAUD)
 
     def _target(self) -> str:
-        """Configured port if given, else whatever port the USB ID finds now."""
+        """Serial port if pinned or found by USB ID, else "" — an empty
+        target is valid: send_bytes routes it to the raw-USB transport
+        (Linux never shows a serial node for this printer)."""
         return self.port or find_vcom_port() or ""
 
     def _require_language(self) -> None:
@@ -187,15 +294,17 @@ class VcomCitizen(PrinterInterface):
         from . import layout as _layout
         self._require_language()
         port = self._target()
-        if not port:
-            raise RuntimeError("VCOM port not found. Set the printer port in Settings.")
         lay = _load_layout(template_id)
         dpi = int(lay.get("dpi") or 203)
         stock_w = round(float(lay["stock_w_mm"]) / 25.4 * dpi)
         stock_h = round(float(lay["stock_h_mm"]) / 25.4 * dpi)
         ox, oy = _layout.content_origin_px(lay)
+        # port "" → raw-USB bulk write; a missing printer raises there with
+        # an actionable message (never "set the port in Settings" — there
+        # is no printer settings UI).
         send_bytes(port, zpl_bitmap(image, ox, oy, stock_w, stock_h), self.baud)
-        _log.info("vcom: printed %s (%s) on %s", template_id, data_label, port)
+        _log.info("vcom: printed %s (%s) on %s", template_id, data_label,
+                  port or "USB")
         return True
 
     def print_reel_label(self, data: dict) -> bool:

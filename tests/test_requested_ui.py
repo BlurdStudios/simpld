@@ -22,6 +22,8 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from unittest import mock as _mock
+
 from tests._auth_helper import ensure_default_users
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -651,24 +653,30 @@ def test_fresh_startup_empty_no_sample_and_hardware_labelled():
         w.pack_nav["carton"].click()
         assert w.pages["packaging"].pack_mode == "carton"
         from factory.hardware import status as HWStatus
-        states = {d["key"]: d["state"]
-                  for d in HWStatus.station_status("packaging")}
-        assert states == {"scale": "setup", "printer": "setup"}, states
-        old = _os.environ.pop("SIMPLD_ALLOW_MOCK", None)
-        try:
+        # Hermetic: pin the USB probe off — on a bench with a real Citizen
+        # attached (raw USB, no serial node) the printer pill correctly
+        # reads ready and the gate correctly passes; this test pins NO
+        # hardware.
+        with _mock.patch("factory.hardware.vcom.citizen_usb_present",
+                         return_value=False):
+            states = {d["key"]: d["state"]
+                      for d in HWStatus.station_status("packaging")}
+            assert states == {"scale": "setup", "printer": "setup"}, states
+            old = _os.environ.pop("SIMPLD_ALLOW_MOCK", None)
             try:
-                DEV.require_scale()
-                raise SystemExit("FAIL: blank scale allowed production weighing")
-            except RuntimeError as e:
-                assert "Devices" in str(e) or "Scale" in str(e)
-            try:
-                DEV.require_printer()
-                raise SystemExit("FAIL: blank printer allowed production printing")
-            except RuntimeError as e:
-                assert "Devices" in str(e) or "Printer" in str(e)
-        finally:
-            if old is not None:
-                _os.environ["SIMPLD_ALLOW_MOCK"] = old
+                try:
+                    DEV.require_scale()
+                    raise SystemExit("FAIL: blank scale allowed production weighing")
+                except RuntimeError as e:
+                    assert "Devices" in str(e) or "Scale" in str(e)
+                try:
+                    DEV.require_printer()
+                    raise SystemExit("FAIL: blank printer allowed production printing")
+                except RuntimeError as e:
+                    assert "Devices" in str(e) or "Printer" in str(e)
+            finally:
+                if old is not None:
+                    _os.environ["SIMPLD_ALLOW_MOCK"] = old
         w.close()
     finally:
         _restore_hw_config(old_hw)

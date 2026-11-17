@@ -159,10 +159,11 @@ def _cached_port_objects() -> list | None:
 def _detail_printer(cfg: dict) -> tuple[str, str]:
     """Calm, config-first pill. No detection UI exists for the printer
     (owner request): a set hardware.json port is trusted; otherwise the
-    Citizen is found quietly by USB ID from the shared port cache. When
-    neither resolves, the pill says so without nagging — it never flips
-    ready→setup on a poll tick, and a real failure surfaces at print time
-    with the port named in the error."""
+    Citizen is found quietly by USB ID from the shared port cache, and
+    failing that, by raw-USB presence (Linux — the printer never creates
+    a serial node there). When nothing resolves, the pill says so without
+    nagging — it never flips ready→setup on a poll tick, and a real
+    failure surfaces at print time with the transport named in the error."""
     if _devices.demo_mode(cfg):
         return "demo", "simulated"
     port = str(cfg.get("printer_port") or "").strip()
@@ -175,6 +176,12 @@ def _detail_printer(cfg: dict) -> tuple[str, str]:
             except Exception:
                 port = ""
     if not port:
+        try:
+            from .vcom import citizen_usb_present
+            if citizen_usb_present():  # own 10s cache — no bus scan per tick
+                return "ready", "USB · VCOM"
+        except Exception:
+            pass
         return "setup", "printer not connected"
     if _devices.is_mock_printer():
         return "setup", f"{port} (inactive)"

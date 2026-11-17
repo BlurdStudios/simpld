@@ -145,15 +145,16 @@ def scale_configured(cfg: dict | None = None) -> bool:
 
 
 def printer_configured(cfg: dict | None = None) -> bool:
-    """True when the printer's VCOM port is usable: set in hardware.json
-    (ops override) or quietly found by USB ID. There is no printer setup UI
-    and no detection loop by owner request — a VCOM printer is never
-    "online" in any OS-printer sense; the port is resolved when needed."""
+    """True when the printer is usable: a hardware.json port (ops override),
+    a serial VCOM port found by USB ID (Windows), or the printer visible on
+    raw USB (Linux — it never creates a serial node there). No printer
+    setup UI and no detection loop by owner request; the transport is
+    resolved when needed."""
     cfg = cfg if cfg is not None else _config.load()
     if str(cfg.get("printer_port") or "").strip():
         return True
-    from .vcom import find_vcom_port
-    return find_vcom_port() is not None
+    from .vcom import citizen_usb_present, find_vcom_port
+    return find_vcom_port() is not None or citizen_usb_present()
 
 
 def mock_allowed() -> bool:
