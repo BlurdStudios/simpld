@@ -91,8 +91,9 @@ class SettingsDialog(QDialog):
         form.addRow("Data source", QLabel(backend))
         form.addRow("Devices", QLabel(mode))
         lay.addLayout(form)
-        lay.addWidget(_hint("Devices are detected automatically from the station strips. "
-                            "Printer port is set under Printer."))
+        lay.addWidget(_hint("The weigh machine is auto-detected from the station "
+                            "strips. The label printer has no detection — set its "
+                            "COM port under Printer."))
         lay.addStretch(1)
         return w
 
@@ -102,7 +103,7 @@ class SettingsDialog(QDialog):
         w, lay = _page("Printer")
         cfg = HWC.load()
         self.p_port = QLineEdit(str(cfg.get("printer_port") or ""))
-        self.p_port.setPlaceholderText("Leave blank to find the Citizen by USB ID (e.g. COM5)")
+        self.p_port.setPlaceholderText("The printer's VCOM COM port, e.g. COM5")
         self.p_baud = QSpinBox()
         self.p_baud.setRange(1200, 115200)
         self.p_baud.setValue(int(cfg.get("printer_baud") or 9600))

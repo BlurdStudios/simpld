@@ -3,29 +3,31 @@
 Simpl'd runs on two factory stations and three pieces of hardware:
 
   Packaging station   weigh machine (Essae DS-215, RS232)
-                      label printer (Citizen CL-S621II, installed driver)
+                      label printer (Citizen CL-S621II, VCOM serial —
+                      direct USB-to-serial, no OS printer involved)
   Dispatch station    QR scanner (USB keyboard wedge)
 
-Only the first two are *configurable*: the scanner is a keyboard wedge, so the
-OS already types into whatever box has focus and there is no port/driver to
-pick. It still earns a place in this registry — the dispatcher needs to know
-at a glance whether the wedge is actually reaching the app, and the only honest
-evidence of that is a scan that landed.
+Only the weigh machine is auto-detected (serial probe). The printer is
+config-driven: its COM port is set once in Settings → Devices and trusted —
+the owner removed the detection logic because a VCOM printer is never
+"online" in any OS-printer sense. The scanner is a keyboard wedge: no
+port/driver to pick. It still earns a place in this registry — the
+dispatcher needs to know at a glance whether the wedge is actually reaching
+the app, and the only honest evidence of that is a scan that landed.
 
 States
 ------
-  ready    auto-detected and healthy
-  setup    not found yet — click the pill (or Refresh) to detect again
+  ready    configured and trusted (printer) / auto-detected (scale)
+  setup    not configured — click the pill (or Refresh); printer points
+           at Settings, scale re-probes
   error    configured but the driver failed to build (DEV.init_error)
-  detecting a probe is running right now
+  detecting a probe is running right now (scale only)
   idle     needs no config and has not been used this session
   active   needs no config and was used this session
   demo     the explicit demo switch is on — simulated, not real
 """
 from __future__ import annotations
 
-import os
-import sys
 import time
 
 from . import config as _config
@@ -136,14 +138,15 @@ def _detail_scale(cfg: dict) -> tuple[str, str]:
 
 
 def _detail_printer(cfg: dict) -> tuple[str, str]:
+    """Config-driven only. The printer is a direct USB-to-serial (VCOM)
+    device — it is never "online" in any OS-printer sense, so nothing is
+    scanned or probed: a configured COM port is trusted until a print
+    fails on it (and that error names the port)."""
     if _devices.demo_mode(cfg):
         return "demo", "simulated"
     port = str(cfg.get("printer_port") or "").strip()
     if not port:
-        from .vcom import find_vcom_port
-        port = find_vcom_port() or ""
-    if not port:
-        return "setup", "not found"
+        return "setup", "not configured"
     if _devices.is_mock_printer():
         return "setup", f"{port} (inactive)"
     return "ready", f"{port} · VCOM"
@@ -164,19 +167,23 @@ def _detail_scanner() -> tuple[str, str]:
 
 
 # ---- detection-in-progress -----------------------------------------------
-# The UI runs autodetect on a worker thread; the pills for the devices being
-# probed show "detecting" until it finishes. Tracks WHICH keys, so clicking
-# the weigh-machine pill doesn't flash the printer into 'detecting' too.
+# The UI runs autodetect on a worker thread; the pill for the device being
+# probed shows "detecting" until it finishes. Only the weigh machine is
+# probed — the printer is config-driven (a VCOM COM port), so it never
+# enters the detecting state.
 _detecting: set[str] = set()
 
 
 def set_detecting(keys) -> None:
-    """keys: None for everything, or an iterable of device keys."""
+    """keys: None for everything, or an iterable of device keys.
+
+    None means "everything detectable", which is the weigh machine only.
+    """
     global _detecting
     if keys is None:
-        _detecting = {SCALE, PRINTER}
+        _detecting = {SCALE}
     else:
-        _detecting = {str(k) for k in keys}
+        _detecting = {str(k) for k in keys if k == SCALE}
 
 
 def clear_detecting() -> None:
@@ -192,7 +199,7 @@ def _detected_override(key: str) -> dict | None:
     if key not in _detecting:
         return None
     return {"state": "detecting",
-            "detail": "checking ports…" if key == SCALE else "checking printers…"}
+            "detail": "checking ports…"}
 
 
 def device_status(key: str, cfg: dict | None = None) -> dict:
@@ -221,9 +228,10 @@ def device_status(key: str, cfg: dict | None = None) -> dict:
     out = {"key": key, "state": state, "detail": detail, **spec}
     if state == "setup":
         # The one thing an operator can do next, spelled out in the tooltip
-        # rather than crowding the pill. For the printer, add what the OS
-        # actually reports so "not found" is diagnosable on the floor.
-        out["hint"] = "Click to detect again."
+        # rather than crowding the pill. The printer has nothing to detect
+        # (VCOM COM port, set manually): the pill points at Settings.
+        out["hint"] = ("Set the label printer's COM port in Settings → Devices."
+                       if key == PRINTER else "Click to detect again.")
     elif state == "demo":
         out["hint"] = "Demo mode is on — this device is simulated."
     elif key == SCANNER and scanner_input_without_landing():
@@ -241,125 +249,17 @@ def station_status(station: str, cfg: dict | None = None) -> list[dict]:
 
 
 # ---- live presence (realtime pills) --------------------------------------
-# Why this exists: every other layer looks at NAMES, not cables. An
-# unplugged USB printer leaves its CUPS/Windows queue behind, and a pulled
-# serial adapter is just a stale string in hardware.json — so pills built
-# from stored config alone report "ready" for missing hardware. These
-# helpers answer "is it attached right now?" with cheap read-only checks
-# (no port opens, no probing, no config writes). The strip polls them;
-# only explicit detection ever persists anything.
-_SYSFS_USB_ROOT = "/sys/bus/usb/devices"
-
-
-def _sysfs_entries_have_printer(names, read_class) -> bool:
-    """Pure scan core: interface nodes (name contains ':') whose class is 07.
-
-    Split out so tests never touch the filesystem — a ':' cannot even be
-    created as a directory name on Windows.
-    """
-    for name in names:
-        if ":" not in name:
-            continue  # device nodes, not interfaces
-        try:
-            if (read_class(name) or "").strip() == "07":
-                return True
-        except OSError:
-            continue
-    return False
-
-
-def _sysfs_usb_printer_present(root: str = _SYSFS_USB_ROOT) -> bool:
-    """True when any USB interface of printer class (07) is enumerated."""
-    try:
-        names = os.listdir(root)
-    except OSError:
-        return False
-
-    def _read(name: str) -> str:
-        with open(os.path.join(root, name, "bInterfaceClass"),
-                  "r", errors="replace") as f:
-            return f.read()
-
-    return _sysfs_entries_have_printer(names, _read)
-
-
-def _windows_usbprint_present() -> bool | None:
-    """True when a USBPRINT device is enumerated (ctypes, stdlib only).
-
-    Returns None when the query itself cannot run (non-Windows, missing
-    setupapi, call failure) — callers must keep the last verdict instead
-    of flapping. Only a successful enumeration that finds zero USBPRINT
-    devices returns False, and even then callers treat it as advisory:
-    network/shared queues have no USBPRINT device on this PC.
-    """
-    try:
-        import ctypes
-        setupapi = ctypes.windll.setupapi
-        DIGCF_PRESENT = 0x00000002
-        DIGCF_ALLCLASSES = 0x00000004
-        setupapi.SetupDiGetClassDevsW.restype = ctypes.c_void_p
-        setupapi.SetupDiGetClassDevsW.argtypes = [
-            ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_void_p, ctypes.c_ulong]
-        setupapi.SetupDiEnumDeviceInfo.restype = ctypes.c_int
-        setupapi.SetupDiEnumDeviceInfo.argtypes = [
-            ctypes.c_void_p, ctypes.c_ulong, ctypes.c_void_p]
-        setupapi.SetupDiDestroyDeviceInfoList.restype = ctypes.c_int
-        setupapi.SetupDiDestroyDeviceInfoList.argtypes = [ctypes.c_void_p]
-
-        class _DevInfo(ctypes.Structure):
-            _fields_ = [("cbSize", ctypes.c_ulong),
-                        ("ClassGuid", ctypes.c_byte * 16),
-                        ("DevInst", ctypes.c_ulong),
-                        ("Reserved", ctypes.c_size_t)]
-
-        handle = setupapi.SetupDiGetClassDevsW(
-            None, "USBPRINT", None, DIGCF_PRESENT | DIGCF_ALLCLASSES)
-        if handle is None or handle == ctypes.c_void_p(-1).value:
-            return None
-        try:
-            info = _DevInfo()
-            info.cbSize = ctypes.sizeof(_DevInfo)
-            return bool(setupapi.SetupDiEnumDeviceInfo(
-                handle, 0, ctypes.byref(info)))
-        finally:
-            setupapi.SetupDiDestroyDeviceInfoList(handle)
-    except Exception:
-        return None
-
-
-def usb_printer_present() -> bool | None:
-    """Any USB printer attached right now? None when unknowable.
-
-    Linux reads sysfs (no root, no deps); Windows enumerates USBPRINT.
-    Anything else — or any failure — returns None and callers keep the
-    last verdict instead of flapping the pill.
-    """
-    try:
-        if sys.platform.startswith("linux"):
-            return _sysfs_usb_printer_present()
-        if os.name == "nt":
-            return _windows_usbprint_present()
-    except Exception:
-        return None
-    return None
-
-
-def scale_port_present(port: str) -> bool | None:
-    """Configured scale port still enumerated? None when unknowable.
-
-    pyserial enumeration only — the port is never opened. An empty but
-    successful enumeration means the port is gone (False), not unknown.
-    """
-    try:
-        from .essae import list_ports
-        return str(port or "").strip() in (list_ports() or [])
-    except Exception:
-        return None
-
-
-# ---- live-check caches (the 5s strip poll must never block the UI) ---------
-# pyserial enumeration is fast but still a syscall per tick; cache it so the
-# 5s strip poll never costs a frozen UI.
+# Why this exists: the configured scale port is just a string in
+# hardware.json — a pulled serial adapter leaves it behind, and a pill built
+# from stored config alone would report "ready" for missing hardware. This
+# helper answers "is that COM port still there right now?" with a cheap
+# read-only check (no port opens, no probing, no config writes). The strip
+# polls it; only explicit detection ever persists anything.
+#
+# The printer is deliberately NOT live-checked: it is a direct USB-to-serial
+# (VCOM) device, never an OS printer, and the owner asked for its detection
+# logic removed. A configured port stays "ready" until a print fails on it
+# with the port name in the error.
 _PORTS_CACHE: dict = {"at": 0.0, "ports": None, "ok": False}
 _PORTS_TTL_S = 10.0
 
@@ -425,20 +325,18 @@ def clear_live_caches() -> None:
 def live_device_status(key: str, cfg: dict | None = None) -> dict:
     """device_status() with cheap live presence applied (display only).
 
-    A configured-but-vanished device reads setup/"not found" so the pills
-    track cables within one poll tick. Never probes, never writes config.
+    A configured-but-vanished scale reads setup/"not found" so the pill
+    tracks the cable within one poll tick. Never probes, never writes
+    config.
 
-    Printer rule: the installed queue list is authoritative. A configured
-    queue that is still enumerated stays `ready` — the USB class scan is
-    advisory only (network/shared queues have no USBPRINT device on this
-    PC, and must not flip a working printer to "not found"). An actually
-    unplugged USB printer fails explicitly at print time with the queue
-    name in the error. A missing queue still reads setup, with the seen
-    queue names in the hint.
+    The printer is NOT live-checked (no detection logic, by owner request):
+    it is a direct USB-to-serial (VCOM) device that will never show up as
+    an OS printer, so its pill is purely config-driven. A pulled cable
+    fails explicitly at print time with the port name in the error.
 
-    Live checks are cached (printer list 15s, port list 10s) so the 5s
-    strip poll never blocks the UI on a slow spooler. A cache miss that
-    fails keeps the last verdict instead of flapping the pill.
+    Live checks are cached (port list 10s) so the 5s strip poll never
+    blocks the UI. A cache miss that fails keeps the last verdict instead
+    of flapping the pill.
     """
     if cfg is None:
         cfg = _config.load()
@@ -451,19 +349,6 @@ def live_device_status(key: str, cfg: dict | None = None) -> dict:
             if present is False:
                 return {**spec, "state": "setup", "detail": "not found",
                         "hint": "Click to detect again."}
-        elif key == PRINTER:
-            from .vcom import find_vcom_port
-            port = (str(cfg.get("printer_port") or "").strip()
-                    or find_vcom_port() or "")
-            if not port:
-                return {**spec, "state": "setup", "detail": "not found",
-                        "hint": "Click to detect again. Connect the Citizen "
-                                "serial/USB cable and set VCOM mode."}
-            present = cached_scale_port_present(port)
-            if present is False:
-                return {**spec, "state": "setup", "detail": "not found",
-                        "hint": "Click to detect again. Serial port "
-                                f"{port} is not connected."}
     except Exception:
         pass
     return spec

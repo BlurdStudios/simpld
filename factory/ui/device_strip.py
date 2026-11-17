@@ -1,17 +1,21 @@
 """Device strip — the clickable, self-detecting device status row.
 
-Every device is a pill: icon, name, state dot, detail. Configurable devices
-(weigh machine, label printer) are **clickable** — clicking re-runs detection
-for that device. The Refresh button re-runs detection for everything.
+Every device is a pill: icon, name, state dot, detail. The weigh machine
+pill is **clickable** — clicking re-runs its detection. The Refresh button
+re-runs detection for everything detectable (the scale).
 
 There is no Devices dialog and no port dropdown. `autodetect.detect_all()`
-probes the serial ports and reads the OS printer list in a worker thread, so
-the UI never blocks while ports are opened.
+probes the serial ports for the weigh machine in a worker thread, so the
+UI never blocks while ports are opened. The label printer has NO detection
+logic (owner request): it is a direct USB-to-serial (VCOM) device that is
+never "online" in any OS-printer sense — its COM port is set once in
+Settings → Devices and trusted.
 
-Detection is deliberately honest: a pill says "not found" when nothing answers
-and never invents a port. The fail-closed behaviour in `devices.py` is
-untouched, so an undetected scale still blocks weighing rather than silently
-using the mock.
+Detection is deliberately honest: the scale pill says "not found" when
+nothing answers and never invents a port. The fail-closed behaviour in
+`devices.py` is untouched, so an unconfigured scale still blocks weighing
+(and an unconfigured printer still blocks label printing) rather than
+silently using the mock.
 
 The Packaging strip can also carry a Demo switch (`demo_switch=True`, a
 checkable ghost button): it toggles the explicit `demo_mode` config setting
@@ -447,7 +451,13 @@ class DeviceStrip(QWidget):
 
         No-op when a detection is already running — the shared controller
         serialises it, and every strip refreshes on the single `finished`.
+
+        The printer is never detected (config-driven VCOM port), so its
+        pill click just refreshes the row.
         """
+        if key == HWStatus.PRINTER:
+            self.refresh()
+            return
         keys = None if key is None else (key,)
         if not self._ctrl.start(keys):
             self.refresh()      # keep this strip's button state honest

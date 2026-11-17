@@ -603,16 +603,18 @@ def test_live_status_unplugged_scale_reads_not_found():
     assert specs[1]["state"] == "ready", specs
 
 
-def test_live_status_unplugged_printer_reads_not_found():
-    """Printer serial port gone: the printer pill says not connected."""
+def test_live_status_printer_config_trusted_no_flip():
+    """The printer has no detection logic: a configured port stays ready
+    even when it vanishes from enumeration. A pulled cable fails loudly
+    at print time (the error names the port) instead of the pill flipping.
+    """
     cfg = _live_cfg(scale_port="COM4", printer_port="COM5")
-    a, b, c, d = _live_mocks(["COM4"])
-    with a, b, c, d:
+    a, b, c, _d = _live_mocks(["COM4"])  # COM5 gone
+    with a, b, c, _d:
         specs = HWStatus.station_live_status("packaging", cfg)
     assert specs[0]["state"] == "ready", specs
-    assert specs[1]["state"] == "setup", specs
-    assert specs[1]["detail"] == "not found", specs
-    assert "COM5" in (specs[1].get("hint") or ""), specs
+    assert specs[1]["state"] == "ready", specs
+    assert specs[1]["detail"] == "COM5 · VCOM", specs
 
 
 def test_live_status_unknowable_keeps_last_verdict():
@@ -626,20 +628,11 @@ def test_live_status_unknowable_keeps_last_verdict():
 
 
 def test_sysfs_usb_printer_scan():
-    """Interface class 07 enumerates; anything else does not.
-
-    Pure-logic test with fake entries: a ':' cannot be created as a
-    directory name on Windows, so this never touches the filesystem.
-    """
-    hit = lambda n: "07\n" if n == "3-2:1.0" else "03\n"  # noqa: E731
-    assert HWStatus._sysfs_entries_have_printer(
-        ["3-1", "3-2:1.0", "usb1"], hit) is True
-    assert HWStatus._sysfs_entries_have_printer(
-        ["3-1", "3-2:1.0", "usb1"], lambda n: "03\n") is False
-    assert HWStatus._sysfs_entries_have_printer(
-        ["3-1", "usb1"], hit) is False
-    assert HWStatus._sysfs_entries_have_printer([], hit) is False
-    assert HWStatus._sysfs_usb_printer_present("/nonexistent-xyz") is False
+    """REMOVED: the printer has no OS USB detection (VCOM device, owner
+    request). Kept as a placeholder so the runner list stays stable."""
+    assert not hasattr(HWStatus, "usb_printer_present")
+    assert not hasattr(HWStatus, "_sysfs_usb_printer_present")
+    assert not hasattr(HWStatus, "_windows_usbprint_present")
 
 
 def test_read_scale_real_success_writes_measured():
