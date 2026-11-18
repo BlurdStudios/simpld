@@ -17,6 +17,7 @@ the UI falls back to manual entry (mock). Fully offline-safe.
 """
 from __future__ import annotations
 import re
+import threading
 import time
 
 from .base import ScaleInterface
@@ -59,7 +60,16 @@ def list_ports() -> list[str]:
 
 
 class EssaeDS215(ScaleInterface):
-    """Real Essae DS-215. port e.g. 'COM3' (Windows) or '/dev/ttyS0' (Linux)."""
+    """Real Essae DS-215. port e.g. 'COM3' (Windows) or '/dev/ttyS0' (Linux).
+
+    Self-healing: a serial read error kills the cached handle immediately and
+    read_weight() retries once on a fresh handle. A scale that was power-cycled
+    (or whose USB-serial adapter was reseated) therefore recovers without an
+    app restart. Repeated failures are counted in `fail_streak` so the device
+    strip's watchdog knows when to quietly re-probe the ports.
+    """
+
+    FAIL_STREAK_TRIGGER = 3
 
     def __init__(self, port: str, baud: int = 9600, timeout: float = 1.0):
         if not port:
@@ -68,8 +78,26 @@ class EssaeDS215(ScaleInterface):
         self.baud = int(baud or 9600)
         self.timeout = timeout
         self._ser = None
+        self._io_lock = threading.RLock()
         self._last: float = 0.0
         self._frozen: float | None = None
+        self.fail_streak: int = 0
+        self.last_ok: float = 0.0   # monotonic time of the last good read
+
+    def _drop_serial(self) -> None:
+        """Forget (and close) a possibly-dead handle so _open() can rebuild."""
+        with self._io_lock:
+            ser, self._ser = self._ser, None
+        if ser is not None:
+            try:
+                ser.close()
+            except Exception:
+                pass
+
+    def _record_success(self, value: float) -> None:
+        self._last = value
+        self.last_ok = time.monotonic()
+        self.fail_streak = 0
 
     def _open(self):
         if self._ser is not None:
@@ -79,19 +107,18 @@ class EssaeDS215(ScaleInterface):
         except ImportError as e:
             raise RuntimeError(
                 "pyserial not installed — run: pip install pyserial") from e
-        self._ser = serial.Serial(
-            port=self.port, baudrate=self.baud,
-            bytesize=8, parity="N", stopbits=1,
-            timeout=self.timeout, write_timeout=1.0)
+        try:
+            self._ser = serial.Serial(
+                port=self.port, baudrate=self.baud,
+                bytesize=8, parity="N", stopbits=1,
+                timeout=self.timeout, write_timeout=1.0)
+        except Exception:
+            self._ser = None
+            raise
         return self._ser
 
     def close(self):
-        try:
-            if self._ser is not None:
-                self._ser.close()
-        except Exception:
-            pass
-        self._ser = None
+        self._drop_serial()
 
     def _read_lines(self, dwell: float = 0.8) -> list[str]:
         ser = self._open()
@@ -105,8 +132,12 @@ class EssaeDS215(ScaleInterface):
         while time.time() < end:
             try:
                 chunk = ser.read(ser.in_waiting or 1)
-            except Exception:
-                break
+            except Exception as e:
+                # A dead handle must never be cached: the next open gets a
+                # fresh serial object (and a new OS handle) without a restart.
+                self._drop_serial()
+                raise RuntimeError(
+                    f"Serial read failed on {self.port}: {e}") from e
             if chunk:
                 buf += chunk
                 while b"\n" in buf or b"\r" in buf:
@@ -140,17 +171,33 @@ class EssaeDS215(ScaleInterface):
         """
         if self._frozen is not None:
             return self._frozen
-        lines = self._read_lines()
-        for line in reversed(lines):
-            v = parse_weight_line(line)
-            if v is not None:
-                self._last = v
-                return v
-        if not lines:
-            raise RuntimeError(
-                f"No data from scale on {self.port} — check cable, power and COM port")
-        raise RuntimeError(
-            "No stable weight — scale is moving/unstable, wait and read again")
+        failure: Exception | None = None
+        with self._io_lock:
+            # One retry on any failure: the first read may hit a handle that
+            # went stale while the scale was power-cycled, and _read_lines()
+            # has already discarded that handle by then.
+            for _attempt in range(2):
+                try:
+                    lines = self._read_lines()
+                    for line in reversed(lines):
+                        v = parse_weight_line(line)
+                        if v is not None:
+                            self._record_success(v)
+                            return v
+                    failure = (
+                        RuntimeError(
+                            f"No data from scale on {self.port} — "
+                            "check cable, power and COM port")
+                        if not lines else
+                        RuntimeError(
+                            "No stable weight — scale is moving/unstable, "
+                            "wait and read again"))
+                except Exception as e:
+                    failure = e
+                    self._drop_serial()
+                time.sleep(0.05)
+        self.fail_streak += 1
+        raise failure or RuntimeError(f"Scale read failed on {self.port}")
 
     def freeze(self) -> float:
         v = self.read_weight()  # raises when nothing fresh: never freezes stale

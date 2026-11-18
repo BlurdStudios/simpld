@@ -6,10 +6,12 @@ re-runs detection for everything detectable (the scale).
 
 There is no Devices dialog and no port dropdown. `autodetect.detect_all()`
 probes the serial ports for the weigh machine in a worker thread, so the
-UI never blocks while ports are opened. The label printer has NO detection
-UI (owner request): it is a direct USB-to-serial (VCOM) device that is
-never "online" in any OS-printer sense — a hardware.json port overrides,
-else it is found quietly by USB ID. No settings page invites fiddling.
+UI never blocks while ports are opened. A gated 30s watchdog re-probes a
+sick scale through the same worker (no app restart); a miss keeps the saved
+port. The label printer has NO detection UI (owner request): it is a direct
+USB-to-serial (VCOM) device that is never "online" in any OS-printer sense —
+a hardware.json port overrides, else it is found quietly by USB ID. No
+settings page invites fiddling.
 
 Detection is deliberately honest: the scale pill says "not found" when
 nothing answers and never invents a port. The fail-closed behaviour in
@@ -68,6 +70,9 @@ class _DetectWorker(QObject):
         try:
             if self._keys is None:
                 result = Auto.detect_all(save=True)
+            elif self._keys and self._keys[0] == "scale_reconnect":
+                # Watchdog probe: quiet, and a miss keeps the saved port.
+                result = Auto.reconnect_scale(save=True)
             else:
                 # One pill was clicked: re-detect just that device.
                 result = Auto.detect_one(self._keys[0], save=True)
@@ -554,13 +559,37 @@ class DeviceStrip(QWidget):
             pill.refresh(spec)
         self.btn_refresh.setEnabled(not self._ctrl.busy())
 
-    def _live_refresh(self) -> None:
-        """Poll tick: re-render pills with live presence applied.
+    def _maybe_auto_reconnect(self) -> None:
+        """Watchdog tick: re-probe a sick scale without an app restart.
 
-        Display only — never probes serial ports, never writes config.
-        A skipped tick (detection running, or any error) simply keeps the
-        current pills until the next one.
+        Uses the same shared controller/detection worker as a manual Refresh,
+        but with a private key so status.py shows no "detecting" theater and
+        successful detection emits no toast. The cooldown is marked before
+        queueing so a busy controller cannot start a storm of retries.
         """
+        if self._station != "packaging":
+            return
+        try:
+            if not HWDevices.scale_reconnect_due():
+                return
+            HWDevices.mark_scale_reconnect_attempt()
+            if not self._ctrl.start(("scale_reconnect",)):
+                return
+        except Exception:
+            return
+        self.refresh()
+
+    def _live_refresh(self) -> None:
+        """Poll tick: re-render pills, then quietly re-probe a sick scale.
+
+        Normally display-only (no port opens, no config writes). The single
+        exception is the gated scale watchdog in _maybe_auto_reconnect(),
+        which reuses the detection worker so the UI never blocks. A skipped
+        tick keeps the current pills until the next one.
+        """
+        if self._ctrl.busy():
+            return
+        self._maybe_auto_reconnect()
         if self._ctrl.busy():
             return
         try:

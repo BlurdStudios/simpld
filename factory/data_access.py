@@ -346,14 +346,16 @@ def get_job_by_id(job_id: int) -> dict | None:
 
 
 def create_job_for_product(product_id: int, core_wt: float = 0.5,
-                           job_code: str = "") -> dict:
+                           job_code: str = "", supervisor: str = "") -> dict:
     if backend() == "lan":
         return _lan_client().create_job_for_product(product_id,
                                                     core_wt=core_wt,
-                                                    job_code=job_code)
+                                                    job_code=job_code,
+                                                    supervisor=supervisor)
     from . import services as _svc
     return _svc.create_job_for_product(product_id, core_wt=core_wt,
-                                       job_code=job_code)
+                                       job_code=job_code,
+                                       supervisor=supervisor)
 
 
 def set_job_status(job_id: int, status: str) -> None:
@@ -376,6 +378,29 @@ def set_job_targets(job_id: int, target_reels=None, target_boxes=None,
                                 target_boxes=target_boxes,
                                 target_weight_kg=target_weight_kg,
                                 target_pieces=target_pieces)
+
+
+def update_job_config(job_id: int, job_code: str | None = None,
+                      supervisor: str | None = None, target_reels=None,
+                      target_boxes=None, target_weight_kg=None,
+                      target_pieces=None) -> dict:
+    """Edit one job's config in one place (code, supervisor, targets).
+
+    Plain SET semantics: the Edit dialog prefills current values and submits
+    everything; an empty code/supervisor clears it and a None target clears.
+    """
+    if backend() == "lan":
+        return _lan_client().update_job_config(
+            job_id, job_code=job_code, supervisor=supervisor,
+            target_reels=target_reels, target_boxes=target_boxes,
+            target_weight_kg=target_weight_kg, target_pieces=target_pieces)
+    from . import services as _svc
+    return _svc.update_job_config(job_id, job_code=job_code or "",
+                                  supervisor=supervisor or "",
+                                  target_reels=target_reels,
+                                  target_boxes=target_boxes,
+                                  target_weight_kg=target_weight_kg,
+                                  target_pieces=target_pieces)
 
 
 def delete_job(job_id: int) -> None:

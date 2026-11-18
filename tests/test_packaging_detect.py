@@ -99,7 +99,10 @@ def test_weight_only_carton_service():
             pass
 
 
-def test_box_mode_consumes_loose_reels_and_queues_sticker():
+def test_box_mode_consumes_loose_reels_and_prints_sticker():
+    """Box pack consumes the next loose reels and prints the box sticker
+    immediately (same flow as save_reel). With the print dialog mocked the
+    sticker stays pending — the dialog is what marks it printed."""
     from unittest import mock
     p = _fresh_db()
     job = S.create_job("UI BOX JOB", core_wt=0.280, path=p)
@@ -116,7 +119,8 @@ def test_box_mode_consumes_loose_reels_and_queues_sticker():
     assert "Pack" in pg.btn_action.text(), pg.btn_action.text()
     with mock.patch("factory.ui.page_packaging.CartonLabelDialog") as dlg:
         pg.do_action()
-        dlg.assert_not_called()
+        assert dlg.call_count == 1, pg.msg
+        assert "packed" in pg.msg.casefold(), pg.msg
     stock = S.ready_stock(job["id"], path=p)
     assert len(stock) == 1 and stock[0]["num_reels"] == 2, stock
     assert sorted(stock[0]["rolls"]) == [1, 2], stock
@@ -125,10 +129,31 @@ def test_box_mode_consumes_loose_reels_and_queues_sticker():
     assert math.isclose(stock[0]["total_core"], 0.560)
     assert math.isclose(stock[0]["total_net"], 22.0 - 0.300 - 0.560)
     assert S.loose_reels(job["id"], path=p) == []
-    assert "queued" in pg.msg.casefold(), pg.msg
     assert len(S.pending_box_stickers(job["id"], path=p)) == 1
     assert pg.box_table.rowCount() == 1
     assert "1 waiting" in pg.box_queue.text()
+
+
+def test_box_mode_locks_out_when_no_loose_reels():
+    """No loose reels: the page stays visible but the weigh card fades and
+    its controls go dead — packing is unreachable until reels exist."""
+    p = _fresh_db()
+    job = S.create_job("LOCK JOB", core_wt=0.280, path=p)  # no reels yet
+    _, pg = _page()
+    _select_job(pg, job["id"])
+    pg.set_mode("carton")
+    assert not pg._weigh_card.isEnabled(), "weigh card must lock without loose reels"
+    assert "no loose reels" in pg.lcd.text().casefold(), pg.lcd.text()
+    assert not pg.btn_action.isEnabled()
+    assert "no loose reels" in pg.box_info.text().casefold(), pg.box_info.text()
+    # Reel mode is never locked: reels can always be weighed.
+    pg.set_mode("reel")
+    assert pg._weigh_card.isEnabled(), "reel mode must never fade"
+    # Weighing a reel releases the lock in box mode.
+    S.create_reel(job["id"], gross=11.380, core=0.280, path=p)
+    pg.refresh_history()
+    pg.set_mode("carton")
+    assert pg._weigh_card.isEnabled(), "loose reels must release the lock"
 
 
 def test_box_packing_consumes_reels_in_production_order():
@@ -155,7 +180,11 @@ def test_box_packing_consumes_reels_in_production_order():
     assert S.loose_reels(job["id"], path=p) == []
 
 
-def test_box_queue_buttons_print_oldest_and_delete_returns_reels():
+def test_box_queue_status_line_and_delete_returns_reels():
+    """No 'Print next sticker' (the sticker prints at pack time), but
+    'Reprint label' stays for the SELECTED box — recovery for a damaged
+    label or a pack-time print that failed. The queue stays as a status
+    line, and admin delete still returns the reels to loose."""
     from unittest import mock
     from PySide6.QtWidgets import QMessageBox
     from factory import auth as A
@@ -170,17 +199,21 @@ def test_box_queue_buttons_print_oldest_and_delete_returns_reels():
     pg.set_mode("carton")
     assert pg.box_table.rowCount() == 2
     assert "2 waiting" in pg.box_queue.text(), pg.box_queue.text()
-    # "Print next" opens the OLDEST waiting sticker (packing order).
+    assert "Reprint label" in pg.box_queue.text(), pg.box_queue.text()
+    assert not hasattr(pg, "btn_box_print"), "Print next sticker must be gone"
+    assert hasattr(pg, "btn_box_reprint"), "Reprint label must stay"
+    # Reprint opens the SELECTED box's sticker (not the oldest by queue).
+    pg.box_table.selectRow(1)
     with mock.patch("factory.ui.page_packaging.CartonLabelDialog") as dlg:
-        pg.box_print_next()
+        pg.box_reprint()
         assert dlg.call_count == 1, pg.msg
-        assert dlg.call_args.args[1]["carton_no"] == b1["carton_no"], dlg.call_args
-    # Read-only role: no printing, no deleting.
+        assert dlg.call_args.args[1]["carton_no"] == b2["carton_no"], dlg.call_args
+    # Read-only role: no reprinting, no deleting.
     A.authenticate("dispatcher", "dispatch123", p)
     try:
-        pg.box_print_next()
-        assert "read-only" in pg.msg.casefold(), pg.msg
         pg.box_table.selectRow(0)
+        pg.box_reprint()
+        assert "read-only" in pg.msg.casefold(), pg.msg
         pg.box_delete()
         assert "Only admin" in pg.msg, pg.msg
         assert len(S.job_boxes(job["id"], path=p)) == 2

@@ -27,6 +27,8 @@ Prod contract (what "stuck on detecting" taught us):
 - detect_all/detect_one never raise, never fabricate, always log timings
   + ports seen so a "not found" pill is diagnosable from
   simpld.log without guessing.
+- The watchdog uses reconnect_scale(), which NEVER forgets a port on a miss.
+  A scale that is off or briefly unplugged keeps its config until a real hit.
 """
 from __future__ import annotations
 
@@ -375,6 +377,66 @@ def detect_one(key: str, save: bool = True,
         if errors:
             out["errors"] = errors
         return out
+
+
+def reconnect_scale(save: bool = True,
+                    timeout: float = SCALE_BUDGET_S) -> dict:
+    """Quiet watchdog reconnect. Only a real hit touches config/live drivers.
+
+    Unlike detect_one()/detect_all(), a miss NEVER clears scale_port: a scale
+    that is switched off or briefly unplugged must not be forgotten just
+    because the watchdog looked. An inconclusive probe (enumeration failed)
+    is reported but leaves hardware.json alone too.
+
+    On a hit we reload even when port/baud are unchanged — the live driver can
+    still be holding a stale serial handle from before the scale went away.
+    """
+    t0 = time.monotonic()
+    out: dict = {"scale": None, "changed": False, "inconclusive": False}
+    try:
+        with _LOCK:
+            cfg = dict(_config.load())
+            try:
+                hit, ok, detail = detect_scale_ex(cfg, timeout=timeout)
+            except Exception as e:
+                out["inconclusive"] = True
+                out["error"] = str(e)
+                _log.warning("reconnect_scale: probe failed (%s)", e,
+                             exc_info=True)
+                return out
+            out["inconclusive"] = not ok
+            try:
+                out["ports"] = detail.get("ports", [])
+            except Exception:
+                pass
+            if not hit:
+                if not ok:
+                    _log.info("reconnect_scale: inconclusive — keeping stored %r",
+                              cfg.get("scale_port"))
+                return out
+
+            changed = (cfg.get("scale_port") != hit["port"] or
+                       int(cfg.get("scale_baud") or 0) != int(hit["baud"]))
+            cfg["scale_port"] = hit["port"]
+            cfg["scale_baud"] = hit["baud"]
+            out["scale"] = hit
+            out["changed"] = bool(changed)
+            if changed and save:
+                try:
+                    _config.save(cfg)
+                except Exception as e:
+                    out.setdefault("errors", []).append(f"save: {e}")
+            # Always rebuild live drivers on a hit: same port still means a
+            # stale handle until a fresh driver object is installed.
+            try:
+                _devices.reload_hardware(cfg)
+            except Exception as e:
+                out.setdefault("errors", []).append(f"reload: {e}")
+            _log.info("reconnect_scale: scale=%s changed=%s",
+                      hit["port"], out["changed"])
+            return out
+    finally:
+        out["elapsed"] = round(time.monotonic() - t0, 2)
 
 
 def current_ports() -> list[str]:

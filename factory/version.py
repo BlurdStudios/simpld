@@ -21,6 +21,6 @@ USB only and are never published to the update mirror, so the fleet can
 never auto-update into a demo build.
 """
 
-VERSION = "1.7.0"
+VERSION = "1.8.0"
 
 DEMO_ENABLED = False

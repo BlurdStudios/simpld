@@ -335,11 +335,11 @@ class LanClient:
                          request_id=request_id)
 
     def create_job_for_product(self, product_id: int, core_wt: float = 0.5,
-                               job_code: str = "",
+                               job_code: str = "", supervisor: str = "",
                                request_id: str | None = None) -> dict:
         return self.call("create_job_for_product",
                          {"product_id": product_id, "core_wt": core_wt,
-                          "job_code": job_code},
+                          "job_code": job_code, "supervisor": supervisor},
                          request_id=request_id)
 
     def set_job_status(self, job_id: int, status: str,
@@ -357,6 +357,21 @@ class LanClient:
                       "target_weight_kg": target_weight_kg,
                       "target_pieces": target_pieces}
         return self.call("set_job_targets", args, request_id=request_id)
+
+    def update_job_config(self, job_id: int, job_code: str | None = None,
+                          supervisor: str | None = None, target_reels=None,
+                          target_boxes=None, target_weight_kg=None,
+                          target_pieces=None,
+                          request_id: str | None = None) -> dict:
+        # Edit the job in one place (code, supervisor, targets). None means
+        # "leave unchanged" server-side — a distinction from set_job_targets
+        # where null clears.
+        args: dict = {"job_id": job_id, "job_code": job_code,
+                      "supervisor": supervisor, "target_reels": target_reels,
+                      "target_boxes": target_boxes,
+                      "target_weight_kg": target_weight_kg,
+                      "target_pieces": target_pieces}
+        return self.call("update_job_config", args, request_id=request_id)
 
     def delete_job(self, job_id: int,
                    request_id: str | None = None) -> dict:

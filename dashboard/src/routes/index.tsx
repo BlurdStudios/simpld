@@ -1,4 +1,5 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { useState } from "react";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   ViewIcon,
@@ -7,6 +8,7 @@ import {
   Shield01Icon,
 } from "@hugeicons/core-free-icons";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAuth } from "@/lib/session";
 
@@ -20,6 +22,8 @@ function LandingRoute() {
 
 export function Landing() {
   const { me } = useAuth();
+  const navigate = useNavigate();
+  const [siteId, setSiteId] = useState("");
 
   if (me === undefined) return null;
 
@@ -85,8 +89,10 @@ export function Landing() {
     );
   }
 
-  // Logged out: product hero + login. No self-registration and no shared
-  // viewer links — every client gets a provisioned account.
+  // Logged out: product hero + the SITE-ID login form. The vendor login is
+  // never offered here (or anywhere public) — vendor staff use the unlinked
+  // /admin/login directly. No self-registration; every client gets a
+  // provisioned account.
   return (
     <div className="mx-auto flex max-w-lg flex-col justify-center gap-6 py-8">
       <div className="text-center">
@@ -95,19 +101,33 @@ export function Landing() {
         </div>
         <h1 className="text-2xl font-bold tracking-tight">Simpl'd factory portal</h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          Vendor-hosted viewer + self-serve station. Cached pushes only — no live
-          factory queries. Client logins are provisioned by your vendor admin.
+          Cached pushes only — no live factory queries. Logins are provisioned
+          by your vendor.
         </p>
       </div>
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Log in to continue</CardTitle>
-          <CardDescription>Licence issuance, downloads and site viewing need a login.</CardDescription>
+          <CardTitle className="text-base">Log in to your site</CardTitle>
+          <CardDescription>Enter your site ID to continue.</CardDescription>
         </CardHeader>
         <CardContent>
-          <Link to="/admin/login" search={{ redirect: "/" }}>
-            <Button className="w-full">Log in</Button>
-          </Link>
+          <form
+            className="grid gap-3"
+            onSubmit={(e) => {
+              e.preventDefault();
+              const id = siteId.trim();
+              if (id) navigate({ to: "/s/$siteId/login", params: { siteId: id } });
+            }}
+          >
+            <Input
+              value={siteId}
+              onChange={(e) => setSiteId(e.target.value)}
+              placeholder="Site ID (e.g. VASAVI)"
+            />
+            <Button type="submit" className="w-full" disabled={!siteId.trim()}>
+              Continue
+            </Button>
+          </form>
         </CardContent>
       </Card>
     </div>

@@ -38,7 +38,7 @@ class ProductCard(QFrame):
 
     clicked = Signal(int)
 
-    def __init__(self, job_id: int, title: str, name: str, numbers: str, weight: str):
+    def __init__(self, job_id: int, title: str, name: str, big: str, sub: str):
         super().__init__()
         self.job_id = job_id
         self.setProperty("card", True)
@@ -56,10 +56,12 @@ class ProductCard(QFrame):
         n = QLabel(name)
         n.setWordWrap(True)
         v.addWidget(n)
-        big = QLabel(weight)
+        # Boxes are the headline number the floor packs and dispatches by;
+        # weight + coils + pieces read as the detail line below.
+        big = QLabel(big)
         big.setProperty("stat", "value")
         v.addWidget(big)
-        s = QLabel(numbers)
+        s = QLabel(sub)
         s.setProperty("hint", True)
         s.setWordWrap(True)
         v.addWidget(s)
@@ -236,11 +238,12 @@ class StockPage(QWidget):
             coils = sum(int(r.get("num_reels") or 0) for r in rows)
             pieces = sum(int(r.get("pieces") or 0) for r in rows)
             kg = sum(float(r.get("total_net") or 0) for r in rows)
-            numbers = f"{boxes} box{'es' if boxes != 1 else ''} · {coils} coil{'s' if coils != 1 else ''}"
+            big = f"{boxes} box{'es' if boxes != 1 else ''}"
+            sub = f"{kg:.3f} kg · {coils} coil{'s' if coils != 1 else ''}"
             if pieces:
-                numbers += f" · {pieces} piece{'s' if pieces != 1 else ''}"
+                sub += f" · {pieces} piece{'s' if pieces != 1 else ''}"
             card = ProductCard(jid, job_label(first), str(first["job_name"]),
-                               numbers, f"{kg:.3f} kg")
+                               big, sub)
             card.clicked.connect(self.show_product)
             self.grid.addWidget(card, i // 3, i % 3)
         for c in range(3):

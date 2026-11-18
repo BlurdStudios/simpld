@@ -309,7 +309,8 @@ def reel_label_text(job: dict, reel: dict) -> str:
     # per-product monthly counting); the month-qualified roll_code stays in
     # the DB and only appears on evidence surfaces (slip / History "Full ID"),
     # never on this sticker. Date sits beside the job name; the sticker is
-    # always one reel so no reel count prints.
+    # always one reel so no reel count prints. Supervisor sits below pieces
+    # (caption always; value blank for legacy jobs).
     ident = str(reel.get("prod_seq") or reel["roll_no"])
     pieces = _pieces_txt(job)
     return (
@@ -320,6 +321,7 @@ def reel_label_text(job: dict, reel: dict) -> str:
         f"Core Wt:   {reel['core']:.3f} Kg   |\n"
         f"Net Wt:    {reel['net']:.3f} Kg   |\n"
         + (f"{pieces}   |\n" if pieces else "") +
+        f"Supervisor: {str(job.get('supervisor') or '')}\n"
         f"(Type-1 single-reel sticker — NO QR)"
     )
 
@@ -341,6 +343,7 @@ def carton_label_text(detail: dict) -> str:
             f"Job Name:{detail['job_name']}\n"
             f"Date:{fmt_date_ddmmyy(detail['packed_at'])}  |  BOX\n"
             f"Box Wt:  {detail['total_gross']:.3f} Kg\n"
+            f"Supervisor: {str(detail.get('supervisor') or '')}\n"
             f"QR:{detail['qr']}\n"
             f"Box No:{_box_no}"
         )
@@ -354,6 +357,7 @@ def carton_label_text(detail: dict) -> str:
         f"Total Gross: {detail['total_gross']:.3f} Kg\n"
         f"Total Core:  {detail['total_core']:.3f} Kg\n"
         f"Total Net:   {detail['total_net']:.3f} Kg\n"
+        f"Supervisor: {str(detail.get('supervisor') or '')}\n"
         f"QR:{detail['qr']}\n"
         f"Box No:{_box_no}"
     )

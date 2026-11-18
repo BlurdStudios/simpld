@@ -6,8 +6,9 @@ by saving.
 
 Box packing: the operator weighs the packed box; the next loose reels in
 production order are consumed into it, the manual box/tare weight applies to
-every box, and the sticker is queued (never printed on pack) for one-by-one
-printing from the queue.
+every box, and the box sticker prints immediately at pack time. If the
+printer is down the sticker stays pending — recover with 'Reprint label'
+on the box row (or from Ready Stock).
 """
 
 from __future__ import annotations
@@ -189,15 +190,17 @@ class NewJobDialogMixin:
     @staticmethod
     def ask_new_job(parent):
         """New packaging job from the products master. Retains the selected
-        product and typed target across validation failures. No Size/Core
+        product and typed values across validation failures. No Size/Core
         fields (legacy size/core rows stay in the DB, core default unchanged).
-        The single optional target is the product's own unit."""
+        Required job code + supervisor (both print on stickers); the single
+        optional target is the product's own unit."""
         from PySide6.QtWidgets import (QDialog, QFormLayout, QComboBox, QPushButton,
                                        QDialogButtonBox, QHBoxLayout, QWidget, QLabel,
                                        QLineEdit)
         select_id = None
         t_unit_val = ""
         t_code_val = ""
+        t_sup_val = ""
         while True:
             d = QDialog(parent)
             d.setWindowTitle("New job")
@@ -265,6 +268,13 @@ class NewJobDialogMixin:
             t_code.setPlaceholderText("e.g. 12DEC")
             t_code.setMinimumWidth(180)
             f.addRow("Job code:", t_code)
+            # Supervisor: required; printed on every reel AND box sticker of
+            # this job (below the pieces row) so the floor signs its work.
+            t_sup = QLineEdit()
+            t_sup.setText(t_sup_val)
+            t_sup.setPlaceholderText("e.g. RAVI")
+            t_sup.setMinimumWidth(180)
+            f.addRow("Supervisor:", t_sup)
             # One target at creation: the product's own unit (pieces or kg).
             # Reels/boxes needed are derived from it (pieces ÷ wrappers,
             # kg ÷ typical reel net) — never typed.
@@ -304,9 +314,10 @@ class NewJobDialogMixin:
                 QMessageBox.warning(parent, "Cannot save job",
                                     "Select a product first (or add it once, then reuse it).")
                 continue
-            # Retain typed target + code across validation failures.
+            # Retain typed target + code + supervisor across validation failures.
             t_unit_val = t_unit.text()
             t_code_val = t_code.text()
+            t_sup_val = t_sup.text()
             try:
                 prods = {p["id"]: p for p in DA.list_products()}
             except Exception:
@@ -337,8 +348,14 @@ class NewJobDialogMixin:
                                     "Job code required (e.g. 12DEC) — it marks this batch"
                                     " on stickers and dispatch slips.")
                 continue
+            sup = (t_sup_val or "").strip().upper()
+            if not sup:
+                QMessageBox.warning(parent, "Cannot save job",
+                                    "Supervisor required — the name prints on every"
+                                    " reel and box sticker of this job.")
+                continue
             try:
-                job = DA.create_job_for_product(pid, job_code=code)
+                job = DA.create_job_for_product(pid, job_code=code, supervisor=sup)
             except PermissionError as e:
                 QMessageBox.warning(parent, "Cannot save job", str(e))
                 return None
@@ -377,8 +394,11 @@ class PackagingPage(QWidget, NewJobDialogMixin):
 
     Box packing: the operator weighs the packed box; the next loose reels in
     production order (oldest first, session "reels per box") are consumed and
-    the manual box/tare weight applies to every box of the session. Packing
-    never prints: box stickers queue up and are printed one-by-one later.
+    the manual box/tare weight applies to every box of the session. The box
+    sticker prints immediately at pack time; if the printer is down it stays
+    pending (recover with 'Reprint label' on the box row or from Ready
+    Stock). With no loose reels the weigh card
+    fades and packing is locked out.
     """
 
     def __init__(self, on_stock_changed=None, actor: dict | None = None):
@@ -419,10 +439,10 @@ class PackagingPage(QWidget, NewJobDialogMixin):
         self.btn_product.setMinimumHeight(40)
         style_button(self.btn_product, "secondary")
         bar.addWidget(self.btn_product)
-        self.btn_targets = QPushButton("Targets…")
+        self.btn_targets = QPushButton("Edit job…")
         self.btn_targets.setMinimumHeight(40)
         style_button(self.btn_targets, "secondary")
-        self.btn_targets.setToolTip("Set packaging targets (reels / boxes / kg / pieces) for this job.")
+        self.btn_targets.setToolTip("Edit this job's code, supervisor and target in one place.")
         bar.addWidget(self.btn_targets)
         self.job_info = QLabel("")
         self.job_info.setProperty("jobinfo", True)
@@ -457,6 +477,10 @@ class PackagingPage(QWidget, NewJobDialogMixin):
         la = QVBoxLayout(a)
         la.setContentsMargins(16, 16, 16, 16)
         la.setSpacing(10)
+        # Ref kept for the box-packing lockout: when the job has no loose
+        # reels the whole card fades and its controls go dead (see
+        # _refresh_state / _fade_weigh_card).
+        self._weigh_card = a
         self.weigh_step = QLabel("Weigh")
         self.weigh_step.setProperty("step", True)
         self.weigh_step.setWordWrap(True)
@@ -658,13 +682,17 @@ class PackagingPage(QWidget, NewJobDialogMixin):
         bp.addWidget(self.box_queue)
         box_row = QHBoxLayout()
         box_row.setSpacing(8)
-        self.btn_box_print = QPushButton("Print next sticker")
-        self.btn_box_reprint = QPushButton("Reprint selected")
+        self.btn_box_reprint = QPushButton("Reprint label")
+        self.btn_box_reprint.setMinimumHeight(44)
+        style_button(self.btn_box_reprint, "secondary")
+        self.btn_box_reprint.setToolTip(
+            "Print the selected box's sticker again — also the recovery path"
+            " when the printer failed at pack time.")
+        box_row.addWidget(self.btn_box_reprint)
         self.btn_box_delete = QPushButton("Delete box")
-        for bb in (self.btn_box_print, self.btn_box_reprint, self.btn_box_delete):
-            bb.setMinimumHeight(44)
-            style_button(bb, "secondary")
-            box_row.addWidget(bb)
+        self.btn_box_delete.setMinimumHeight(44)
+        style_button(self.btn_box_delete, "secondary")
+        box_row.addWidget(self.btn_box_delete)
         bp.addLayout(box_row)
         self.right_stack.addWidget(self.box_panel)
 
@@ -688,7 +716,7 @@ class PackagingPage(QWidget, NewJobDialogMixin):
         # signals
         self.btn_new.clicked.connect(self.new_job)
         self.btn_product.clicked.connect(self.new_product)
-        self.btn_targets.clicked.connect(self.edit_targets)
+        self.btn_targets.clicked.connect(self.edit_job)
         self.job_combo.currentIndexChanged.connect(self.job_changed)
         self.gross.valueChanged.connect(lambda *_: self._refresh_state())
         self.core.valueChanged.connect(lambda *_: self._refresh_state())
@@ -699,7 +727,6 @@ class PackagingPage(QWidget, NewJobDialogMixin):
         self.btn_hist_print.clicked.connect(self.history_print)
         self.btn_hist_reweigh.clicked.connect(self.history_reweigh)
         self.btn_hist_delete.clicked.connect(self.history_delete)
-        self.btn_box_print.clicked.connect(self.box_print_next)
         self.btn_box_reprint.clicked.connect(self.box_reprint)
         self.btn_box_delete.clicked.connect(self.box_delete)
         self.table.itemSelectionChanged.connect(self._update_history_buttons)
@@ -966,9 +993,11 @@ class PackagingPage(QWidget, NewJobDialogMixin):
         if p:
             self.say(f"Product '{p['name']}' added — pick it in New job.", ok=True)
 
-    def edit_targets(self):
-        """Set the job's target: pieces for piece products, net kg for kg
-        products. Reels/boxes needed are derived — never typed."""
+    def edit_job(self):
+        """Edit the job's config in ONE place: batch code, supervisor and the
+        single unit target (pieces for piece products, net kg for kg products).
+        Replaces the old targets-only dialog — code/supervisor/target were
+        scattered across dialogs, which confused the floor."""
         from PySide6.QtWidgets import (QDialog, QFormLayout, QLineEdit,
                                        QDialogButtonBox, QLabel)
         if self.job_id is None:
@@ -977,14 +1006,21 @@ class PackagingPage(QWidget, NewJobDialogMixin):
         if not job:
             return self.say("Job not found — refresh first.", ok=False)
         d = QDialog(self)
-        d.setWindowTitle(f"Target — J:{job['job_no']}")
+        d.setWindowTitle(f"Edit job — J:{job['job_no']}")
         f = QFormLayout(d)
-        info = QLabel("Blank = no target. Targets never block packing; they only"
-                      " drive the green FULFILLED state. Reels/boxes needed are"
-                      " calculated from this.")
+        info = QLabel("One place for this job's code, supervisor and target."
+                      " Blank target = no target. Targets never block packing;"
+                      " they only drive the green FULFILLED state. The"
+                      " supervisor name prints on every reel and box sticker.")
         info.setWordWrap(True)
         info.setProperty("hint", True)
         f.addRow(info)
+        e_code = QLineEdit(str(job.get("job_code") or ""))
+        e_code.setPlaceholderText("e.g. 12DEC")
+        f.addRow("Job code:", e_code)
+        e_sup = QLineEdit(str(job.get("supervisor") or ""))
+        e_sup.setPlaceholderText("e.g. RAVI")
+        f.addRow("Supervisor:", e_sup)
         is_piece = _unit_of(job) != "kg"
         e_unit = QLineEdit()
         if is_piece:
@@ -1001,19 +1037,29 @@ class PackagingPage(QWidget, NewJobDialogMixin):
         bb.rejected.connect(d.reject)
         if d.exec() != QDialog.Accepted:
             return
-        def _opt(v):
-            t = (v or "").strip()
-            return t or None
+        code = (e_code.text() or "").strip().upper()
+        if not code:
+            return self.say("Job code required (e.g. 12DEC).", ok=False)
+        # Legacy reels/boxes targets (schema-only, no UI) pass through
+        # untouched — the dialog manages code + supervisor + unit target.
+        tu = (e_unit.text() or "").strip() or None
         try:
-            if is_piece:
-                upd = DA.set_job_targets(self.job_id, target_pieces=_opt(e_unit.text()))
-            else:
-                upd = DA.set_job_targets(self.job_id, target_weight_kg=_opt(e_unit.text()))
+            upd = DA.update_job_config(
+                self.job_id, job_code=code, supervisor=(e_sup.text() or "").strip(),
+                target_pieces=tu if is_piece else None,
+                target_weight_kg=None if is_piece else tu,
+                target_reels=job.get("target_reels"),
+                target_boxes=job.get("target_boxes"))
         except (ValueError, PermissionError) as e:
             return self.say(str(e), ok=False)
         except Exception as e:
             return self.say(f"Connection issue: {self._backend_error(e)}", ok=False)
-        self.say("Target saved.", ok=True)
+        self.say("Job saved.", ok=True)
+        # The code shows in the job combo / headers — re-read keeping selection.
+        try:
+            self.refresh_jobs(select_no=(upd or {}).get("job_no"))
+        except Exception:
+            pass
         self._refresh_job_info()
         self._refresh_state()
 
@@ -1142,6 +1188,25 @@ class PackagingPage(QWidget, NewJobDialogMixin):
         style_button(self.btn_action, kind)
         self.btn_action.setEnabled(enabled)
 
+    def _fade_weigh_card(self, fade: bool):
+        """Lock out box packing: fade the whole weigh card and kill its
+        inputs when there is nothing to pack (no loose reels). The page
+        stays visible so the operator still sees the why."""
+        card = getattr(self, "_weigh_card", None)
+        if card is None:
+            return
+        card.setEnabled(not fade)
+        try:
+            from PySide6.QtWidgets import QGraphicsOpacityEffect
+            if fade:
+                eff = QGraphicsOpacityEffect(card)
+                eff.setOpacity(0.35)
+                card.setGraphicsEffect(eff)
+            else:
+                card.setGraphicsEffect(None)
+        except Exception:
+            pass
+
     def _loose(self) -> list[dict]:
         if self.job_id is None:
             return []
@@ -1162,7 +1227,12 @@ class PackagingPage(QWidget, NewJobDialogMixin):
         pending = sum(1 for b in self._box_rows
                       if str(b.get("print_status") or "pending") != "printed")
         try:
-            self.box_queue.setText(f"Sticker queue: {pending} waiting")
+            if pending:
+                self.box_queue.setText(
+                    f"Sticker queue: {pending} waiting — select the box and"
+                    " use 'Reprint label' to recover a failed print.")
+            else:
+                self.box_queue.setText("Sticker queue: 0 waiting")
         except Exception:
             pass
         if self.job_id is None:
@@ -1202,11 +1272,18 @@ class PackagingPage(QWidget, NewJobDialogMixin):
                 self.weigh_step.setText("Weigh the packed box")
                 self.stage_caption.setText(
                     f"Box packing — weigh the packed box; the next {n} loose reel(s)"
-                    " in production order go in and the sticker is queued, not printed.")
+                    " in production order go in and the sticker prints right away.")
                 self.right_step.setText("Boxes of this job")
         except Exception:
             pass
         self._update_box_info()
+
+        # Box lockout: no job, or a job with no loose reels — fade the weigh
+        # card and dead-stop the action so packing is unreachable. Reel mode
+        # is never faded (reels can always be weighed).
+        no_loose_lock = not is_reel and (
+            self.job_id is None or not self._loose())
+        self._fade_weigh_card(no_loose_lock)
 
         if self.job_id is None:
             self._set_lcd("— select a job first —", "net-warn")
@@ -1424,8 +1501,10 @@ class PackagingPage(QWidget, NewJobDialogMixin):
         self.gross.setValue(0)
 
     def pack_box(self):
-        """Pack the weighed box from the next loose reels. No printing: the
-        box sticker is queued and printed later from the sticker queue."""
+        """Pack the weighed box from the next loose reels. The box sticker
+        prints immediately (same flow as save_reel); if the printer is down
+        the sticker stays pending — recover via 'Reprint label' on the box
+        (or Ready Stock)."""
         if not self._can_produce():
             return self.say("Read-only role cannot pack boxes.", ok=False)
         if self.job_id is None:
@@ -1446,10 +1525,29 @@ class PackagingPage(QWidget, NewJobDialogMixin):
         except Exception as e:
             return self.say(f"Connection issue: {self._backend_error(e)}"
                             " Refresh, check the record exists, then retry.", ok=False)
-        self.say(f"Box {bare_carton_no(ct['carton_no'])} packed ({int(ct['num_reels'])} reels)."
-                 " Sticker queued — print it from the queue.", ok=True)
+        try:
+            DEV.require_printer()
+        except RuntimeError as e:
+            self.say(f"Box {bare_carton_no(ct['carton_no'])} packed"
+                     f" ({int(ct['num_reels'])} reels). {e}"
+                     " Sticker stays pending — select the box and use"
+                     " 'Reprint label'.", ok=True)
+            self.gross.setValue(0)
+            self._refresh_after_change()
+            return
+        self.say(f"Box {bare_carton_no(ct['carton_no'])} packed ({int(ct['num_reels'])} reels).",
+                 ok=True)
         self.gross.setValue(0)
         self._refresh_after_change()
+        try:
+            detail = DA.carton_detail(ct["id"])
+        except Exception as e:
+            self.say(f"Box packed, but the sticker is unreadable:"
+                     f" {self._backend_error(e)} Select the box and use"
+                     " 'Reprint label'.", ok=False)
+            return
+        CartonLabelDialog(self, detail, HW.printer).exec()
+        self.refresh_history()
 
     # Back-compat alias: the floor flow packs the weighed box.
     pack = pack_box
@@ -1597,13 +1695,10 @@ class PackagingPage(QWidget, NewJobDialogMixin):
         can_prod = self._can_produce()
         can_print = self._role() in ("packager", "admin")
         admin = self._is_admin()
-        pending = sum(1 for b in self._box_rows
-                      if str(b.get("print_status") or "pending") != "printed")
         try:
             self.btn_hist_print.setEnabled(bool(has))
             self.btn_hist_reweigh.setEnabled(bool(has and can_prod))
             self.btn_hist_delete.setEnabled(bool(has and admin))
-            self.btn_box_print.setEnabled(bool(self.job_id is not None and can_print and pending))
             self.btn_box_reprint.setEnabled(bool(has_box and can_print))
             self.btn_box_delete.setEnabled(bool(has_box and admin))
             if has and not can_prod:
@@ -1634,33 +1729,10 @@ class PackagingPage(QWidget, NewJobDialogMixin):
         ReelLabelDialog(self, job, rec, HW.printer).exec()
         self.refresh_history()
 
-    def box_print_next(self):
-        """Print the OLDEST box sticker still waiting (the sticker queue)."""
-        if self._role() not in ("packager", "admin"):
-            return self.say("Read-only role cannot print.", ok=False)
-        if self.job_id is None:
-            return self.say("Create/select a job first.", ok=False, kind="warning")
-        try:
-            pending = DA.pending_box_stickers(self.job_id)
-        except Exception as e:
-            return self.say(f"Connection issue: {self._backend_error(e)}", ok=False)
-        if not pending:
-            return self.say("No box stickers waiting — pack a box first.", ok=False,
-                            kind="warning")
-        try:
-            DEV.require_printer()
-        except RuntimeError as e:
-            return self.say(f"{e} Sticker stays queued.", ok=False)
-        nxt = pending[0]
-        try:
-            detail = DA.carton_detail(nxt["id"])
-        except Exception as e:
-            return self.say(f"Box {bare_carton_no(nxt.get('carton_no'))} details unreadable:"
-                            f" {self._backend_error(e)} Sticker stays queued.", ok=False)
-        CartonLabelDialog(self, detail, HW.printer).exec()
-        self.refresh_history()
-
     def box_reprint(self):
+        """Reprint the SELECTED box's sticker (damaged label, printer jam,
+        or a pack-time print that never made it out). Works on pending and
+        printed boxes alike — printing is what marks a sticker done."""
         bx = self.selected_box()
         if not bx:
             return self.say("Select a box row first.", ok=False, kind="warning")
@@ -1669,7 +1741,7 @@ class PackagingPage(QWidget, NewJobDialogMixin):
         try:
             DEV.require_printer()
         except RuntimeError as e:
-            return self.say(f"{e} Sticker stays queued.", ok=False)
+            return self.say(f"{e} Sticker stays pending.", ok=False)
         try:
             detail = DA.carton_detail(int(bx["id"]))
         except Exception as e:

@@ -143,9 +143,21 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             </Button>
           </div>
         ) : (
-          <Link to="/admin/login" search={{ redirect: location.pathname }} onClick={() => setOpen(false)}>
-            <Button className="w-full">Log in</Button>
-          </Link>
+          (() => {
+            // Site users get THEIR site login (never the vendor form). On
+            // vendor surfaces the logged-out shell shows no login button at
+            // all — vendor staff use the unlinked /admin/login directly.
+            const m = /^\/s\/([^/]+)/.exec(location.pathname);
+            return m ? (
+              <Link
+                to="/s/$siteId/login"
+                params={{ siteId: decodeURIComponent(m[1]) }}
+                onClick={() => setOpen(false)}
+              >
+                <Button className="w-full">Log in</Button>
+              </Link>
+            ) : null;
+          })()
         )}
       </div>
     </div>
@@ -168,11 +180,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             <Badge variant={me.role === "vendor_admin" ? "default" : "secondary"}>
               {me.role === "vendor_admin" ? "admin" : (me.site_id ?? "client")}
             </Badge>
-          ) : (
-            <Link to="/admin/login" search={{ redirect: "/" }}>
-              <Button size="sm">Log in</Button>
-            </Link>
-          )}
+          ) : null}
         </div>
       </header>
       {open && (

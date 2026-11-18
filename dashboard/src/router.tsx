@@ -10,9 +10,10 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
+  redirect,
   useParams,
 } from "@tanstack/react-router";
-import { AuthProvider, RequireAdmin, RequireAuth } from "@/lib/session";
+import { AuthProvider, RequireAdmin, RequireAuth, meSession } from "@/lib/session";
 import { DashboardShell } from "@/components/shell";
 import { Landing } from "./routes/index";
 import { SiteOverview } from "./routes/s.$siteId.index";
@@ -49,6 +50,21 @@ const landingRoute = createRoute({
 const siteRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/s/$siteId",
+  // Preemptive auth gate (the API 401 handling in site-data stays as the
+  // runtime backstop). Site users NEVER see vendor login: an unauthenticated
+  // visitor goes straight to THIS site's login, and a client poking another
+  // site's URL bounces to their own portal. vendor_admin passes through —
+  // the page's 403 card handles what they may not read.
+  beforeLoad: async ({ params }) => {
+    const me = await meSession();
+    const siteId = (params as { siteId: string }).siteId;
+    if (!me) {
+      throw redirect({ to: "/s/$siteId/login", params: { siteId } });
+    }
+    if (me.role === "client" && me.site_id && me.site_id !== siteId) {
+      throw redirect({ to: "/s/$siteId", params: { siteId: me.site_id } });
+    }
+  },
   component: () => <Outlet />,
 });
 
@@ -130,12 +146,20 @@ const loginRoute = createRoute({
   validateSearch: (s: Record<string, unknown>) => ({
     redirect: (s.redirect as string) ?? "/",
   }),
-  component: () => <Navigate to="/admin/login" replace />,
+  // Legacy entry point. Never points at the vendor login — site users get
+  // the landing page (site-ID login); vendor staff use /admin/login direct.
+  component: () => <Navigate to="/" replace />,
 });
 
 const licenceRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/licence",
+  beforeLoad: async () => {
+    // Licence issuance is a logged-in surface; signed-out visitors land on
+    // the public page (site-ID login), never a vendor form.
+    const me = await meSession();
+    if (!me) throw redirect({ to: "/" });
+  },
   component: () => (
     <RequireAuth>
       <Licence />
@@ -146,6 +170,10 @@ const licenceRoute = createRoute({
 const downloadRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/download",
+  beforeLoad: async () => {
+    const me = await meSession();
+    if (!me) throw redirect({ to: "/" });
+  },
   component: () => (
     <RequireAuth>
       <Downloads />
@@ -164,6 +192,12 @@ const adminRoute = createRoute({
 const adminIndexRoute = createRoute({
   getParentRoute: () => adminRoute,
   path: "/",
+  // Unauthenticated visitors never see the vendor area at all — they bounce
+  // to the public landing. Vendor login stays at the unlinked /admin/login.
+  beforeLoad: async () => {
+    const me = await meSession();
+    if (!me) throw redirect({ to: "/" });
+  },
   component: () => (
     <RequireAdmin>
       <Admin />
@@ -177,6 +211,11 @@ const adminLoginRoute = createRoute({
   validateSearch: (s: Record<string, unknown>): { redirect?: string } => ({
     redirect: typeof s.redirect === "string" ? s.redirect : undefined,
   }),
+  // Already-signed-in vendor staff have nothing to do on the login form.
+  beforeLoad: async () => {
+    const me = await meSession();
+    if (me?.role === "vendor_admin") throw redirect({ to: "/admin" });
+  },
   component: AdminLogin,
 });
 

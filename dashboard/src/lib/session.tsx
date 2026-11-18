@@ -1,5 +1,4 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { Link } from "@tanstack/react-router";
 
 export interface Me {
   id: string;
@@ -20,6 +19,32 @@ const AuthContext = createContext<AuthState>({
   logout: async () => {},
 });
 
+// Module-level session promise: ONE /api/auth/me round-trip shared by the
+// AuthProvider and every router beforeLoad guard. Guards resolve from cache
+// after the first load — no duplicate fetch, no flash of a wrong redirect.
+let mePromise: Promise<Me | null> | null = null;
+
+export function meSession(): Promise<Me | null> {
+  if (!mePromise) {
+    mePromise = fetch("/api/auth/me")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { user?: Me } | null) => data?.user ?? null)
+      .catch(() => null);
+  }
+  return mePromise;
+}
+
+/** Forget the cached session (after login/logout) so the next guard re-checks. */
+export function resetSession(): void {
+  mePromise = null;
+}
+
+/** Where a signed-out user of this role should land. Site users go to THEIR
+ * site login — the vendor login is never a destination for them. */
+export function loginDest(me: Me | null): string {
+  return me?.role === "client" && me.site_id ? `/s/${me.site_id}/login` : "/admin/login";
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [me, setMe] = useState<Me | null | undefined>(undefined);
 
@@ -27,31 +52,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const res = await fetch("/api/auth/me");
       const data = res.ok ? await res.json() : null;
-      setMe(data?.user ?? null);
+      const user = (data?.user ?? null) as Me | null;
+      mePromise = Promise.resolve(user);
+      setMe(user);
     } catch {
+      mePromise = Promise.resolve(null);
       setMe(null);
     }
   }, []);
 
   const logout = useCallback(async () => {
+    // Role-aware exit: site users land on THEIR site login; vendor staff on
+    // the vendor login (which site users never see).
+    const dest = loginDest(me ?? null);
     try {
       await fetch("/api/auth/logout", { method: "POST" });
     } finally {
+      resetSession();
       setMe(null);
-      window.location.href = "/admin/login";
+      window.location.href = dest;
     }
-  }, []);
+  }, [me]);
 
   useEffect(() => {
     let live = true;
     (async () => {
-      try {
-        const res = await fetch("/api/auth/me");
-        const data = res.ok ? await res.json() : null;
-        if (live) setMe(data?.user ?? null);
-      } catch {
-        if (live) setMe(null);
-      }
+      const user = await meSession();
+      if (live) setMe(user);
     })();
     return () => {
       live = false;
@@ -72,8 +99,10 @@ export function useMe(): Me | null | undefined {
 }
 
 export async function logout(): Promise<void> {
+  const me = await meSession();
   await fetch("/api/auth/logout", { method: "POST" });
-  window.location.href = "/admin/login";
+  resetSession();
+  window.location.href = loginDest(me);
 }
 
 /** Shared 403 card for protected pages that must never redirect to a login. */
@@ -84,12 +113,6 @@ export function Restricted({ detail }: { detail?: string }) {
       <p className="text-lg font-semibold">Restricted content</p>
       <p className="text-sm text-muted-foreground">Please contact your administrator.</p>
       {detail && <p className="text-sm text-muted-foreground">{detail}</p>}
-      <Link
-        to="/admin/login"
-        className="text-sm text-muted-foreground underline underline-offset-4 hover:text-foreground"
-      >
-        Vendor staff? Log in
-      </Link>
     </div>
   );
 }

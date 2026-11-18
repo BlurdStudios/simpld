@@ -468,17 +468,20 @@ def _h_create_job(args: dict, actor: dict, dbp: str) -> dict:
                            job_code=code or "")
 
 
-@_op("create_job_for_product", "job.manage", ("product_id", "core_wt", "job_code"))
+@_op("create_job_for_product", "job.manage",
+     ("product_id", "core_wt", "job_code", "supervisor"))
 def _h_create_job_fp(args: dict, actor: dict, dbp: str) -> dict:
     _need(args, "create_job_for_product",
-          frozenset({"product_id", "core_wt", "job_code"}))
+          frozenset({"product_id", "core_wt", "job_code", "supervisor"}))
     pid = _v_int(args, "product_id", minimum=1)
     core = _v_float(args, "core_wt", required=False, minimum=0.01,
                     maximum=500, default=0.5) or 0.5
     code = _v_opt_str(args, "job_code", max_len=32, default="", upper=True)
+    sup = _v_opt_str(args, "supervisor", max_len=64, default="", upper=True)
     assert pid is not None
     return _svc.create_job_for_product(pid, core_wt=core, path=dbp,
-                                       job_code=code or "")
+                                       job_code=code or "",
+                                       supervisor=sup or "")
 
 
 @_op("set_job_status", "job.manage", ("job_id", "status"))
@@ -504,6 +507,27 @@ def _h_set_job_targets(args: dict, actor: dict, dbp: str) -> dict:
     assert jid is not None
     return _svc.set_job_targets(jid, target_reels=tr, target_boxes=tb,
                                 target_weight_kg=tw, target_pieces=tp, path=dbp)
+
+
+@_op("update_job_config", "job.manage",
+     ("job_id", "job_code", "supervisor", "target_reels", "target_boxes",
+      "target_weight_kg", "target_pieces"))
+def _h_update_job_config(args: dict, actor: dict, dbp: str) -> dict:
+    _need(args, "update_job_config", frozenset(
+        {"job_id", "job_code", "supervisor", "target_reels", "target_boxes",
+         "target_weight_kg", "target_pieces"}))
+    jid = _v_int(args, "job_id", minimum=1)
+    code = _v_opt_str(args, "job_code", max_len=32, default="", upper=True)
+    sup = _v_opt_str(args, "supervisor", max_len=64, default="", upper=True)
+    tr = _v_int(args, "target_reels", required=False, minimum=1, maximum=10_000_000)
+    tb = _v_int(args, "target_boxes", required=False, minimum=1, maximum=100_000)
+    tw = _v_float(args, "target_weight_kg", required=False, minimum=0.001, maximum=100_000_000)
+    tp = _v_int(args, "target_pieces", required=False, minimum=1, maximum=100_000_000)
+    assert jid is not None
+    return _svc.update_job_config(jid, job_code=code or "", supervisor=sup or "",
+                                  target_reels=tr, target_boxes=tb,
+                                  target_weight_kg=tw, target_pieces=tp,
+                                  path=dbp)
 
 
 @_op("delete_job", "delete", ("job_id",))

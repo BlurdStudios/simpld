@@ -136,6 +136,7 @@ def test_reel_layout_job_full_width_date_beside_gross():
 def test_carton_layout_date_row_down_qr_starts_at_tare():
     from factory.hardware import labels as L
     detail = {"job_no": 4167, "job_name": "LAYOUT JOB", "job_code": "14DEC",
+              "supervisor": "RAVI",
               "carton_no": "C0007", "bundle_no": 1,
               "packed_at": "2026-10-10 10:00:00", "num_reels": 2,
               "total_gross": 20.5, "total_core": 0.56, "total_net": 19.94,
@@ -146,8 +147,9 @@ def test_carton_layout_date_row_down_qr_starts_at_tare():
     assert (W, H) == (799, 399)
     m = 6
     xC = int(m + (W - 2 * m) * 0.70)
-    weights = [0.10, 0.11, 0.105, 0.10, 0.095, 0.13, 0.125, 0.235]
+    weights = [0.095, 0.105, 0.10, 0.095, 0.09, 0.12, 0.115, 0.20, 0.09]
     bands = _bands(weights, H)
+    assert len(bands) == 9, "carton grid gains a Supervisor row below Net Wt"
     # Job band has no divider; tare band (QR box top) does.
     jm = int(sum(bands[1]) / 2)
     assert _vfrac(img, xC, jm - 6, jm + 6) < 0.5, "no divider through job name"
@@ -155,6 +157,84 @@ def test_carton_layout_date_row_down_qr_starts_at_tare():
     assert _vfrac(img, xC, int(bands[3][0]) + 2, int(bands[3][1]) - 2) > 0.9, \
         "QR box starts at the tare row"
     assert tm > 0
+
+
+def test_supervisor_normalized_and_migrated(tmp_path):
+    """Supervisor: stored upper(), required by the UI, blank for legacy jobs;
+    update_job_config edits code+supervisor+targets in one place."""
+    p = _db(tmp_path)
+    try:
+        prod = S.create_product("SUP PROD", 100, path=p)
+        j = S.create_job_for_product(prod["id"], core_wt=0.28, path=p,
+                                     job_code="12DEC", supervisor="  ravi kumar ")
+        assert j["supervisor"] == "RAVI KUMAR", j
+        j2 = S.create_job_for_product(prod["id"], core_wt=0.28, path=p,
+                                      job_code="13DEC")
+        assert j2["supervisor"] == "", "legacy jobs keep blank supervisor"
+        # One-place edit: code + supervisor + target in a single call.
+        upd = S.update_job_config(j2["id"], job_code="14jan", supervisor="sita",
+                                  target_boxes=10, target_weight_kg=25.5, path=p)
+        assert upd["job_code"] == "14JAN" and upd["supervisor"] == "SITA"
+        assert upd["target_boxes"] == 10 and upd["target_weight_kg"] == 25.5
+        # Blank strings clear; None clears a target; values validated.
+        clr = S.update_job_config(j2["id"], job_code="", supervisor="",
+                                  target_boxes=None, path=p)
+        assert clr["job_code"] == "" and clr["supervisor"] == ""
+        assert clr["target_boxes"] is None
+        try:
+            S.update_job_config(j2["id"], target_boxes=-3, path=p)
+            raise SystemExit("FAIL: negative target accepted")
+        except ValueError:
+            pass
+        # Sticker text previews carry the Supervisor line (blank for legacy).
+        from factory.ui.label_preview import reel_label_text, carton_label_text
+        reel = {"gross": 11.38, "core": 0.28, "net": 11.10,
+                "created_at": "2026-10-03 10:00:00", "roll_no": 1}
+        assert "Supervisor: RAVI KUMAR" in reel_label_text(dict(j), reel)
+        assert "Supervisor: " in reel_label_text(dict(j2), reel)
+        # Sticker render + box detail round-trip.
+        S.create_reel(j["id"], gross=11.380, core=0.280, path=p)
+        S.create_reel(j["id"], gross=11.120, core=0.280, path=p)
+        det = S.carton_detail(S.pack_next_box(j["id"], 22.0, 0.300, 2,
+                                              path=p)["id"], path=p)
+        assert det["supervisor"] == "RAVI KUMAR"
+        assert "Supervisor: RAVI KUMAR" in carton_label_text(det)
+        # Sticker renderers gain the supervisor row and still render legacy.
+        from factory.hardware import labels as L
+        assert len(L.REEL_ROWS) == 7, "supervisor row below No of Pieces"
+        L.render_reel(dict(j), reel)
+        L.render_reel(dict(j2), reel)
+        L.render_carton(det)
+    finally:
+        reset_auth()
+
+
+def test_supervisor_migration_keeps_legacy_rows(tmp_path):
+    p = str(tmp_path / "legacy-sup.db")
+    c = sqlite3.connect(p)
+    try:
+        c.executescript(DB.SCHEMA.replace(
+            "  supervisor TEXT NOT NULL DEFAULT '',\n", ""))
+        c.execute("INSERT INTO jobs(job_no, job_name, core_wt, status, created_at)"
+                  " VALUES(4169, 'OLD JOB', 0.5, 'open', '2026-01-01 00:00:00')")
+        c.commit()
+    finally:
+        c.close()
+    DB.DB_PATH = p
+    init_db(p)
+    ensure_default_users(p)
+    assert A.authenticate("admin", "admin123", p) is not None
+    try:
+        c = DB.get_conn(p)
+        try:
+            cols = {r["name"] for r in c.execute("PRAGMA table_info(jobs)").fetchall()}
+            assert "supervisor" in cols
+            row = c.execute("SELECT supervisor FROM jobs WHERE job_no=4169").fetchone()
+            assert row["supervisor"] == ""
+        finally:
+            c.close()
+    finally:
+        reset_auth()
 
 
 def test_mixed_batch_dispatch_and_slip_batches(tmp_path):

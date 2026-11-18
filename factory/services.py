@@ -430,14 +430,16 @@ def create_job(job_name: str, size_mm: float = 0, core_wt: float = 0.5,
 
 def create_job_for_product(product_id: int, core_wt: float = 0.5,
                            path: str | None = None, actor: dict | None = None,
-                           job_code: str = "") -> dict:
+                           job_code: str = "", supervisor: str = "") -> dict:
     """New packaging job from the products master. Snapshots name + wrappers
-    so later catalog edits cannot rewrite history. Core behavior unchanged."""
+    so later catalog edits cannot rewrite history. Core behavior unchanged.
+    The supervisor name prints on every reel and box sticker of this job."""
     resolved = _job_actor(path)
     cw = _finite_weight(core_wt, "Core weight")
     if cw <= 0:
         raise ValueError("Core weight must be > 0")
     code = _job_code(job_code)
+    sup = (supervisor or "").strip().upper()
     c = get_conn(path)
     c.isolation_level = None
     try:
@@ -449,14 +451,15 @@ def create_job_for_product(product_id: int, core_wt: float = 0.5,
             p = dict(p)
             jn = _alloc_job_no(c)
             cur = c.execute(
-                "INSERT INTO jobs(job_no, job_name, job_code, size_mm, core_wt, product_id,"
-                " product_name, wrappers_per_reel, unit, status, created_at)"
-                " VALUES(?,?,?, 0, ?,?,?,?,?, 'open', ?)",
-                (jn, p["name"], code, float(cw), p["id"], p["name"],
+                "INSERT INTO jobs(job_no, job_name, job_code, supervisor, size_mm, core_wt,"
+                " product_id, product_name, wrappers_per_reel, unit, status, created_at)"
+                " VALUES(?,?,?,?, 0, ?,?,?,?,?, 'open', ?)",
+                (jn, p["name"], code, sup, float(cw), p["id"], p["name"],
                  p["wrappers_per_reel"], p.get("unit") or "", now_iso()),
             )
             jid = cur.lastrowid
-            _audit(c, resolved, "create_job", "job", jid, f"J:{jn} {p['name']} [{code}]")
+            _audit(c, resolved, "create_job", "job", jid,
+                   f"J:{jn} {p['name']} [{code}] sup={sup}")
             c.execute("COMMIT")
         except Exception:
             try:
@@ -465,6 +468,78 @@ def create_job_for_product(product_id: int, core_wt: float = 0.5,
                 pass
             raise
         return get_job_by_no(jn, path) or {"job_no": jn}
+    finally:
+        c.close()
+
+
+def update_job_config(job_id: int, job_code: str = "",
+                      supervisor: str = "",
+                      target_reels: int | None = None,
+                      target_boxes: int | None = None,
+                      target_weight_kg: float | None = None,
+                      target_pieces: int | None = None,
+                      path: str | None = None,
+                      actor: dict | None = None) -> dict:
+    """Edit one job's config in one place: batch code, supervisor, targets.
+
+    This is the single editing surface for the Packaging page's 'Edit job'
+    dialog — targets used to be editable in two places (creation dialog +
+    a separate Targets dialog), which confused the floor. The dialog prefills
+    current values and submits everything, so semantics are plain SET:
+    job_code/supervisor always store the given text ('' clears), and a None
+    target clears that target — the same rule as set_job_targets. Targets
+    stay advisory (>0 when given).
+    """
+    resolved = _job_actor(path)
+    def _opt_int(v, label):
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None
+        try:
+            iv = int(v)
+        except (TypeError, ValueError):
+            raise ValueError(f"{label} must be a positive whole number")
+        if iv <= 0:
+            raise ValueError(f"{label} must be > 0")
+        return iv
+    def _opt_float(v, label):
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            raise ValueError(f"{label} must be a number > 0")
+        if not math.isfinite(fv) or fv <= 0:
+            raise ValueError(f"{label} must be > 0")
+        return round(fv, 3)
+    tr = _opt_int(target_reels, "Target reels")
+    tb = _opt_int(target_boxes, "Target boxes")
+    tw = _opt_float(target_weight_kg, "Target weight")
+    tp = _opt_int(target_pieces, "Target pieces")
+    code = _job_code(job_code)
+    sup = (supervisor or "").strip().upper()
+    c = get_conn(path)
+    c.isolation_level = None
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        try:
+            j = c.execute("SELECT job_no FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if not j:
+                raise ValueError("Job not found")
+            c.execute("UPDATE jobs SET job_code=?, supervisor=?, target_reels=?,"
+                      " target_boxes=?, target_weight_kg=?, target_pieces=?"
+                      " WHERE id=?",
+                      (code, sup, tr, tb, tw, tp, job_id))
+            _audit(c, resolved, "update_job", "job", job_id,
+                   f"J:{j['job_no']} code={code} sup={sup} targets="
+                   f"R{tr}/B{tb}/{tw or 0:.3f}kg/P{tp}")
+            c.execute("COMMIT")
+        except Exception:
+            try:
+                c.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise
+        return get_job_by_no(j["job_no"], path) or {}
     finally:
         c.close()
 
@@ -1408,7 +1483,7 @@ def carton_detail(carton_id: int, path: str | None = None) -> dict:
     c = get_conn(path)
     try:
         ct = c.execute(
-            "SELECT ct.*, j.job_no, j.job_name, j.job_code, j.size_mm FROM cartons ct"
+            "SELECT ct.*, j.job_no, j.job_name, j.job_code, j.supervisor, j.size_mm FROM cartons ct"
             " JOIN jobs j ON j.id=ct.job_id WHERE ct.id=?", (carton_id,)).fetchone()
         if not ct:
             raise ValueError("Box not found")

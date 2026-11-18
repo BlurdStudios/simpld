@@ -215,22 +215,23 @@ def _job_head(job_no, job_code: str = "") -> str:
     return f"{head} {code}" if code else head
 
 
-# Row weights: header, full-width job name, gross+date, core, net, pieces.
-# The job name owns its own full-width row; the date sits beside Gross Wt
-# in the right area, and the Roll No# box spans only core..pieces (smaller
-# than before). No reel count — a reel sticker is always exactly one reel.
-REEL_ROWS = [0.115, 0.12, 0.15, 0.15, 0.205, 0.26]
+# Row weights: header, full-width job name, gross+date, core, net, pieces,
+# supervisor. The job name owns its own full-width row; the date sits beside
+# Gross Wt in the right area, and the Roll No# box spans core..supervisor
+# (bigger than before). No reel count — a reel sticker is always one reel.
+REEL_ROWS = [0.105, 0.11, 0.14, 0.14, 0.185, 0.22, 0.10]
 
 
 def render_reel(job: dict, reel: dict, width_mm=LABEL_WIDTH_MM,
                 height_mm=LABEL_HEIGHT_MM, dpi=LABEL_DPI):
     """Type-1 single-reel sticker (NO QR). Bordered table per the old label."""
-    img, d, rows, cols = _table_base(REEL_ROWS, {4, 5}, 2, width_mm,
-                                     height_mm, dpi, weight_span=4,
-                                     c_spans=[(0, 1), (2, 6)])
+    img, d, rows, cols = _table_base(REEL_ROWS, {4, 5, 6}, 2, width_mm,
+                                     height_mm, dpi, weight_span=5,
+                                     c_spans=[(0, 1), (2, 7)])
     A, B, C, E = cols["A"], cols["B"], cols["C"], cols["E"]
     (r0a, r0b), (r1a, r1b), (r2a, r2b) = rows[0], rows[1], rows[2]
     (r3a, r3b), (r4a, r4b), (r5a, r5b) = rows[3], rows[4], rows[5]
+    (r6a, r6b) = rows[6]
     _cell_text(d, (A, r0a, C, r0b), COMPANY, 34)
     _cell_text(d, (C, r0a, E, r0b),
                _job_head(job.get("job_no", ""), job.get("job_code")),
@@ -256,13 +257,17 @@ def render_reel(job: dict, reel: dict, width_mm=LABEL_WIDTH_MM,
     if pieces_val is not None:
         _cell_text(d, (A, r5a, B, r5b), "No of Pieces:", 26)
         _cell_text(d, (B, r5a, C, r5b), pieces_val, 36)
+    # Supervisor below pieces (job-level). Caption always prints; the value
+    # is blank for legacy jobs (same convention as unknown pieces).
+    _cell_text(d, (A, r6a, B, r6b), "Supervisor:", 26)
+    _cell_text(d, (B, r6a, C, r6b), str(job.get("supervisor") or ""), 30)
     # right box: small caption on top, huge roll identity below, both
     # centered. The floor reads the bare reel number; the month-qualified
     # roll_code stays in the DB and only surfaces on evidence documents
     # (the slip), never on this sticker.
-    mid = r3a + (r5b - r3a) * 0.25
+    mid = r3a + (r6b - r3a) * 0.25
     _cell_text(d, (C, r3a, E, mid), "Roll No#", 26, center=True)
-    _cell_text(d, (C, mid, E, r5b), str(reel.get("prod_seq") or reel["roll_no"]),
+    _cell_text(d, (C, mid, E, r6b), str(reel.get("prod_seq") or reel["roll_no"]),
                120, center=True)
     return img
 
@@ -312,11 +317,12 @@ def render_weight_carton(detail: dict, width_mm=LABEL_WIDTH_MM,
     carton; old cartons keep render_carton unchanged.
     """
     img, d, rows, cols = _table_base(
-        [0.14, 0.15, 0.13, 0.58],
-        set(), 3, width_mm, height_mm, dpi, c_spans=[(0, 1), (2, 4)])
+        [0.13, 0.14, 0.12, 0.28, 0.10],
+        {4}, 3, width_mm, height_mm, dpi, weight_span=2,
+        c_spans=[(0, 1), (2, 5)])
     A, B, C, E = cols["A"], cols["B"], cols["C"], cols["E"]
     (r0a, r0b), (r1a, r1b), (r2a, r2b) = rows[0], rows[1], rows[2]
-    (r3a, r3b) = rows[3]
+    (r3a, r3b), (r4a, r4b) = rows[3], rows[4]
     _cell_text(d, (A, r0a, C, r0b), COMPANY, 34)
     _cell_text(d, (C, r0a, E, r0b),
                _job_head(detail.get("job_no", ""), detail.get("job_code")),
@@ -327,18 +333,22 @@ def render_weight_carton(detail: dict, width_mm=LABEL_WIDTH_MM,
     _cell_text(d, (C, r2a, E, r2b), "BOX", 26)
     _cell_text(d, (A, r3a, B, r3b), "Box Wt:", 30)
     _cell_text(d, (B, r3a, C, r3b), f"{detail['total_gross']:.3f} Kg", 40)
-    # right box: QR on top, carton no below (spans the weight rows)
-    qr_px = max(80, min(300, int(min(E - C - 12, (r3b - r3a) * 0.62))))
+    # Supervisor below Box Wt (job-level). Caption always prints; the value
+    # is blank for legacy jobs.
+    _cell_text(d, (A, r4a, B, r4b), "Supervisor:", 26)
+    _cell_text(d, (B, r4a, C, r4b), str(detail.get("supervisor") or ""), 30)
+    # right box: QR on top, carton no below (spans Box Wt + Supervisor rows)
+    qr_px = max(80, min(300, int(min(E - C - 12, (r4b - r3a) * 0.62))))
     qr = _qr_image(detail["qr"], px=qr_px)
     if qr is not None:
         qx = int(C + (E - C - qr.size[0]) / 2)
         img.paste(qr, (qx, int(r3a + 6)))
-        _cell_text(d, (C, r3a + 6 + qr.size[1], E, r3b),
+        _cell_text(d, (C, r3a + 6 + qr.size[1], E, r4b),
                    _box_display_no(detail), 40, center=True)
     else:
-        mid = r3a + (r3b - r3a) * 0.28
+        mid = r3a + (r4b - r3a) * 0.28
         _cell_text(d, (C, r3a, E, mid), "Box No#", 26)
-        _cell_text(d, (C, mid, E, r3b), _box_display_no(detail), 80)
+        _cell_text(d, (C, mid, E, r4b), _box_display_no(detail), 80)
     return img
 
 
@@ -356,18 +366,19 @@ def render_carton(detail: dict, width_mm=LABEL_WIDTH_MM,
     """
     if is_weight_only(detail):
         return render_weight_carton(detail, width_mm, height_mm, dpi)
-    # 8-row grid: header (COMPANY|J), full-width Job Name, Date|No of Reels,
-    # Tare, Rolls, Gross, Core, Net. The date moved one row down beside No
-    # of Reels (the QR box starts at the tare row, so it is smaller). The
-    # QR + box number spans the tare + Rolls + 3 weight rows with a bigger
-    # box number. No bundle anywhere.
+    # 9-row grid: header (COMPANY|J), full-width Job Name, Date|No of Reels,
+    # Tare, Rolls, Gross, Core, Net, Supervisor. The date moved one row down
+    # beside No of Reels (the QR box starts at the tare row, so it is
+    # smaller). The QR + box number spans the tare + Rolls + 3 weight rows +
+    # supervisor with a bigger box number. No bundle anywhere.
     img, d, rows, cols = _table_base(
-        [0.10, 0.11, 0.105, 0.10, 0.095, 0.13, 0.125, 0.235],
-        {4, 5, 6, 7}, 5, width_mm, height_mm, dpi, weight_span=3,
-        c_spans=[(0, 1), (2, 8)])
+        [0.095, 0.105, 0.10, 0.095, 0.09, 0.12, 0.115, 0.20, 0.09],
+        {4, 5, 6, 7, 8}, 5, width_mm, height_mm, dpi, weight_span=4,
+        c_spans=[(0, 1), (2, 9)])
     A, B, C, E = cols["A"], cols["B"], cols["C"], cols["E"]
     (r0a, r0b), (r1a, r1b), (r2a, r2b) = rows[0], rows[1], rows[2]
     (r3a, r3b), (r4a, r4b), (r5a, r5b), (r6a, r6b), (r7a, r7b) = rows[3], rows[4], rows[5], rows[6], rows[7]
+    (r8a, r8b) = rows[8]
     rolls = ",".join(str(r.get("prod_seq") or r["roll_no"]) for r in detail.get("reels", []))
     _cell_text(d, (A, r0a, C, r0b), COMPANY, 34)
     _cell_text(d, (C, r0a, E, r0b),
@@ -393,19 +404,23 @@ def render_carton(detail: dict, width_mm=LABEL_WIDTH_MM,
     _cell_text(d, (B, r6a, C, r6b), f"{detail['total_core']:.3f} Kg", 36)
     _cell_text(d, (A, r7a, B, r7b), "Net Wt:", 30)
     _cell_text(d, (B, r7a, C, r7b), f"{detail['total_net']:.3f} Kg", 40)
+    # Supervisor below Net Wt (job-level). Caption always prints; the value
+    # is blank for legacy jobs.
+    _cell_text(d, (A, r8a, B, r8b), "Supervisor:", 26)
+    _cell_text(d, (B, r8a, C, r8b), str(detail.get("supervisor") or ""), 30)
     # right box: QR on top, carton no below (spans tare + Rolls + weight
-    # rows = 5x1)
-    qr_px = max(80, min(300, int(min(E - C - 12, (r7b - r3a) * 0.62))))
+    # rows + supervisor = 6x1)
+    qr_px = max(80, min(300, int(min(E - C - 12, (r8b - r3a) * 0.62))))
     qr = _qr_image(detail["qr"], px=qr_px)
     if qr is not None:
         qx = int(C + (E - C - qr.size[0]) / 2)
         img.paste(qr, (qx, int(r3a + 6)))
-        _cell_text(d, (C, r3a + 6 + qr.size[1], E, r7b),
+        _cell_text(d, (C, r3a + 6 + qr.size[1], E, r8b),
                    _box_display_no(detail), 44, center=True)
     else:
-        mid = r3a + (r7b - r3a) * 0.28
+        mid = r3a + (r8b - r3a) * 0.28
         _cell_text(d, (C, r3a, E, mid), "Box No#", 26)
-        _cell_text(d, (C, mid, E, r7b), _box_display_no(detail), 90)
+        _cell_text(d, (C, mid, E, r8b), _box_display_no(detail), 90)
     return img
 
 

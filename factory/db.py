@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   job_no INTEGER UNIQUE NOT NULL,
   job_name TEXT NOT NULL,
   job_code TEXT NOT NULL DEFAULT '',
+  supervisor TEXT NOT NULL DEFAULT '',
   size_mm REAL DEFAULT 0,
   core_wt REAL NOT NULL DEFAULT 0.5,
   product_id INTEGER REFERENCES products(id),
@@ -454,6 +455,14 @@ def _ensure_job_code(c) -> None:
         c.execute("ALTER TABLE jobs ADD COLUMN job_code TEXT NOT NULL DEFAULT ''")
 
 
+def _ensure_job_supervisor(c) -> None:
+    """Supervisor name per job: typed at creation, printed on the reel and
+    box stickers (below pieces). Additive; existing jobs keep ''."""
+    cols = {r["name"] for r in c.execute("PRAGMA table_info(jobs)").fetchall()}
+    if cols and "supervisor" not in cols:
+        c.execute("ALTER TABLE jobs ADD COLUMN supervisor TEXT NOT NULL DEFAULT ''")
+
+
 def _ensure_job_targets(c) -> None:
     """Packaging targets per job: reels / boxes / net-kg / pieces.
 
@@ -816,6 +825,7 @@ def init_db(path: str | None = None) -> str:
             _ensure_per_product_counters(c)
             _ensure_job_targets(c)
             _ensure_job_code(c)
+            _ensure_job_supervisor(c)
             _ensure_dispatch_po_weight(c)
             _ensure_product_unit(c)
             bad = c.execute("PRAGMA foreign_key_check").fetchall()

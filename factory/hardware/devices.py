@@ -37,6 +37,7 @@ object graph (no second copy).
 from __future__ import annotations
 
 import os
+import time
 
 from . import config as _config
 from . import mock as _mock
@@ -44,6 +45,13 @@ from . import mock as _mock
 # Last build problem with a *configured* device. None when healthy.
 # Never silent: mode_text() surfaces it until the config is fixed.
 init_error: str | None = None
+
+# Quiet scale reconnect watchdog (device strip's 5s tick). A working scale is
+# never interrupted: we only probe when the pill says setup/error or the live
+# driver has stacked read failures, and never more often than this cooldown.
+RECONNECT_COOLDOWN_S = 30.0
+FAIL_STREAK_TRIGGER = 3
+_last_reconnect_at: float = 0.0
 
 
 class _BrokenScale:
@@ -164,6 +172,56 @@ def mock_allowed() -> bool:
     if _is_frozen():
         return False
     return os.environ.get("SIMPLD_ALLOW_MOCK") == "1"
+
+
+def scale_fail_streak() -> int:
+    """Consecutive failed reads from the live real scale driver (0 for mocks)."""
+    try:
+        return max(0, int(getattr(_mock.scale, "fail_streak", 0) or 0))
+    except Exception:
+        return 0
+
+
+def mark_scale_reconnect_attempt() -> None:
+    """Start the watchdog cooldown (call immediately before queuing a probe)."""
+    global _last_reconnect_at
+    _last_reconnect_at = time.monotonic()
+
+
+def reset_scale_reconnect_state() -> None:
+    """Test aid: let the next due-check probe again."""
+    global _last_reconnect_at
+    _last_reconnect_at = 0.0
+
+
+def scale_reconnect_due(cfg: dict | None = None) -> bool:
+    """True when a quiet scale re-probe is warranted right now.
+
+    Skips demo/mock scales and an in-flight detection, honors the cooldown,
+    and only asks for a probe when the pill reads setup/error or real reads
+    have failed repeatedly. Never called from the printer path.
+    """
+    cfg = cfg if cfg is not None else _config.load()
+    if demo_mode(cfg) or is_mock_scale():
+        return False
+    try:
+        from . import status as _status
+        if _status.is_detecting():
+            return False
+    except Exception:
+        pass
+    if (time.monotonic() - _last_reconnect_at) < RECONNECT_COOLDOWN_S:
+        return False
+    if scale_fail_streak() >= FAIL_STREAK_TRIGGER:
+        return True
+    if "scale" in str(init_error or "").casefold():
+        return True
+    try:
+        from . import status as _status
+        spec = _status.live_device_status(_status.SCALE, cfg)
+        return str(spec.get("state")) in ("setup", "error")
+    except Exception:
+        return False
 
 
 def demo_mode(cfg: dict | None = None) -> bool:
