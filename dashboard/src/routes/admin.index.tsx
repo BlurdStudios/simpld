@@ -441,15 +441,19 @@ function TrackedLicencesTable({
   neverActivated,
   planPick,
   changing,
+  chasing,
   onPlanPick,
   onChangePlan,
+  onChase,
 }: {
   tracked: TrackedSite[];
   neverActivated: LicenceRow[];
   planPick: Record<string, string>;
   changing: string | null;
+  chasing: string | null;
   onPlanPick: (siteId: string, edition: string) => void;
   onChangePlan: (siteId: string) => void;
+  onChase: (siteId: string) => void;
 }) {
   return (
     <Table>
@@ -516,7 +520,14 @@ function TrackedLicencesTable({
               Key issued {l.issued_by ? `by ${l.issued_by}` : ""} — never activated (no push yet)
             </TableCell>
             <TableCell>
-              <Badge variant="outline">Chase activation</Badge>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={chasing === l.site_id}
+                onClick={() => onChase(l.site_id)}
+              >
+                {chasing === l.site_id ? "…" : "Re-send licence"}
+              </Button>
             </TableCell>
           </TableRow>
         ))}
@@ -922,6 +933,7 @@ function LicencesTab({ onError }: { onError: (e: string | null) => void }) {
   const [tracked, setTracked] = useState<TrackedSite[]>([]);
   const [loading, setLoading] = useState(true);
   const [changing, setChanging] = useState<string | null>(null);
+  const [chasing, setChasing] = useState<string | null>(null);
   const [planPick, setPlanPick] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<string | null>(null);
   const [issue, setIssue] = useState({
@@ -958,6 +970,36 @@ function LicencesTab({ onError }: { onError: (e: string | null) => void }) {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  async function chaseActivation(siteId: string) {
+    const lic = rows.find((l) => l.site_id === siteId);
+    if (!lic) {
+      setNotice(`No issued licence found for ${siteId}.`);
+      return;
+    }
+    setChasing(siteId);
+    setNotice(null);
+    try {
+      const res = await fetch("/api/licenses/renew", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ serial: lic.serial, edition: lic.edition }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error ?? `re-issue failed (${res.status})`);
+      const blob = new Blob([JSON.stringify(data.licence)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `license-${siteId}-${lic.edition}.lic`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      setNotice(`${siteId}: fresh licence downloaded — send it to the site to activate.`);
+      await refresh();
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : "chase failed");
+    } finally {
+      setChasing(null);
+    }
+  }
   async function changePlan(siteId: string) {
     const latestSerial = rows.filter((l) => l.site_id === siteId).map((l) => l.serial)[0];
     if (!latestSerial) {
@@ -1207,8 +1249,10 @@ function LicencesTab({ onError }: { onError: (e: string | null) => void }) {
               neverActivated={MOCK_LICENCES.filter((l) => !MOCK_TRACKED.some((t) => t.site_id === l.site_id))}
               planPick={{}}
               changing={null}
+              chasing={null}
               onPlanPick={() => {}}
               onChangePlan={() => {}}
+              onChase={() => {}}
             />
           }
           fallback={<Skeleton className="h-40" />}
@@ -1218,8 +1262,10 @@ function LicencesTab({ onError }: { onError: (e: string | null) => void }) {
             neverActivated={neverActivated}
             planPick={planPick}
             changing={changing}
+            chasing={chasing}
             onPlanPick={(siteId, edition) => setPlanPick({ ...planPick, [siteId]: edition })}
             onChangePlan={changePlan}
+            onChase={chaseActivation}
           />
         </BoneSkeleton>
       </CardContent>
