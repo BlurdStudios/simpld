@@ -439,7 +439,60 @@ def reconnect_scale(save: bool = True,
         out["elapsed"] = round(time.monotonic() - t0, 2)
 
 
-def current_ports() -> list[str]:
+def reconnect_scale(cfg: dict | None = None,
+                   timeout: float = SCALE_BUDGET_S,
+                   save: bool = True) -> dict:
+    """Non-destructive scale re-probe for the background watchdog.
+
+    Unlike detect_one/detect_all this NEVER forgets the stored port on a
+    miss: a scale that is powered off (or whose USB adapter dropped) must
+    not have its config wiped by a background probe — the next manual Refresh
+    or a successful probe re-establishes it. It only saves + reloads the
+    live driver when a real scale answers.
+
+    Returns {'scale': hit|None, 'changed': bool, 'inconclusive': bool}.
+    'inconclusive' is True when port enumeration itself failed (pyserial
+    missing) — the probe could not look, so nothing is concluded.
+    """
+    with _LOCK:
+        cfg = dict(cfg) if cfg is not None else _config.load()
+        out: dict = {"scale": None, "changed": False, "inconclusive": False}
+        errors: list[str] = []
+        try:
+            hit, ok, _detail = detect_scale_ex(
+                cfg, timeout=min(SCALE_BUDGET_S, timeout))
+        except Exception as e:
+            hit, ok = None, False
+            errors.append(f"scale: {e}")
+        out["scale"] = hit
+        if hit:
+            if cfg.get("scale_port") != hit["port"] or \
+                    int(cfg.get("scale_baud") or 0) != int(hit["baud"]):
+                out["changed"] = True
+            cfg["scale_port"] = hit["port"]
+            cfg["scale_baud"] = hit["baud"]
+        elif not ok:
+            # Could not look: keep stored config, flag inconclusive.
+            out["inconclusive"] = True
+        # Confirmed miss (ok=True, hit=None): do NOTHING to config.
+        if out["scale"] and out["changed"]:
+            try:
+                _config.save(cfg)
+            except Exception as e:
+                errors.append(f"save: {e}")
+                _log.warning("reconnect_scale: config save failed (%s)", e,
+                             exc_info=True)
+        if out["scale"]:
+            try:
+                _devices.reload_hardware(cfg)
+            except Exception as e:
+                errors.append(f"reload: {e}")
+        if errors:
+            out["errors"] = errors
+        _log.info("reconnect_scale: scale=%s changed=%s inconclusive=%s",
+                  (out["scale"] or {}).get("port") if out["scale"] else None,
+                  out["changed"], out["inconclusive"])
+        return out
     try:
         ports, _ok = list_ports_status()
         return ports

@@ -171,33 +171,39 @@ class EssaeDS215(ScaleInterface):
         """
         if self._frozen is not None:
             return self._frozen
-        failure: Exception | None = None
         with self._io_lock:
-            # One retry on any failure: the first read may hit a handle that
-            # went stale while the scale was power-cycled, and _read_lines()
-            # has already discarded that handle by then.
-            for _attempt in range(2):
+            # First attempt. A serial exception (dead handle, dropped USB,
+            # re-enumerated port) discards the cached handle and retries ONCE
+            # on a fresh one — that is the self-heal: no app restart needed.
+            try:
+                lines = self._read_lines()
+            except Exception as e:
+                self._drop_serial()
+                time.sleep(0.05)
                 try:
                     lines = self._read_lines()
-                    for line in reversed(lines):
-                        v = parse_weight_line(line)
-                        if v is not None:
-                            self._record_success(v)
-                            return v
-                    failure = (
-                        RuntimeError(
-                            f"No data from scale on {self.port} — "
-                            "check cable, power and COM port")
-                        if not lines else
-                        RuntimeError(
-                            "No stable weight — scale is moving/unstable, "
-                            "wait and read again"))
-                except Exception as e:
-                    failure = e
+                except Exception as e2:
                     self._drop_serial()
-                time.sleep(0.05)
-        self.fail_streak += 1
-        raise failure or RuntimeError(f"Scale read failed on {self.port}")
+                    self.fail_streak += 1
+                    raise RuntimeError(
+                        f"Serial read failed on {self.port}: {e2}") from e2
+            # Read succeeded — parse. Silence (no lines) counts as a failure
+            # but does NOT retry (comms may just be quiet); unstable/motion
+            # lines mean comms is fine, so the streak resets.
+            for line in reversed(lines):
+                v = parse_weight_line(line)
+                if v is not None:
+                    self._record_success(v)
+                    return v
+            if not lines:
+                self.fail_streak += 1
+                raise RuntimeError(
+                    f"No data from scale on {self.port} — "
+                    "check cable, power and COM port")
+            self.fail_streak = 0
+            raise RuntimeError(
+                "No stable weight — scale is moving/unstable, "
+                "wait and read again")
 
     def freeze(self) -> float:
         v = self.read_weight()  # raises when nothing fresh: never freezes stale
