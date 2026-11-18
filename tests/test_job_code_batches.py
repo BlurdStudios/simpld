@@ -96,8 +96,8 @@ def test_job_head_and_label():
     assert _job_head(4167, "12dec") == "J:4167 12DEC"
     assert _job_head(4167, "") == "J:4167"
     assert _job_head(4167, None) == "J:4167"
-    assert job_label({"job_no": 1, "job_name": "N", "job_code": "a1"}) == "J:1 [A1] — N"
-    assert job_label({"job_no": 1, "job_name": "N", "job_code": ""}) == "J:1 — N"
+    assert job_label({"job_no": 1, "job_name": "N", "job_code": "a1"}) == "N [A1]"
+    assert job_label({"job_no": 1, "job_name": "N", "job_code": ""}) == "N"
 
 
 def test_reel_layout_job_full_width_date_beside_gross():

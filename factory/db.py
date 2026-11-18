@@ -883,22 +883,23 @@ def bare_carton_no(carton_no) -> str:
 
 
 def job_label(job: dict) -> str:
-    """One-line job identity with batch code: J:4167 [12DEC] — NAME.
+    """One-line job identity: job name with the batch code in brackets.
 
-    Blank codes (legacy jobs) read J:4167 — NAME with no empty brackets.
+    Blank codes (legacy jobs) read just the name - no empty brackets. The job
+    id (J:...) is intentionally NOT shown here: the batch code is the
+    human-facing identifier.
     """
     try:
         code = str((job or {}).get("job_code") or "").strip().upper()
     except Exception:
         code = ""
     try:
-        no = (job or {}).get("job_no", "")
         name = (job or {}).get("job_name", "")
     except Exception:
         return ""
     if code:
-        return f"J:{no} [{code}] — {name}"
-    return f"J:{no} — {name}"
+        return f"{name} [{code}]"
+    return f"{name}"
 
 
 def full_roll_label(reel: dict) -> str:
