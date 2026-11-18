@@ -13,7 +13,7 @@
 import type { AccountsStore, PublicUser } from "../../lib/db";
 import { issueLicence } from "../../lib/license";
 import { OfferStore } from "../../lib/offers";
-import { hashSetupCode, newSetupCode, noteSiteId, setupExpiryIso } from "../../lib/site-id";
+import { newPassword, noteSiteId } from "../../lib/site-id";
 import type { D1Like } from "../../lib/db";
 
 // Each issued/renewed licence becomes a one-time offer, delivered on the
@@ -125,16 +125,13 @@ export async function handleIssueLicence(
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : "issuance failed" }, 400);
   }
-  const setupCode = newSetupCode();
-  const setupExpires = setupExpiryIso(30);
+  // Layman-simple onboarding: the account is created with a generated
+  // password that is shown ONCE in this response — the vendor copies it and
+  // shares it with the customer out-of-band. No one-time codes.
+  const password = newPassword();
   let created;
   try {
-    created = await accounts.createClientWithSetup(
-      lic.site_id,
-      contact,
-      await hashSetupCode(setupCode, lic.site_id),
-      setupExpires
-    );
+    created = await accounts.createUser(contact, password, "client", lic.site_id);
   } catch (e) {
     // Most likely a lost create race (unique index is the authority): the
     // site appeared between our check and the insert. Tell the admin to
@@ -179,8 +176,7 @@ export async function handleIssueLicence(
       client: {
         site_id: created.site_id,
         email: created.email,
-        setup_code: setupCode,
-        setup_expires: setupExpires,
+        password,
       },
     },
     201

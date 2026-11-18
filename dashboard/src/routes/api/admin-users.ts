@@ -2,12 +2,15 @@
 //   GET  /api/admin/users                 list (password hashes never leave the server)
 //   POST /api/admin/users                 { email, password, role, site_id? } create
 //   POST /api/admin/users/:id             { role?, site_id?, disabled? } update / disable-enable
-//   POST /api/admin/users/:id/resend-setup  new one-time setup code (pending clients only)
+//   POST /api/admin/users/:id/password    { password } set/replace a password
+//
+// Deliberately simple (layman-simple portal model): the vendor sets a
+// password and shares it with the user out-of-band. No one-time codes.
 
 import type { AccountsStore, PublicUser, Role } from "../../lib/db";
 import { toPublic } from "../../lib/db";
 import { json } from "../../lib/portal";
-import { bloomMaybeTaken, ensureBloomSeeded, hashSetupCode, newSetupCode, noteSiteId, setupExpiryIso, suggestSiteIds } from "../../lib/site-id";
+import { bloomMaybeTaken, ensureBloomSeeded, noteSiteId, suggestSiteIds } from "../../lib/site-id";
 
 /** DB-confirmed availability, with the bloom filter as a fast pre-check only. */
 async function siteFree(accounts: AccountsStore, id: string): Promise<boolean> {
@@ -55,29 +58,27 @@ export async function handleAdminUsers(
   }
   const parts = subpath.replace(/^\//, "").split("/");
   const id = parts[0];
-  // POST /api/admin/users/:id/resend-setup — fresh one-time code for a client
-  // whose setup is still pending (or expired). Overwrites hash + expiry so
-  // the old code stops working immediately. Finished accounts are refused:
-  // a completed setup must never be re-opened this way.
-  if (req.method === "POST" && id && parts[1] === "resend-setup") {
-    const target = await accounts.findUserById(id);
-    if (!target) return json({ error: "unknown user" }, 404);
-    if (target.role !== "client") return json({ error: "only client accounts have setup codes" }, 400);
-    if (target.setup_done !== 0 || !target.setup_code_hash) {
-      return json({ error: "setup already finished for this account — no code to resend" }, 409);
+  // POST /api/admin/users/:id/password — set/replace a user's password.
+  // The admin types (or accepts a generated) password and shares it with the
+  // user out-of-band. The password is never echoed back by the API.
+  if (req.method === "POST" && id && parts[1] === "password") {
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ error: "invalid json" }, 400);
     }
-    const setupCode = newSetupCode();
-    const setupExpires = setupExpiryIso(30);
-    await accounts.rotateSetupCode(target.id, await hashSetupCode(setupCode, target.site_id ?? ""), setupExpires);
-    const next = await accounts.findUserById(target.id);
-    return json({
-      ok: true,
-      user: next ? sanitize(toPublic(next)) : undefined,
-      site_id: target.site_id,
-      email: target.email,
-      setup_code: setupCode,
-      setup_expires: setupExpires,
-    });
+    const password = typeof (body as Record<string, unknown>).password === "string"
+      ? ((body as Record<string, unknown>).password as string)
+      : "";
+    if (password.length < 8) return json({ error: "password must be at least 8 characters" }, 400);
+    try {
+      const user = await accounts.setPassword(id, password);
+      return json({ ok: true, user: sanitize(user) });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "could not set password";
+      return json({ error: msg }, msg === "unknown user" ? 404 : 400);
+    }
   }
   if (req.method === "POST" && id) {
     let body: unknown;

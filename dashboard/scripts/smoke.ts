@@ -320,7 +320,7 @@ test("portal: issuance derives tiers, renew works, overview gates", async () => 
   assert.equal(r.status, 201);
   const firstIssue = await r.json();
   let lic = firstIssue.licence;
-  const siteASetupCode: string = firstIssue.client.setup_code;
+  const siteAPassword: string = firstIssue.client.password;
   assert.equal(lic.max_stations, 1);
   assert.deepEqual(lic.features, []);
   assert.match(lic.issued, /^\d{4}-\d{2}-\d{2}$/);
@@ -368,10 +368,11 @@ test("portal: issuance derives tiers, renew works, overview gates", async () => 
   assert.equal(ov.licences_total, 3);
   assert.ok(ov.sites_total >= 0);
 
-  // First issue auto-created site-a's client account; finish its setup so it
-  // can act (creating a second client for site-a is now a 409/unique-violation).
+  // First issue auto-created site-a's client account with a shareable
+  // password — log the customer in with it (creating a second client for
+  // site-a is now a 409/unique-violation).
   r = await worker.fetch(
-    req("/api/auth/setup", { method: "POST", body: JSON.stringify({ site_id: "site-a", serial: lic.serial, code: siteASetupCode, password: "password11" }) }),
+    req("/api/auth/login", { method: "POST", body: JSON.stringify({ site_id: "site-a", password: siteAPassword }) }),
     env
   );
   assert.equal(r.status, 200);
@@ -716,7 +717,7 @@ function issueViaApi(env: Record<string, unknown>, cookie: string, siteId: strin
   );
 }
 
-test("onboarding: licence issue creates client + one-time code; second issue has none", async () => {
+test("onboarding: licence issue creates client + shareable password; second issue has none", async () => {
   const { env, accounts, adminCookie } = await onboardEnv();
 
   let r = await issueViaApi(env, adminCookie, "ram-vendor");
@@ -725,32 +726,33 @@ test("onboarding: licence issue creates client + one-time code; second issue has
   assert.ok(data.licence.serial);
   assert.equal(data.client.site_id, "ram-vendor");
   assert.equal(data.client.email, "ram-vendor@example.com");
-  assert.match(data.client.setup_code, /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{10}$/);
-  assert.ok(data.client.setup_expires);
+  assert.match(data.client.password, /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{12}$/);
+  const sharedPassword: string = data.client.password;
 
-  // DB holds a hash, never the plain code.
+  // DB holds a hash, never the plain password.
   const stored = await accounts.findUserBySiteId("ram-vendor");
   assert.ok(stored);
-  assert.equal(stored.setup_done, 0);
-  assert.ok(stored.setup_code_hash);
-  assert.notEqual(stored.setup_code_hash, data.client.setup_code);
+  assert.notEqual(stored.pass_hash, data.client.password);
 
   // Explicit contact email is used when supplied and valid.
   r = await issueViaApi(env, adminCookie, "second-site", { contact_email: "owner@example.com" });
   assert.equal(r.status, 201);
   assert.equal((await r.json()).client.email, "owner@example.com");
 
-  // Second issue for the same site: licence as today, no code.
+  // Second issue for the same site: licence as today, no new account.
   r = await issueViaApi(env, adminCookie, "ram-vendor");
   assert.equal(r.status, 201);
   data = await r.json();
   assert.ok(data.licence.serial);
   assert.equal(data.client, undefined);
 
-  // Pending client cannot log in yet — 409 finish-setup (both identifiers).
-  r = await worker.fetch(req("/api/auth/login", { method: "POST", body: JSON.stringify({ site_id: "ram-vendor", password: "anything12" }) }), env);
-  assert.equal(r.status, 409);
-  assert.match((await r.json()).error, /finish setup/i);
+  // The customer logs in with Site ID + the shared password — that is the
+  // whole flow. A wrong password is a plain 401.
+  r = await worker.fetch(req("/api/auth/login", { method: "POST", body: JSON.stringify({ site_id: "ram-vendor", password: sharedPassword }) }), env);
+  assert.equal(r.status, 200);
+  assert.equal((await r.json()).user.site_id, "ram-vendor");
+  r = await worker.fetch(req("/api/auth/login", { method: "POST", body: JSON.stringify({ site_id: "ram-vendor", password: "wrongpass1" }) }), env);
+  assert.equal(r.status, 401);
 
   // Taken site_id on the create path -> 409 with suggestions.
   r = await worker.fetch(
@@ -762,61 +764,15 @@ test("onboarding: licence issue creates client + one-time code; second issue has
   assert.deepEqual(dup.suggestions, ["ram-vendor-2", "ram-vendor-3", "ram-vendor-4"]);
 });
 
-test("onboarding: setup succeeds, single-use; wrong serial/code/expired all 401", async () => {
-  const { env, accounts, adminCookie } = await onboardEnv();
-  const setup = (body: unknown) =>
-    worker.fetch(req("/api/auth/setup", { method: "POST", body: JSON.stringify(body) }), env as never);
-
-  const issue1 = await (await issueViaApi(env, adminCookie, "setup-ok")).json();
-  const serial: string = issue1.licence.serial;
-  const code: string = issue1.client.setup_code;
-
-  // Wrong code, wrong serial, short password: all the SAME generic 401.
-  const badCode = await (await setup({ site_id: "setup-ok", serial, code: "AAAAAAAAAA", password: "newpass12" })).json();
-  const badSerial = await (await setup({ site_id: "setup-ok", serial: "SIMPLD-0000-0000", code, password: "newpass12" })).json();
-  const shortPw = await (await setup({ site_id: "setup-ok", serial, code, password: "short" })).json();
-  assert.deepEqual(badCode, { error: "invalid details" });
-  assert.deepEqual(badSerial, badCode);
-  assert.deepEqual(shortPw, badCode);
-
-  // Expired code: same 401.
-  const issue2 = await (await issueViaApi(env, adminCookie, "setup-exp")).json();
-  const expUser = (await accounts.findUserBySiteId("setup-exp"))!;
-  await (env.DB as D1Like).prepare("UPDATE users SET setup_expires=? WHERE id=?").bind("2000-01-01T00:00:00.000Z", expUser.id).run();
-  const expired = await (await setup({ site_id: "setup-exp", serial: issue2.licence.serial, code: issue2.client.setup_code, password: "newpass12" })).json();
-  assert.deepEqual(expired, badCode);
-
-  // Unknown site: same 401.
-  const unknown = await (await setup({ site_id: "nope", serial, code, password: "newpass12" })).json();
-  assert.deepEqual(unknown, badCode);
-
-  // Success: session cookie, then the code is single-use.
-  let r = await setup({ site_id: "setup-ok", serial, code, password: "newpass12" });
-  assert.equal(r.status, 200);
-  const cookie = sessionCookie(r);
-  r = await worker.fetch(req("/api/auth/me", { cookie }), env);
-  assert.equal((await r.json()).user.site_id, "setup-ok");
-  r = await setup({ site_id: "setup-ok", serial, code, password: "another12" });
-  assert.equal(r.status, 401);
-  assert.deepEqual(await r.json(), badCode);
-
-  // Client login by SITE ID + password works after setup.
-  r = await worker.fetch(req("/api/auth/login", { method: "POST", body: JSON.stringify({ site_id: "setup-ok", password: "newpass12" }) }), env);
-  assert.equal(r.status, 200);
-  assert.equal((await r.json()).user.site_id, "setup-ok");
-  r = await worker.fetch(req("/api/auth/login", { method: "POST", body: JSON.stringify({ site_id: "setup-ok", password: "wrongpass1" }) }), env);
-  assert.equal(r.status, 401);
-});
-
 test("onboarding: viewer is session-only; clients isolated", async () => {
   const { env, accounts, adminCookie } = await onboardEnv();
   const issue1 = await (await issueViaApi(env, adminCookie, "view-a")).json();
-  const setupR = await worker.fetch(
-    req("/api/auth/setup", { method: "POST", body: JSON.stringify({ site_id: "view-a", serial: issue1.licence.serial, code: issue1.client.setup_code, password: "clientpass1" }) }),
+  const loginR = await worker.fetch(
+    req("/api/auth/login", { method: "POST", body: JSON.stringify({ site_id: "view-a", password: issue1.client.password }) }),
     env as never
   );
-  assert.equal(setupR.status, 200);
-  const clientCookie = sessionCookie(setupR);
+  assert.equal(loginR.status, 200);
+  const clientCookie = sessionCookie(loginR);
   const client = (await accounts.findUserBySiteId("view-a"))!;
   const { plaintext } = await accounts.createApiKey(client.id, "view-a", "packager");
   await worker.fetch(
@@ -877,54 +833,67 @@ test("onboarding: first issue requires a contact email; duplicates 409 with no s
   assert.equal((await r.json()).client, undefined);
 });
 
-test("onboarding: resend rotates the code; old dies; finished/non-admin refused", async () => {
+test("onboarding: admin sets a new password; old dies; non-admin refused", async () => {
   const { env, accounts, adminCookie } = await onboardEnv();
 
-  const issue = await (await issueViaApi(env, adminCookie, "resend-me")).json();
-  const serial: string = issue.licence.serial;
-  const code1: string = issue.client.setup_code;
-  const user = (await accounts.findUserBySiteId("resend-me"))!;
-  const setup = (body: unknown) =>
-    worker.fetch(req("/api/auth/setup", { method: "POST", body: JSON.stringify(body) }), env as never);
-  const resend = (id: string, cookie: string) =>
-    worker.fetch(req(`/api/admin/users/${id}/resend-setup`, { method: "POST", cookie, body: "{}" }), env as never);
+  const issue = await (await issueViaApi(env, adminCookie, "pw-reset")).json();
+  const oldPassword: string = issue.client.password;
+  const user = (await accounts.findUserBySiteId("pw-reset"))!;
+  const setPw = (id: string, cookie: string, body: unknown) =>
+    worker.fetch(req(`/api/admin/users/${id}/password`, { method: "POST", cookie, body: JSON.stringify(body) }), env as never);
+  const login = (password: string) =>
+    worker.fetch(req("/api/auth/login", { method: "POST", body: JSON.stringify({ site_id: "pw-reset", password }) }), env as never);
 
-  // Admin resends: new code, new expiry, old code dead.
-  let r = await resend(user.id, adminCookie);
+  // The shared password logs in...
+  let r = await login(oldPassword);
   assert.equal(r.status, 200);
-  const data = await r.json();
-  const code2: string = data.setup_code;
-  assert.ok(code2 && code2 !== code1);
-  assert.equal(data.site_id, "resend-me");
-  assert.ok(data.setup_expires > new Date().toISOString());
-  r = await setup({ site_id: "resend-me", serial, code: code1, password: "newpass12" });
+  // ...admin replaces it; the old one dies immediately, the new one works.
+  r = await setPw(user.id, adminCookie, { password: "freshpass12" });
+  assert.equal(r.status, 200);
+  r = await login(oldPassword);
   assert.equal(r.status, 401);
-  assert.deepEqual(await r.json(), { error: "invalid details" });
-
-  // The new code works once.
-  r = await setup({ site_id: "resend-me", serial, code: code2, password: "newpass12" });
+  r = await login("freshpass12");
   assert.equal(r.status, 200);
-  const clientCookie = sessionCookie(r);
 
-  // Finished account: resend refused, setup stays done.
-  r = await resend(user.id, adminCookie);
-  assert.equal(r.status, 409);
-  assert.match((await r.json()).error, /already finished/);
-
-  // Unknown user: 404. Non-admin: 403.
-  r = await resend("u-nope", adminCookie);
+  // Short password refused. Unknown user 404. Non-admin 403.
+  r = await setPw(user.id, adminCookie, { password: "short" });
+  assert.equal(r.status, 400);
+  r = await setPw("u-nope", adminCookie, { password: "password12" });
   assert.equal(r.status, 404);
-  r = await resend(user.id, clientCookie);
+  const clientCookie = sessionCookie(await login("freshpass12"));
+  r = await setPw(user.id, clientCookie, { password: "password12" });
   assert.equal(r.status, 403);
-
-  // Expired codes are still resendable: force-expiry, resend, set up with the fresh code.
-  await issueViaApi(env, adminCookie, "resend-exp");
-  const expUser = (await accounts.findUserBySiteId("resend-exp"))!;
-  const expSerial = (await accounts.listLicences("resend-exp"))[0].serial;
-  await (env.DB as D1Like).prepare("UPDATE users SET setup_expires=? WHERE id=?").bind("2000-01-01T00:00:00.000Z", expUser.id).run();
-  r = await resend(expUser.id, adminCookie);
-  assert.equal(r.status, 200);
-  const fresh: string = (await r.json()).setup_code;
-  r = await setup({ site_id: "resend-exp", serial: expSerial, code: fresh, password: "newpass12" });
-  assert.equal(r.status, 200);
 });
+
+test("onboarding: legacy client (pre-OTP account) — admin sets the password the customer was never given", async () => {
+  const { env, accounts, adminCookie } = await onboardEnv();
+
+  // Old-style account: vendor created it with a placeholder password, no
+  // licence, no codes. The customer cannot log in until the admin sets one.
+  let r = await worker.fetch(
+    req("/api/admin/users", {
+      method: "POST",
+      cookie: adminCookie,
+      body: JSON.stringify({ email: "legacy@old-site.x", password: "vendor-placeholder", role: "client", site_id: "old-site" }),
+    }),
+    env as never
+  );
+  assert.equal(r.status, 201);
+  const user = (await accounts.findUserBySiteId("old-site"))!;
+  const setPw = (id: string, cookie: string, body: unknown) =>
+    worker.fetch(req(`/api/admin/users/${id}/password`, { method: "POST", cookie, body: JSON.stringify(body) }), env as never);
+  const login = (password: string) =>
+    worker.fetch(req("/api/auth/login", { method: "POST", body: JSON.stringify({ site_id: "old-site", password }) }), env as never);
+
+  // The customer does not know the placeholder: 401.
+  r = await login("not-the-password");
+  assert.equal(r.status, 401);
+
+  // Admin sets a password and shares it; the customer logs in. Simple.
+  r = await setPw(user.id, adminCookie, { password: "tell-customer-1" });
+  assert.equal(r.status, 200);
+  r = await login("tell-customer-1");
+  assert.equal(r.status, 200);
+  assert.equal((await r.json()).user.site_id, "old-site");
+});
+

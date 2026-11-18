@@ -16,6 +16,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { newPassword } from "@/lib/site-id";
 import { Skeleton } from "@/components/ui/skeleton";
 import { slugifySiteId } from "@/lib/site-id";
 import {
@@ -53,9 +54,6 @@ interface AdminUser {
   site_id: string | null;
   disabled: boolean;
   created_at: string;
-  setup_pending?: boolean;
-  setup_expired?: boolean;
-  setup_expires?: string | null;
 }
 
 interface AdminKey {
@@ -127,8 +125,6 @@ const MOCK_USERS: AdminUser[] = [
     site_id: "acme-f1",
     disabled: false,
     created_at: "2026-02-03T11:15:00.000Z",
-    setup_pending: true,
-    setup_expires: "2026-12-01T00:00:00.000Z",
   },
   {
     id: "u-3",
@@ -279,14 +275,16 @@ export function Admin() {
 
 function UsersTable({
   users,
-  resending,
+  pwBusy,
+  pwPanel,
   onPatch,
-  onResend,
+  onPasswordStart,
 }: {
   users: AdminUser[];
-  resending: string | null;
+  pwBusy: string | null;
+  pwPanel: { user: AdminUser; value: string; done: boolean } | null;
   onPatch: (id: string, body: Record<string, unknown>) => void;
-  onResend: (u: AdminUser) => void;
+  onPasswordStart: (u: AdminUser) => void;
 }) {
   return (
     <Table>
@@ -296,7 +294,6 @@ function UsersTable({
           <TableHead>Role</TableHead>
           <TableHead>Site</TableHead>
           <TableHead>Status</TableHead>
-          <TableHead>Setup</TableHead>
           <TableHead className="text-right">Actions</TableHead>
         </TableRow>
       </TableHeader>
@@ -313,22 +310,16 @@ function UsersTable({
                 {u.disabled ? "disabled" : "active"}
               </Badge>
             </TableCell>
-            <TableCell>
-              {u.role === "client" && u.setup_pending ? (
-                <Badge variant="outline">
-                  {u.setup_expired ? "code expired" : "setup pending"}
-                </Badge>
-              ) : (
-                <span className="text-muted-foreground">—</span>
-              )}
-            </TableCell>
             <TableCell className="text-right">
               <div className="flex justify-end gap-2">
-                {u.role === "client" && u.setup_pending && (
-                  <Button variant="outline" size="sm" disabled={resending === u.id} onClick={() => onResend(u)}>
-                    {resending === u.id ? "Sending…" : "Resend setup code"}
-                  </Button>
-                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={pwBusy === u.id}
+                  onClick={() => onPasswordStart(u)}
+                >
+                  Set password
+                </Button>
                 <Button variant="outline" size="sm" onClick={() => onPatch(u.id, { disabled: !u.disabled })}>
                   {u.disabled ? "Enable" : "Disable"}
                 </Button>
@@ -338,7 +329,7 @@ function UsersTable({
         ))}
         {users.length === 0 && (
           <TableRow>
-            <TableCell colSpan={6} className="text-muted-foreground">No users yet.</TableCell>
+            <TableCell colSpan={5} className="text-muted-foreground">No users yet.</TableCell>
           </TableRow>
         )}
       </TableBody>
@@ -582,13 +573,8 @@ function UsersTab({ onError }: { onError: (e: string | null) => void }) {
   const [password, setPassword] = useState("");
   const [role, setRole] = useState("client");
   const [siteId, setSiteId] = useState("");
-  const [resending, setResending] = useState<string | null>(null);
-  const [resent, setResent] = useState<{
-    site_id: string | null;
-    email: string;
-    setup_code: string;
-    setup_expires: string;
-  } | null>(null);
+  const [pwBusy, setPwBusy] = useState<string | null>(null);
+  const [pwPanel, setPwPanel] = useState<{ user: AdminUser; value: string; done: boolean } | null>(null);
 
   async function refresh() {
     try {
@@ -632,23 +618,25 @@ function UsersTab({ onError }: { onError: (e: string | null) => void }) {
     }
   }
 
-  async function resendSetup(u: AdminUser) {
-    setResending(u.id);
-    setResent(null);
+  function passwordStart(u: AdminUser) {
+    // Prefill a generated password — the admin can keep it or type their own.
+    setPwPanel({ user: u, value: newPassword(), done: false });
+  }
+
+  async function passwordSave() {
+    if (!pwPanel) return;
+    setPwBusy(pwPanel.user.id);
     try {
-      const d = await api(`/api/admin/users/${u.id}/resend-setup`, { method: "POST", body: "{}" });
-      setResent({
-        site_id: d.site_id ?? u.site_id,
-        email: d.email ?? u.email,
-        setup_code: d.setup_code,
-        setup_expires: d.setup_expires,
+      await api(`/api/admin/users/${pwPanel.user.id}/password`, {
+        method: "POST",
+        body: JSON.stringify({ password: pwPanel.value }),
       });
+      setPwPanel({ ...pwPanel, done: true });
       onError(null);
-      await refresh();
     } catch (err) {
-      onError(err instanceof Error ? err.message : "resend failed");
+      onError(err instanceof Error ? err.message : "could not set password");
     } finally {
-      setResending(null);
+      setPwBusy(null);
     }
   }
 
@@ -689,25 +677,43 @@ function UsersTab({ onError }: { onError: (e: string | null) => void }) {
             <HugeiconsIcon icon={PlusSignIcon} size={16} /> Create
           </Button>
         </form>
-        {resent && (
+        {pwPanel && (
           <div className="grid gap-2 rounded-lg border bg-muted p-4">
-            <p className="text-sm font-medium">
-              New setup code for <code>{resent.site_id}</code> ({resent.email}) — copy now:
-            </p>
-            <code className="break-all text-sm">{resent.setup_code}</code>
-            <p className="text-xs text-muted-foreground">
-              Expires {resent.setup_expires?.slice(0, 10)}. It will not be shown again —
-              the old code stopped working the moment this one was issued.
-            </p>
-            <div>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => navigator.clipboard?.writeText(resent.setup_code).catch(() => {})}
-              >
-                Copy code
-              </Button>
-            </div>
+            {pwPanel.done ? (
+              <>
+                <p className="text-sm font-medium">
+                  Password set for <code>{pwPanel.user.site_id ?? pwPanel.user.email}</code> — send it to the user:
+                </p>
+                <code className="break-all text-sm">{pwPanel.value}</code>
+                <div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => navigator.clipboard?.writeText(pwPanel.value).catch(() => {})}
+                  >
+                    Copy password
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="text-sm font-medium">
+                  New password for <code>{pwPanel.user.email}</code> — keep the suggestion or type your own:
+                </p>
+                <Input
+                  value={pwPanel.value}
+                  onChange={(e) => setPwPanel({ ...pwPanel, value: e.target.value })}
+                />
+                <div className="flex gap-2">
+                  <Button size="sm" disabled={pwBusy === pwPanel.user.id || pwPanel.value.length < 8} onClick={passwordSave}>
+                    {pwBusy === pwPanel.user.id ? "Saving…" : "Save password"}
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => setPwPanel(null)}>
+                    Cancel
+                  </Button>
+                </div>
+              </>
+            )}
           </div>
         )}
         <BoneSkeleton
@@ -715,11 +721,11 @@ function UsersTab({ onError }: { onError: (e: string | null) => void }) {
           loading={loading}
           {...boneStyle}
           fixture={
-            <UsersTable users={MOCK_USERS} resending={null} onPatch={() => {}} onResend={() => {}} />
+            <UsersTable users={MOCK_USERS} pwBusy={null} pwPanel={null} onPatch={() => {}} onPasswordStart={() => {}} />
           }
           fallback={<Skeleton className="h-40" />}
         >
-          <UsersTable users={users} resending={resending} onPatch={patch} onResend={resendSetup} />
+          <UsersTable users={users} pwBusy={pwBusy} pwPanel={pwPanel} onPatch={patch} onPasswordStart={passwordStart} />
         </BoneSkeleton>
       </CardContent>
     </Card>
@@ -930,8 +936,7 @@ function LicencesTab({ onError }: { onError: (e: string | null) => void }) {
   const [issued, setIssued] = useState<{
     site_id: string;
     email: string;
-    setup_code?: string;
-    setup_expires?: string;
+    password?: string;
   } | null>(null);
   async function refresh() {
     try {
@@ -1010,9 +1015,9 @@ function LicencesTab({ onError }: { onError: (e: string | null) => void }) {
       }
       setIssued(data.client ?? { site_id: data.licence.site_id, email: "" });
       setNotice(
-        data.client?.setup_code
-          ? `Licence issued for ${data.licence.site_id} — hand over the setup code below.`
-          : `Licence issued for ${data.licence.site_id} (account already exists — no new setup code).`
+        data.client?.password
+          ? `Licence issued for ${data.licence.site_id} — copy the customer password below and send it.`
+          : `Licence issued for ${data.licence.site_id} (account already exists).`
       );
       await refresh();
     } catch (err) {
@@ -1156,26 +1161,26 @@ function LicencesTab({ onError }: { onError: (e: string | null) => void }) {
           <div className="grid gap-2 rounded-lg border bg-muted p-4">
             <p className="text-sm font-medium">Site ID: <code>{issued.site_id}</code></p>
             {issued.email && <p className="text-sm text-muted-foreground">Client login: <code>{issued.email}</code></p>}
-            {issued.setup_code ? (
+            {issued.password ? (
               <>
-                <p className="text-sm font-medium">One-time setup code — copy now:</p>
-                <code className="break-all text-sm">{issued.setup_code}</code>
+                <p className="text-sm font-medium">Customer password — copy now:</p>
+                <code className="break-all text-sm">{issued.password}</code>
                 <p className="text-xs text-muted-foreground">
-                  Expires {issued.setup_expires?.slice(0, 10)}. It will not be shown again —
-                  the customer logs in with Site ID + code + licence serial, then sets a password.
+                  It will not be shown again. Send it with the site ID — the customer
+                  logs in with Site ID + password.
                 </p>
                 <div>
                   <Button
                     size="sm"
                     variant="outline"
-                    onClick={() => navigator.clipboard?.writeText(issued.setup_code ?? "").catch(() => {})}
+                    onClick={() => navigator.clipboard?.writeText(issued.password ?? "").catch(() => {})}
                   >
-                    Copy code
+                    Copy password
                   </Button>
                 </div>
               </>
             ) : (
-              <p className="text-sm text-muted-foreground">No new code — this site already has a client account.</p>
+              <p className="text-sm text-muted-foreground">No new account — this site already has a client login.</p>
             )}
           </div>
         )}

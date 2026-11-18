@@ -23,7 +23,7 @@ import { compositeKeyStore, getSessionUser, json, needAdmin, needAuth } from "./
 import { reportersForEnv, storeForEnv } from "./lib/store";
 import { handlePushDay } from "./routes/api/push-day";
 import { handlePushOrders } from "./routes/api/push-orders";
-import { handleLogin, handleLogout, handleMe, handleSetup } from "./routes/api/auth";
+import { handleLogin, handleLogout, handleMe } from "./routes/api/auth";
 import { handleSeed } from "./routes/api/admin-seed";
 import { handleAdminOverview } from "./routes/api/admin-overview";
 import { handleAdminUsers } from "./routes/api/admin-users";
@@ -112,10 +112,6 @@ export default {
     if (req.method === "POST" && path === "/api/auth/login") {
       await ensureSchema(env, accounts);
       return handleLogin(req, accounts);
-    }
-    if (req.method === "POST" && path === "/api/auth/setup") {
-      await ensureSchema(env, accounts);
-      return handleSetup(req, accounts);
     }
     if (req.method === "POST" && path === "/api/auth/logout") return handleLogout(req, accounts);
     if (req.method === "GET" && path === "/api/auth/me") return handleMe(req, accounts);

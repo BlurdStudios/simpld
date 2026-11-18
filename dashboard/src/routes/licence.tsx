@@ -151,8 +151,7 @@ export function Licence() {
   const [onboard, setOnboard] = useState<{
     site_id: string;
     email: string;
-    setup_code?: string;
-    setup_expires?: string;
+    password?: string;
   } | null>(null);
 
   const lockedSite = me?.role === "client" ? (me.site_id ?? "") : null;
@@ -360,22 +359,22 @@ export function Licence() {
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-4">
-            {onboard?.setup_code && (
+            {onboard?.password && (
               <div className="grid gap-2 rounded-lg border bg-muted p-4">
                 <p className="text-sm font-medium">
-                  New client account <code>{onboard.site_id}</code> — one-time setup code, copy now:
+                  New client account <code>{onboard.site_id}</code> — customer password, copy now:
                 </p>
-                <code className="break-all text-sm">{onboard.setup_code}</code>
+                <code className="break-all text-sm">{onboard.password}</code>
                 <p className="text-xs text-muted-foreground">
-                  It will not be shown again. The customer logs in with Site ID + code + licence serial,
-                  then sets a password.
+                  It will not be shown again. Send it to the customer with their site ID — they log in
+                  with Site ID + password.
                 </p>
                 <div>
                   <Button
                     variant="outline"
-                    onClick={() => navigator.clipboard?.writeText(onboard.setup_code ?? "").catch(() => {})}
+                    onClick={() => navigator.clipboard?.writeText(onboard.password ?? "").catch(() => {})}
                   >
-                    <HugeiconsIcon icon={Copy01Icon} size={16} /> Copy setup code
+                    <HugeiconsIcon icon={Copy01Icon} size={16} /> Copy password
                   </Button>
                 </div>
               </div>

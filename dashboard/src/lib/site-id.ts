@@ -105,24 +105,15 @@ export function bloomMaybeTaken(id: string): boolean {
   return bloom.maybeTaken(id);
 }
 
-// ---------- one-time setup codes ----------
+// ---------- shared credential helper ----------
 
 // Easy-to-read base32 without 0/O/1/I (no ambiguous glyphs for phone read-out).
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
-export function newSetupCode(length = 10): string {
+/** Generated password for a new/reset customer account. The vendor sees it
+ * once and shares it out-of-band (WhatsApp/phone). 12 chars from a 32-glyph
+ * unambiguous alphabet — typeable on a phone, well past the 8-char minimum. */
+export function newPassword(length = 12): string {
   const rand = crypto.getRandomValues(new Uint8Array(length));
   return [...rand].map((b) => CODE_ALPHABET[b % CODE_ALPHABET.length]).join("");
-}
-
-/** Hash stored in the DB: SHA-256 of code+site (site-bound, never reversible). */
-export async function hashSetupCode(code: string, siteId: string): Promise<string> {
-  const norm = code.trim().toUpperCase();
-  const data = new TextEncoder().encode(`setup:${siteId.trim()}:${norm}`);
-  const digest = await crypto.subtle.digest("SHA-256", data);
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-export function setupExpiryIso(minutes = 30): string {
-  return new Date(Date.now() + minutes * 60000).toISOString();
 }
