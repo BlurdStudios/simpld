@@ -17,6 +17,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { newPassword } from "@/lib/site-id";
+import { EDITION_RULES } from "@/lib/license";
 import { Skeleton } from "@/components/ui/skeleton";
 import { slugifySiteId } from "@/lib/site-id";
 import {
@@ -440,18 +441,22 @@ function TrackedLicencesTable({
   tracked,
   neverActivated,
   planPick,
+  planDays,
   changing,
   chasing,
   onPlanPick,
+  onPlanDays,
   onChangePlan,
   onChase,
 }: {
   tracked: TrackedSite[];
   neverActivated: LicenceRow[];
   planPick: Record<string, string>;
+  planDays: Record<string, number>;
   changing: string | null;
   chasing: string | null;
   onPlanPick: (siteId: string, edition: string) => void;
+  onPlanDays: (siteId: string, days: number) => void;
   onChangePlan: (siteId: string) => void;
   onChase: (siteId: string) => void;
 }) {
@@ -500,6 +505,14 @@ function TrackedLicencesTable({
                       <option key={ed} value={ed}>{ed}</option>
                     ))}
                   </select>
+                  <input
+                    type="number"
+                    min={1}
+                    className="h-8 w-14 rounded-md border border-input bg-transparent px-2 text-xs"
+                    value={planDays[t.site_id] ?? EDITION_RULES[planPick[t.site_id] || t.edition || "pro"]?.validityDays ?? 365}
+                    onChange={(e) => onPlanDays(t.site_id, Number(e.target.value) || 1)}
+                    title="validity/trial days"
+                  />
                   <Button
                     size="sm"
                     variant="outline"
@@ -530,6 +543,14 @@ function TrackedLicencesTable({
                     <option key={ed} value={ed}>{ed}</option>
                   ))}
                 </select>
+                <input
+                  type="number"
+                  min={1}
+                  className="h-8 w-14 rounded-md border border-input bg-transparent px-2 text-xs"
+                  value={planDays[l.site_id] ?? EDITION_RULES[planPick[l.site_id] || l.edition || "pro"]?.validityDays ?? 365}
+                  onChange={(e) => onPlanDays(l.site_id, Number(e.target.value) || 1)}
+                  title="validity/trial days"
+                />
                 <Button
                   size="sm"
                   variant="outline"
@@ -954,6 +975,7 @@ function LicencesTab({ onError }: { onError: (e: string | null) => void }) {
   const [changing, setChanging] = useState<string | null>(null);
   const [chasing, setChasing] = useState<string | null>(null);
   const [planPick, setPlanPick] = useState<Record<string, string>>({});
+  const [planDays, setPlanDays] = useState<Record<string, number>>({});
   const [notice, setNotice] = useState<string | null>(null);
   const [issue, setIssue] = useState({
     customer: "",
@@ -1020,17 +1042,21 @@ function LicencesTab({ onError }: { onError: (e: string | null) => void }) {
       return;
     }
     const edition = planPick[siteId] || "pro";
+    const days = planDays[siteId] ?? EDITION_RULES[edition]?.validityDays ?? 365;
     setChanging(siteId);
     setNotice(null);
     try {
+      const body: Record<string, unknown> = { serial: latestSerial, edition };
+      if (edition === "trial") body.trial_days = days;
+      else body.validity_days = days;
       const res = await fetch("/api/licenses/renew", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ serial: latestSerial, edition }),
+        body: JSON.stringify(body),
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error ?? `plan change failed (${res.status})`);
-      setNotice(`${siteId} moved to ${edition} — the site picks it up on its next sync. No file to send.`);
+      setNotice(`${siteId} moved to ${edition} (${days}d) — the site picks it up on its next sync.`);
       await refresh();
     } catch (e) {
       setNotice(e instanceof Error ? e.message : "plan change failed");
@@ -1106,11 +1132,45 @@ function LicencesTab({ onError }: { onError: (e: string | null) => void }) {
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-base">
+          <HugeiconsIcon icon={File01Icon} size={18} /> Plans — what each one gives
+        </CardTitle>
+        <CardDescription>
+          Pick an edition when issuing or changing a plan. Stations = concurrent factory PCs.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Plan</TableHead>
+              <TableHead>Stations</TableHead>
+              <TableHead>Features</TableHead>
+              <TableHead>Validity (default)</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {Object.entries(EDITION_RULES).map(([ed, r]) => (
+              <TableRow key={ed}>
+                <TableCell className="font-medium">{ed}</TableCell>
+                <TableCell>{r.stations}</TableCell>
+                <TableCell className="text-muted-foreground">
+                  {r.features.length ? r.features.join(", ") : "—"}
+                </TableCell>
+                <TableCell>{r.validityDays}d</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
           <HugeiconsIcon icon={File01Icon} size={18} /> Issue licence + onboard site
         </CardTitle>
         <CardDescription>
-          First issue for a site creates its client account and a one-time setup code.
-          Re-issues for an existing site return no code.
+          First issue for a site creates its client account and returns a password to share.
+          Re-issues for an existing site return no new account.
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-4">
@@ -1254,9 +1314,11 @@ function LicencesTab({ onError }: { onError: (e: string | null) => void }) {
               tracked={MOCK_TRACKED}
               neverActivated={MOCK_LICENCES.filter((l) => !MOCK_TRACKED.some((t) => t.site_id === l.site_id))}
               planPick={{}}
+              planDays={{}}
               changing={null}
               chasing={null}
               onPlanPick={() => {}}
+              onPlanDays={() => {}}
               onChangePlan={() => {}}
               onChase={() => {}}
             />
@@ -1267,9 +1329,14 @@ function LicencesTab({ onError }: { onError: (e: string | null) => void }) {
             tracked={tracked}
             neverActivated={neverActivated}
             planPick={planPick}
+            planDays={planDays}
             changing={changing}
             chasing={chasing}
-            onPlanPick={(siteId, edition) => setPlanPick({ ...planPick, [siteId]: edition })}
+            onPlanPick={(siteId, edition) => {
+              setPlanPick({ ...planPick, [siteId]: edition });
+              setPlanDays((prev) => ({ ...prev, [siteId]: EDITION_RULES[edition]?.validityDays ?? 365 }));
+            }}
+            onPlanDays={(siteId, days) => setPlanDays((prev) => ({ ...prev, [siteId]: days }))}
             onChangePlan={changePlan}
             onChase={chaseActivation}
           />
