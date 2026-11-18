@@ -520,14 +520,33 @@ function TrackedLicencesTable({
               Key issued {l.issued_by ? `by ${l.issued_by}` : ""} — never activated (no push yet)
             </TableCell>
             <TableCell>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={chasing === l.site_id}
-                onClick={() => onChase(l.site_id)}
-              >
-                {chasing === l.site_id ? "…" : "Re-send licence"}
-              </Button>
+              <div className="flex items-center gap-2">
+                <select
+                  className="flex h-8 rounded-md border border-input bg-transparent px-2 text-xs"
+                  value={planPick[l.site_id] || l.edition || "pro"}
+                  onChange={(e) => onPlanPick(l.site_id, e.target.value)}
+                >
+                  {["simple", "pro", "premium", "trial"].map((ed) => (
+                    <option key={ed} value={ed}>{ed}</option>
+                  ))}
+                </select>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={changing === l.site_id}
+                  onClick={() => onChangePlan(l.site_id)}
+                >
+                  {changing === l.site_id ? "…" : "Set plan"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={chasing === l.site_id}
+                  onClick={() => onChase(l.site_id)}
+                >
+                  {chasing === l.site_id ? "…" : "Re-send licence"}
+                </Button>
+              </div>
             </TableCell>
           </TableRow>
         ))}
