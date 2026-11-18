@@ -146,10 +146,9 @@ def test_reels_no_boxes_produces_slip():
     assert len(slip["reel_rows"]) == 2
     assert slip["box_rows"] == []
     assert [r["roll_no"] for r in slip["reel_rows"]] == [r1["roll_no"], r2["roll_no"]]
-    # Qualified identity: stored code wins, else period accompanies the number.
+    # Roll numbers are single numbers on the slip (no qualified code).
     for r in slip["reel_rows"]:
-        assert r["roll_label"] == r["roll_code"], r["roll_label"]
-        assert str(r["roll_no"]) in r["roll_label"] or r["roll_code"] in r["roll_label"]
+        assert r["roll_label"] == str(r["roll_no"]), r["roll_label"]
     assert all(r["kind"] == "Reel" for r in slip["rows"])
     t = slip["totals"]
     assert t["reels"] == 2 and t["boxes"] == 0
@@ -324,7 +323,7 @@ def test_roll_identity_code_then_period_then_job_fallback():
     job = S.create_job("IDENTITY JOB", core_wt=0.280, path=p)
     r = _add_reel(p, job["id"], 1, 11.0)
     slip = SP.get_slip(job["id"], p)
-    assert slip["reel_rows"][0]["roll_label"] == r["roll_code"], slip["reel_rows"][0]
+    assert slip["reel_rows"][0]["roll_label"] == "1", slip["reel_rows"][0]
     # Lose the code: period accompanies the number (e.g. 2026-10 / Roll 1).
     c = DB.get_conn(p)
     try:
@@ -335,8 +334,8 @@ def test_roll_identity_code_then_period_then_job_fallback():
     slip = SP.get_slip(job["id"], p)
     row = slip["reel_rows"][0]
     assert row["roll_no"] == 1  # stored number untouched
-    assert row["roll_label"] == f"{_PERIOD} / Roll 1", row["roll_label"]
-    # Lose the period too: job + roll identity, still no bare number.
+    assert row["roll_label"] == "1", row["roll_label"]
+    # Lose the period too: still the single roll number.
     c = DB.get_conn(p)
     try:
         c.execute("UPDATE reels SET roll_period=NULL WHERE id=?", (r["id"],))
@@ -346,7 +345,7 @@ def test_roll_identity_code_then_period_then_job_fallback():
     slip = SP.get_slip(job["id"], p)
     row = slip["reel_rows"][0]
     assert row["roll_no"] == 1
-    assert row["roll_label"] == f"J{job['job_no']} / Roll 1", row["roll_label"]
+    assert row["roll_label"] == "1", row["roll_label"]
     c = DB.get_conn(p)
     try:
         kept = c.execute("SELECT roll_no FROM reels WHERE id=?", (r["id"],)).fetchone()["roll_no"]

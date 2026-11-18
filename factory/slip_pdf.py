@@ -141,23 +141,22 @@ def page_fits_mm(slip: dict, page_rows: list[dict], is_last: bool) -> bool:
 
 
 def _roll_label(reel: dict, job_no) -> str:
-    """Qualified reel identity for display. Read-only, never renumbers.
+    """Reel identity for display: just the roll number (single number).
 
-    roll_code when stored, else period + roll number (e.g. "2026-10 / Roll
-    1"), else job + roll number (e.g. "J1001 / Roll 1"). Bare roll_no is
-    never shown alone (it repeats every month).
+    The user asked for single roll numbers on the slip, not the full qualified
+    code (period / job). Read-only, never renumbers.
     """
-    code = (reel.get("roll_code") or "").strip()
-    if code:
-        return code
     try:
         n = int(reel.get("roll_no"))
+        return str(n)
     except (TypeError, ValueError):
         n = reel.get("roll_no")
-    per = (reel.get("roll_period") or "").strip()
-    if per:
-        return f"{per} / Roll {n}"
-    return f"J{job_no} / Roll {n}"
+    if n is not None and str(n).strip():
+        return str(n).strip()
+    try:
+        return str(int(reel.get("prod_seq")))
+    except (TypeError, ValueError):
+        return str(reel.get("prod_seq") or "")
 
 
 def get_slip(job_id: int, path: str | None = None) -> dict:
@@ -292,6 +291,7 @@ def get_slip(job_id: int, path: str | None = None) -> dict:
         "job_name": job["job_name"],
         "job_code": code,
         "customer": next(iter(custs)) if len(custs) == 1 else "",
+        "supervisor": (job.get("supervisor") or "").strip().upper(),
         "wrappers_per_reel": job.get("wrappers_per_reel"),
         "product_name": job.get("product_name", "") or "",
         "reel_rows": reel_rows,
@@ -409,8 +409,9 @@ def paint_page(p, area, dpi: int, slip: dict, page_rows: list[dict],
     # Long customer / job names are ellipsized, never overflow the border.
     _code = str(slip.get("job_code") or "").strip().upper()
     _head = f"Jobno: {slip['job_no']}" + (f" [{_code}]" if _code else "")
+    _sup = str(slip.get("supervisor") or "").strip().upper()
     text(QRectF(x, y, W, 6 * mm),
-         f"{_head}     C.Name.: {slip['customer']}     DATE:", f_head)
+         f"{_head}     C.Name.: {slip['customer']}     Supv.: {_sup}     DATE:", f_head)
     y += 6 * mm
     text(QRectF(x, y, W, 6 * mm), f"Job Name: {slip['job_name']}", f_head)
     y += 6 * mm
@@ -1139,8 +1140,9 @@ def paint_order_page(p, area, dpi: int, summary: dict,
     text(QRectF(x, y, W, 6 * mm),
          f"Order: {summary.get('order_no')}     Customer: {summary.get('customer')}", f_head)
     y += 6 * mm
+    _sup = str(summary.get("supervisor") or "").strip().upper()
     text(QRectF(x, y, W, 6 * mm),
-         f"{_ahead} {summary.get('job_name')}     Batch: {summary.get('batch_no') or '—'}", f_head)
+         f"{_ahead} {summary.get('job_name')}     Batch: {summary.get('batch_no') or '—'}     Supv.: {_sup}", f_head)
     y += 6 * mm
     text(QRectF(x, y, W, 6 * mm),
          f"PO: {summary.get('customer_po') or '—'}     Date: {summary.get('order_date') or ''}", f_head)
