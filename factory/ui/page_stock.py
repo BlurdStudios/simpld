@@ -33,42 +33,79 @@ def _show_backend_error(parent, exc) -> None:
         QMessageBox.warning(parent, "Stock", msg)
 
 
-class ProductCard(QFrame):
-    """Clickable product card: job identity plus stock numbers."""
+class JobCodeTile(QFrame):
+    """Small clickable tile showing one job code's stock inside a product card."""
 
     clicked = Signal(int)
 
-    def __init__(self, job_id: int, title: str, name: str, big: str, sub: str):
+    def __init__(self, job_id: int, code: str, boxes: int, kg: float):
         super().__init__()
         self.job_id = job_id
         self.setProperty("card", True)
         self.setCursor(Qt.PointingHandCursor)
-        self.setMinimumHeight(130)
-        self.setMinimumWidth(220)
+        self.setMinimumWidth(90)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         v = QVBoxLayout(self)
-        v.setContentsMargins(14, 12, 14, 12)
-        v.setSpacing(4)
-        t = QLabel(title)
-        t.setProperty("field", "caption")
-        t.setWordWrap(True)
-        v.addWidget(t)
-        n = QLabel(name)
-        n.setWordWrap(True)
-        v.addWidget(n)
-        # Boxes are the headline number the floor packs and dispatches by;
-        # weight + coils + pieces read as the detail line below.
-        big = QLabel(big)
-        big.setProperty("stat", "value")
-        v.addWidget(big)
-        s = QLabel(sub)
-        s.setProperty("hint", True)
-        s.setWordWrap(True)
-        v.addWidget(s)
+        v.setContentsMargins(8, 6, 8, 6)
+        v.setSpacing(2)
+        c = QLabel(code or "—")
+        c.setProperty("field", "caption")
+        c.setAlignment(Qt.AlignCenter)
+        v.addWidget(c)
+        b = QLabel(f"{boxes} box{'es' if boxes != 1 else ''}")
+        b.setProperty("stat", "value")
+        b.setAlignment(Qt.AlignCenter)
+        v.addWidget(b)
+        w = QLabel(f"{kg:.3f} kg")
+        w.setProperty("hint", True)
+        w.setAlignment(Qt.AlignCenter)
+        v.addWidget(w)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.clicked.emit(self.job_id)
+        super().mousePressEvent(event)
+
+
+class ProductCard(QFrame):
+    """Full-width product card: header (name + total boxes, weight below)
+    plus a row of job-code tiles inside."""
+
+    def __init__(self, name: str, total_boxes: int, total_kg: float,
+                 tiles: list):
+        super().__init__()
+        self.setProperty("card", True)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(14, 12, 14, 12)
+        v.setSpacing(8)
+        # Header row: product name (left) + total boxes (right).
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        name_lbl = QLabel(name)
+        name_lbl.setWordWrap(True)
+        name_lbl.setStyleSheet("font-size: 16px; font-weight: 600;")
+        head.addWidget(name_lbl, 1)
+        boxes_lbl = QLabel(f"{total_boxes} box{'es' if total_boxes != 1 else ''}")
+        boxes_lbl.setProperty("stat", "value")
+        boxes_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        head.addWidget(boxes_lbl)
+        v.addLayout(head)
+        # Weight below the header.
+        wt = QLabel(f"{total_kg:.3f} kg total")
+        wt.setProperty("hint", True)
+        v.addWidget(wt)
+        # Job-code breakdown in small boxes.
+        if tiles:
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            for tile in tiles:
+                row.addWidget(tile, 1)
+            row.addStretch(0)
+            v.addLayout(row)
+
+    def mousePressEvent(self, event):
+        # The card itself is not clickable; the job-code tiles handle navigation.
         super().mousePressEvent(event)
 
 
@@ -224,29 +261,42 @@ class StockPage(QWidget):
             jobs.setdefault(int(r["job_id"]), []).append(r)
         return jobs
 
+    def _products(self) -> dict:
+        """Group ready stock by product (job_name), then by job (job_id).
+
+        Returns {product_name: {job_id: [rows]}}.
+        """
+        products: dict = {}
+        for r in self._rows:
+            pname = r.get("job_name") or ""
+            jid = int(r["job_id"])
+            products.setdefault(pname, {}).setdefault(jid, []).append(r)
+        return products
+
     def _render_cards(self):
         while self.grid.count():
             item = self.grid.takeAt(0)
             w = item.widget()
             if w is not None:
                 w.deleteLater()
-        jobs = self._jobs()
-        ordered = sorted(jobs.items(), key=lambda kv: str(kv[1][0]["job_no"]))
-        for i, (jid, rows) in enumerate(ordered):
-            first = rows[0]
-            boxes = len(rows)
-            coils = sum(int(r.get("num_reels") or 0) for r in rows)
-            pieces = sum(int(r.get("pieces") or 0) for r in rows)
-            kg = sum(float(r.get("total_net") or 0) for r in rows)
-            big = f"{boxes} box{'es' if boxes != 1 else ''}"
-            sub = f"{kg:.3f} kg · {coils} coil{'s' if coils != 1 else ''}"
-            if pieces:
-                sub += f" · {pieces} piece{'s' if pieces != 1 else ''}"
-            card = ProductCard(jid, job_label(first), str(first["job_name"]),
-                               big, sub)
-            card.clicked.connect(self.show_product)
-            self.grid.addWidget(card, i // 3, i % 3)
-        for c in range(3):
+        products = self._products()
+        ordered = sorted(products.items(), key=lambda kv: str(kv[0]))
+        for i, (pname, jobs) in enumerate(ordered):
+            total_boxes = 0
+            total_kg = 0.0
+            tiles = []
+            for jid, rows in jobs.items():
+                boxes = len(rows)
+                kg = sum(float(r.get("total_net") or 0) for r in rows)
+                code = rows[0].get("job_code") or ""
+                total_boxes += boxes
+                total_kg += kg
+                tile = JobCodeTile(jid, str(code), boxes, kg)
+                tile.clicked.connect(self.show_product)
+                tiles.append(tile)
+            card = ProductCard(pname, total_boxes, total_kg, tiles)
+            self.grid.addWidget(card, i, 0)
+        for c in range(1):
             self.grid.setColumnStretch(c, 1)
 
     def _render_table(self, job_id: int):
@@ -292,7 +342,7 @@ class StockPage(QWidget):
         elif self._rows:
             tot = sum(r["total_net"] for r in self._rows)
             text = (f"In stock: {len(self._rows)} boxes across "
-                    f"{len(self._jobs())} products  |  {tot:.3f} Kg")
+                    f"{len(self._products())} products  |  {tot:.3f} Kg")
             empty = False
         else:
             text = "No boxes in stock — pack boxes in Packaging."
