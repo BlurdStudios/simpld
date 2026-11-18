@@ -1005,13 +1005,7 @@ function LicencesTab({ onError }: { onError: (e: string | null) => void }) {
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error ?? `re-issue failed (${res.status})`);
-      const blob = new Blob([JSON.stringify(data.licence)], { type: "application/json" });
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = `license-${siteId}-${lic.edition}.lic`;
-      a.click();
-      URL.revokeObjectURL(a.href);
-      setNotice(`${siteId}: fresh licence downloaded — send it to the site to activate.`);
+      setNotice(`${siteId}: fresh licence queued — the site picks it up on its next sync.`);
       await refresh();
     } catch (e) {
       setNotice(e instanceof Error ? e.message : "chase failed");
@@ -1036,14 +1030,7 @@ function LicencesTab({ onError }: { onError: (e: string | null) => void }) {
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error ?? `plan change failed (${res.status})`);
-      const lic = JSON.stringify(data.licence);
-      const blob = new Blob([lic], { type: "application/json" });
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = `license-${siteId}-${edition}.lic`;
-      a.click();
-      URL.revokeObjectURL(a.href);
-      setNotice(`${siteId} moved to ${edition} — new key downloaded, send it to the site.`);
+      setNotice(`${siteId} moved to ${edition} — the site picks it up on its next sync. No file to send.`);
       await refresh();
     } catch (e) {
       setNotice(e instanceof Error ? e.message : "plan change failed");
