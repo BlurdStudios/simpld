@@ -1811,12 +1811,12 @@ def list_orders(status: str | None = None, path: str | None = None) -> list[dict
     try:
         if status:
             rows = c.execute(
-                "SELECT o.*, j.job_no, j.job_name, j.job_code, j.wrappers_per_reel, j.supervisor"
+                "SELECT o.*, j.job_no, j.job_name, j.job_code, j.wrappers_per_reel, j.supervisor, j.product_name"
                 " FROM dispatch_orders o JOIN jobs j ON j.id=o.job_id"
                 " WHERE o.status=? ORDER BY o.id DESC", (status,)).fetchall()
         else:
             rows = c.execute(
-                "SELECT o.*, j.job_no, j.job_name, j.job_code, j.wrappers_per_reel, j.supervisor"
+                "SELECT o.*, j.job_no, j.job_name, j.job_code, j.wrappers_per_reel, j.supervisor, j.product_name"
                 " FROM dispatch_orders o JOIN jobs j ON j.id=o.job_id"
                 " ORDER BY o.id DESC").fetchall()
         out = []
@@ -1859,7 +1859,7 @@ def order_progress(order_id: int, path: str | None = None) -> dict:
     c = get_conn(path)
     try:
         o = c.execute(
-            "SELECT o.*, j.job_no, j.job_name, j.job_code, j.wrappers_per_reel, j.supervisor"
+            "SELECT o.*, j.job_no, j.job_name, j.job_code, j.wrappers_per_reel, j.supervisor, j.product_name"
             " FROM dispatch_orders o JOIN jobs j ON j.id=o.job_id"
             " WHERE o.id=?", (order_id,)).fetchone()
         if not o:
@@ -2020,7 +2020,7 @@ def dispatch_slip_data(order_id: int, path: str | None = None) -> dict:
     c = get_conn(path)
     try:
         o = c.execute(
-            "SELECT o.*, j.job_no, j.job_name, j.job_code, j.wrappers_per_reel, j.supervisor"
+            "SELECT o.*, j.job_no, j.job_name, j.job_code, j.wrappers_per_reel, j.supervisor, j.product_name"
             " FROM dispatch_orders o JOIN jobs j ON j.id=o.job_id"
             " WHERE o.id=?", (order_id,)).fetchone()
         if not o:
@@ -2138,7 +2138,7 @@ def get_dispatch_slip(order_id: int, path: str | None = None) -> dict:
             slip["frozen"] = True
             return slip
         o = c.execute(
-            "SELECT o.*, j.job_no, j.job_name, j.job_code, j.wrappers_per_reel, j.supervisor"
+            "SELECT o.*, j.job_no, j.job_name, j.job_code, j.wrappers_per_reel, j.supervisor, j.product_name"
             " FROM dispatch_orders o JOIN jobs j ON j.id=o.job_id"
             " WHERE o.id=?", (order_id,)).fetchone()
         if not o:

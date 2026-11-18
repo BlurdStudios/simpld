@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QCombo
                                QAbstractItemView, QSpinBox, QSizePolicy)
 from PySide6.QtCore import Qt
 from factory import data_access as DA
-from factory.db import bare_carton_no, job_label
+from factory.db import bare_carton_no
 from factory.hardware import mock as HW
 from factory.hardware import devices as DEV
 from factory.hardware import status as HWStatus
@@ -412,8 +412,9 @@ class DispatchPage(QWidget):
             else:
                 counts = f"loaded {prog.get('loaded', 0)}/{int(o.get('required_bundles') or 0)} boxes"
             self._alert = alert
+            pname = (o.get("product_name") or o.get("job_name") or "").strip()
             text = (f"{o['order_no']} → {o['customer']} · "
-                    f"{job_label(o)} · "
+                    f"{pname} · "
                     f"{counts} · {o['status']}")
             if alert:
                 text += f" · {alert[0]}"
@@ -506,7 +507,10 @@ class DispatchPage(QWidget):
                 have = (f"{boxes} box{'es' if boxes != 1 else ''} · "
                         f"{coils} coil{'s' if coils != 1 else ''} · "
                         f"{_compact_pcs(pcs)} pcs")
-            label = f"{job_label(j)} [{have}]"
+            pname = (j.get("product_name") or j.get("job_name") or "").strip()
+            code = (j.get("job_code") or "").strip().upper()
+            ident = f"{pname} [{code}]" if code else pname
+            label = f"{ident} · {have}"
             combo.addItem(label, userData=j["id"])
             combo.setItemData(combo.count() - 1, label,
                               Qt.ItemDataRole.ToolTipRole)
