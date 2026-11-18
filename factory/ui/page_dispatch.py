@@ -490,31 +490,50 @@ class DispatchPage(QWidget):
         f.addRow("Customer:", cust)
         combo = QComboBox()
         combo.setMinimumWidth(480)
+        # Group open jobs by product: dispatch is per-product, and any job
+        # (batch) of that product can feed one order.
+        products: dict = {}
         for j in jobs:
-            jid = int(j["id"])
-            s = stock.get(jid, {})
-            boxes = int(s.get("boxes") or 0)
-            coils = int(s.get("coils") or 0)
-            pcs = s.get("pieces")
-            wkg = s.get("weight_kg")
-            if boxes <= 0:
+            pname = (j.get("product_name") or j.get("job_name") or "").strip()
+            products.setdefault(pname, []).append(j)
+        for pname, pjobs in products.items():
+            # Aggregate ready stock across all jobs of this product.
+            boxes = coils = 0
+            pcs_total = 0
+            has_pieces = False
+            has_stock = False
+            wkg = 0.0
+            for j in pjobs:
+                s = stock.get(int(j["id"]), {}) or {}
+                b = int(s.get("boxes") or 0)
+                if b > 0:
+                    has_stock = True
+                boxes += b
+                coils += int(s.get("coils") or 0)
+                if s.get("pieces") is not None:
+                    has_pieces = True
+                    pcs_total += int(s.get("pieces") or 0)
+                wkg += float(s.get("weight_kg") or 0)
+            pcs = pcs_total if has_pieces else None
+            if not has_stock:
                 have = "no ready stock"
             elif pcs is None:
                 have = (f"{boxes} box{'es' if boxes != 1 else ''} · "
                         f"{coils} coil{'s' if coils != 1 else ''} · "
-                        f"{float(wkg or 0):.1f} kg")
+                        f"{wkg:.1f} kg")
             else:
                 have = (f"{boxes} box{'es' if boxes != 1 else ''} · "
                         f"{coils} coil{'s' if coils != 1 else ''} · "
                         f"{_compact_pcs(pcs)} pcs")
-            pname = (j.get("product_name") or j.get("job_name") or "").strip()
-            code = (j.get("job_code") or "").strip().upper()
+            # Use the job with the most ready stock as the order's anchor job.
+            anchor = max(pjobs, key=lambda j: int((stock.get(int(j["id"]), {}) or {}).get("boxes") or 0))
+            code = (anchor.get("job_code") or "").strip().upper()
             ident = f"{pname} [{code}]" if code else pname
             label = f"{ident} · {have}"
-            combo.addItem(label, userData=j["id"])
+            combo.addItem(label, userData=int(anchor["id"]))
             combo.setItemData(combo.count() - 1, label,
                               Qt.ItemDataRole.ToolTipRole)
-        f.addRow("Product job:", combo)
+        f.addRow("Product:", combo)
         hint = QLabel("")
         hint.setWordWrap(True)
         hint.setMinimumWidth(360)
