@@ -485,11 +485,7 @@ class SummaryPage(QWidget):
         from factory import sync as _SYNC
         from factory.ui.toast import toast
         if not _SYNC.configured():
-            return QMessageBox.information(
-                self, "Sync",
-                "Sync is not set up yet.\nOpen Settings → Sync and enter the "
-                "dashboard address, site ID and key.\n"
-                "The factory works fully offline.")
+            return QMessageBox.information(self, "Sync", _SYNC.setup_hint())
         day = self.date_edit.date().toString("yyyy-MM-dd")
         try:
             res = _SYNC.push_now(day if day else None)

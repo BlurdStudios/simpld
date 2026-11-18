@@ -70,6 +70,20 @@ def configured() -> bool:
     return bool(url and site and key)
 
 
+def setup_hint() -> str:
+    """Operator-facing explanation when this PC has no vendor push key.
+
+    Sync is zero-config by design: the URL is fixed, the site ID comes from
+    the licence, and the vendor provisions the key. Never direct operators
+    to input fields that deliberately do not exist in the UI.
+    """
+    _url, site, _key = _cfg()
+    where = f" (site: {site})" if site else ""
+    return ("Sync is not set up on this PC yet" + where + ". Your vendor "
+            "provisions the push key remotely — there is nothing to enter in "
+            "the app. The factory keeps working fully offline.")
+
+
 def _app_dir() -> str:
     try:
         from .db import app_data_dir

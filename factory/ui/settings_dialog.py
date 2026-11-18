@@ -212,8 +212,8 @@ class SettingsDialog(QDialog):
             from factory import sync as SYNC
             last = SYNC.last_sync()
             if not SYNC.configured():
-                self.s_status.setText("Waiting for the vendor to finish setting "
-                                      "up sync for this PC.")
+                self.s_status.setText("Waiting for the vendor to provision sync "
+                                      "on this PC — nothing to enter here.")
             elif last.get("at"):
                 ok = "ok" if last.get("ok") else "failed"
                 self.s_status.setText(f"{last['at']} ({ok})")
@@ -224,14 +224,28 @@ class SettingsDialog(QDialog):
 
     def _sync_now(self):
         from factory import sync as SYNC
+        from factory.ui.toast import toast
         if not SYNC.configured():
             self._refresh_sync_status()
+            QMessageBox.information(self, "Sync", SYNC.setup_hint())
             return
         try:
-            SYNC.push_now()
+            res = SYNC.push_now()
         except Exception as e:
-            QMessageBox.warning(self, "Sync", f"Sync failed: {e}")
+            QMessageBox.warning(self, "Sync", f"Sync failed:\n{e}")
+            self._refresh_sync_status()
+            return
         self._refresh_sync_status()
+        detail = str(res.get("detail") or "")
+        if res.get("ok"):
+            toast(self, "Sync done.")
+        elif res.get("queued"):
+            QMessageBox.information(
+                self, "Sync",
+                f"Dashboard unreachable — queued.\n{detail}\n"
+                "The floor is unaffected; it retries next window.")
+        else:
+            QMessageBox.warning(self, "Sync", f"Sync failed:\n{detail}")
 
     # ----- Licence ------------------------------------------------------
     def _build_licence(self) -> QWidget:

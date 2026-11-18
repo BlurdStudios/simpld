@@ -76,3 +76,25 @@ def test_push_queues_offline(tmp_path, monkeypatch):
     monkeypatch.setenv("SIMPLD_DATA_DIR", str(tmp_path / "appdata"))
     res = S.push_now()
     assert res["ok"] is False and res["queued"] is True
+
+
+def test_setup_hint_points_to_vendor_not_missing_fields(tmp_path, monkeypatch):
+    # Zero-config sync has no URL/site/key inputs: the hint must never send
+    # the operator to Settings to enter them.
+    monkeypatch.delenv("SIMPLD_SYNC_URL", raising=False)
+    monkeypatch.delenv("SIMPLD_SYNC_SITE_ID", raising=False)
+    monkeypatch.delenv("SIMPLD_SYNC_KEY", raising=False)
+    monkeypatch.setenv("SIMPLD_DB", str(tmp_path / "empty.db"))
+    monkeypatch.setenv("SIMPLD_DATA_DIR", str(tmp_path / "appdata"))
+    hint = S.setup_hint()
+    assert "vendor" in hint.lower()
+    assert "nothing to enter" in hint.lower()
+    assert "Settings" not in hint
+    assert "site ID and key" not in hint
+
+
+def test_setup_hint_includes_site_for_support(tmp_path, monkeypatch):
+    monkeypatch.setenv("SIMPLD_SYNC_URL", "https://dash.example")
+    monkeypatch.setenv("SIMPLD_SYNC_SITE_ID", "vasavi-f1")
+    monkeypatch.setenv("SIMPLD_SYNC_KEY", "k")
+    assert "vasavi-f1" in S.setup_hint()
