@@ -11,6 +11,7 @@ bus scan, no print, no hardware.
 import os
 import sys
 import types
+import pytest
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -138,6 +139,8 @@ def test_busy_interface_names_usblp_and_draining():
     assert "busy" in msg and "usblp" in msg and "lpstat -o" in msg, msg
 
 
+@pytest.mark.skipif(sys.platform == "win32",
+                   reason="usbfs node pre-check is Linux-only (no geteuid/os node on Windows)")
 def test_unwritable_node_fails_before_claim():
     """The pre-check gives the lp-group fix without touching libusb."""
     dev = FakeDev()
