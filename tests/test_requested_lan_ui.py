@@ -113,7 +113,11 @@ def test_qt_remote_startup_lists_server_jobs_no_local_db(lan):
         try:
             assert pg.job_combo.count() >= 1, "remote jobs must populate the dropdown"
             found = [pg.job_combo.itemText(i) for i in range(pg.job_combo.count())]
-            assert any(str(job["job_no"]) in t for t in found), found
+            # The dropdown shows the job name (product-first since 518a4cd),
+            # not the J:<no> identity; the id travels in itemData.
+            assert any(prod["name"] in t for t in found), found
+            ids = [pg.job_combo.itemData(i) for i in range(pg.job_combo.count())]
+            assert job["id"] in ids, ids
             pg.refresh_history()
             assert not os.path.exists(sentinel), "LAN mode must not create a local DB"
         finally:
