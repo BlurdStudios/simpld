@@ -12,6 +12,7 @@ every print raises, so nothing is ever sent as a guessed command.
 from __future__ import annotations
 
 import logging as _logging
+import os
 
 from .base import PrinterInterface
 
@@ -97,6 +98,54 @@ def citizen_usb_present() -> bool:
     return present
 
 
+def _usb_node_path(dev) -> str:
+    """usbfs node for a PyUSB device ('/dev/bus/usb/BBB/DDD'), or ''."""
+    try:
+        return "/dev/bus/usb/%03d/%03d" % (int(dev.bus), int(dev.address))
+    except Exception:
+        return ""
+
+
+def _usb_permission_message(node: str = "") -> str:
+    """The real fix for usbfs EACCES: the node is root:lp, the user is not.
+
+    CUPS keeps working in this state because its backend runs as root, so
+    "print via the queue works but the app's own print does not" is the
+    signature of this cause — never a broken queue.
+    """
+    where = f" ({node})" if node else ""
+    return (
+        f"No permission to open the label printer over USB{where} — the "
+        "device belongs to root:lp and your user is not in the 'lp' group.\n"
+        "Fix it once:\n"
+        "    sudo usermod -aG lp $USER\n"
+        "Then log out / back in, or relaunch the app from a `newgrp lp` "
+        "shell — a running app started before the change keeps the old "
+        "groups.")
+
+
+def _claim_error_message(e: BaseException, node: str = "") -> str:
+    """Operator-facing reason for a failed interface claim.
+
+    libusb raises USBError with a usbfs errno, NOT PermissionError: 13 is
+    permission denied (root:lp node), 16 is a busy interface (usblp or a
+    running CUPS backend). Naming the actual cause matters — telling an
+    operator about a "queue" when the node is unwritable sends them to the
+    wrong dialog.
+    """
+    errno = getattr(e, "errno", None)
+    if errno is None and getattr(e, "backend_error_code", None) == -3:
+        errno = 13  # libusb LIBUSB_ERROR_ACCESS
+    if errno == 13:
+        return _usb_permission_message(node)
+    if errno == 16:
+        return ("The label printer's USB interface is busy — a CUPS job or "
+                "the usblp kernel driver is holding it. Let the queue drain "
+                f"(lpstat -o) and print again. ({e})")
+    return ("Could not claim the printer's USB interface — another print "
+            f"queue or driver may be holding it. ({e})")
+
+
 def citizen_usb_send(data: bytes) -> None:
     """Write label bytes to the Citizen over raw USB (Linux path).
 
@@ -117,12 +166,20 @@ def citizen_usb_send(data: bytes) -> None:
     if dev is None:
         raise RuntimeError(
             "Label printer not found on USB — connect the Citizen and try again.")
+    node = _usb_node_path(dev)
+    detached = False
     try:
+        # Root bypasses the node mode, and os.access uses the REAL uid, so
+        # an effective-root process must not be told it lacks permission.
+        if (node and hasattr(os, "geteuid") and os.geteuid() != 0
+                and os.path.exists(node) and not os.access(node, os.W_OK)):
+            raise RuntimeError(_usb_permission_message(node))
         # A kernel driver (usblp/hid) on interface 0 must step aside for
-        # the print, then is free to reclaim on process exit.
+        # the print; it is re-attached in the finally block below.
         try:
             if dev.is_kernel_driver_active(USB_IFACE):
                 dev.detach_kernel_driver(USB_IFACE)
+                detached = True
         except Exception:
             pass
         try:
@@ -132,9 +189,7 @@ def citizen_usb_send(data: bytes) -> None:
         try:
             usb.util.claim_interface(dev, USB_IFACE)
         except Exception as e:
-            raise RuntimeError(
-                "Could not claim the printer's USB interface — is another "
-                f"print queue holding it? ({e})") from e
+            raise RuntimeError(_claim_error_message(e, node)) from e
         view = memoryview(data)
         for off in range(0, len(view), USB_CHUNK):
             dev.write(USB_EP_OUT, view[off:off + USB_CHUNK].tobytes(),
@@ -142,16 +197,23 @@ def citizen_usb_send(data: bytes) -> None:
     except RuntimeError:
         raise
     except PermissionError as e:
-        raise RuntimeError(
-            "No permission to open the label printer over USB — add your "
-            f"user to the 'lp' group (or install a udev rule): {e}") from e
+        raise RuntimeError(_usb_permission_message(node)) from e
     except Exception as e:
         raise RuntimeError(f"USB write to the Citizen failed: {e}") from e
     finally:
         try:
+            usb.util.release_interface(dev, USB_IFACE)
+        except Exception:
+            pass
+        try:
             usb.util.dispose_resources(dev)
         except Exception:
             pass
+        if detached:
+            try:
+                dev.attach_kernel_driver(USB_IFACE)
+            except Exception:
+                pass
 
 
 def send_bytes(port: str, data: bytes, baud: int = VCOM_BAUD) -> None:

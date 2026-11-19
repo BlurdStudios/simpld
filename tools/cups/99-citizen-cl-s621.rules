@@ -1,0 +1,19 @@
+# Citizen CL-S621 / CL-S621II (USB 2730:0fff) — raw-USB label printing
+#
+# The app writes ZPL straight to the printer's bulk OUT endpoint, so the
+# signed-in user needs write access to /dev/bus/usb/BBB/DDD. The kernel
+# default is root:lp 0664, which is why printing fails with
+# "[Errno 13] Access denied (insufficient permissions)" for users who are
+# not in the 'lp' group (CUPS still prints — its backend runs as root).
+#
+# Preferred fix:  sudo usermod -aG lp $USER   (then log out / back in)
+#
+# This rule is the alternative for kiosk / autologin boxes where group
+# membership is awkward. It grants only this printer's node to the seated
+# user (uaccess ACL) and to the 'lp' group — never MODE="0666".
+#
+# Install:  sudo cp tools/cups/99-citizen-cl-s621.rules /etc/udev/rules.d/
+#           sudo udevadm control --reload-rules
+#           sudo udevadm trigger --subsystem-match=usb
+# (Re-plug the printer or reboot so the node is re-created.)
+SUBSYSTEM=="usb", ATTR{idVendor}=="2730", ATTR{idProduct}=="0fff", MODE="0660", GROUP="lp", TAG+="uaccess"
