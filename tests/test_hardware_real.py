@@ -675,10 +675,137 @@ def test_send_bytes_empty_port_routes_to_raw_usb():
     does. Nothing touches serial."""
     from factory.hardware import vcom as V
     calls = []
-    with _mock.patch.object(V, "citizen_usb_send",
+    with _mock.patch.object(V, "sys", _mock.Mock(platform="linux")), \
+         _mock.patch.object(V, "citizen_usb_send",
                             side_effect=calls.append):
         V.send_bytes("", b"ZPL-job")
     assert calls == [b"ZPL-job"]
+
+
+def test_windows_missing_vcom_port_skips_raw_usb():
+    from factory.hardware import vcom as V
+
+    with _mock.patch.object(V, "sys", _mock.Mock(platform="win32")), \
+         _mock.patch.object(V, "citizen_usb_send") as raw_send:
+        assert not V.citizen_usb_present()
+        with pytest.raises(RuntimeError, match="Device Manager"):
+            V.send_bytes("", b"ZPL-job")
+        raw_send.assert_not_called()
+
+
+def test_windows_auto_detects_citizen_driver_target():
+    from factory.hardware import citizen_windows as win
+    from factory.hardware import vcom as V
+
+    present = {
+        "ctusbdr": [r"USB\VID_2730&PID_0FFF\00000000"],
+        "ctvrcom": [r"ROOT\PORTS\0001", r"ROOT\PORTS\0002"],
+    }
+    mappings = {
+        1: {"PortName": ("COM7", 1), "TargetDevice": (["VID_1D90&PID_0FFF"], 7)},
+        2: {"PortName": ("COM12", 1), "TargetDevice": (["vid_2730&pid_0fff"], 7)},
+    }
+
+    def open_key(_instance, _access, _profile, _disposition, key, _flags):
+        device = driver.CM_Locate_DevNodeW.call_args.args[1]
+        key._obj.value = int(device.rsplit("\\", 1)[1])
+        return 0
+
+    driver = _mock.Mock()
+    driver.CM_Locate_DevNodeW.return_value = 0
+
+    def devnode_status(status, _problem, _instance, _flags):
+        status._obj.value = 0x8
+        return 0
+
+    driver.CM_Get_DevNode_Status.side_effect = devnode_status
+    driver.CM_Open_DevNode_Key.side_effect = open_key
+    registry = _mock.Mock(REG_SZ=1, REG_MULTI_SZ=7)
+
+    def query_value(key, name):
+        if name not in mappings[key]:
+            raise FileNotFoundError(name)
+        return mappings[key][name]
+
+    registry.QueryValueEx.side_effect = query_value
+    cfg = _live_cfg()
+    with _mock.patch.object(V, "sys", _mock.Mock(platform="win32")), \
+         _mock.patch.object(win.ctypes, "WinDLL", return_value=driver, create=True), \
+         _mock.patch.dict(sys.modules, {"winreg": registry}), \
+         _mock.patch.object(win, "_present_devices", side_effect=lambda _, s: present[s]), \
+         _mock.patch.object(HWStatus, "_cached_port_objects", return_value=[]), \
+         _mock.patch("serial.tools.list_ports.comports", return_value=[]):
+        assert HWStatus._detail_printer(cfg) == ("ready", "COM12 · VCOM")
+        assert DEV.printer_configured(cfg)
+        assert DEV.build_printer(cfg)._target() == "COM12"
+
+        mappings[1]["TargetDevice"] = (["VID_2730&PID_0FFF"], 7)
+        assert V.find_vcom_port() is None
+
+        mappings[1]["TargetDevice"] = (["VID_1D90&PID_0FFF"], 7)
+        mappings[2]["PortName"] = ("COM19", 1)
+        mappings[2]["TargetSerialNumber"] = (["another-printer"], 7)
+        assert V.find_vcom_port() is None
+        mappings[2]["TargetSerialNumber"] = ("00000000", 1)
+        assert DEV.build_printer(cfg)._target() == "COM19"
+
+        driver.CM_Get_DevNode_Status.side_effect = None
+        driver.CM_Get_DevNode_Status.return_value = 1
+        assert V.find_vcom_port() is None
+        driver.CM_Get_DevNode_Status.side_effect = devnode_status
+
+        present["ctusbdr"].clear()
+        assert not DEV.printer_configured(cfg)
+        assert HWStatus._detail_printer(cfg) == ("setup", "printer not connected")
+        stale = _mock.Mock(device="COM19", vid=V.CITIZEN_VID, pid=V.CITIZEN_PID,
+                           description="ctvrcom Virtual Communication Port")
+        assert V.find_vcom_port([stale]) is None
+        stale.description = "Citizen printer"
+        stale.hwid = r"CTVRCOM\008"
+        assert V.find_vcom_port([stale]) is None
+
+
+def test_windows_device_list_retries_if_usb_changes_during_enumeration():
+    from factory.hardware import citizen_windows as win
+
+    driver = _mock.Mock()
+    device_ids = "root\\ports\\0001\0root\\ports\\0002\0\0"
+
+    def size(buffer_length, service, flags):
+        assert service == "ctvrcom"
+        assert flags == 0x10000142
+        buffer_length._obj.value = len(device_ids)
+        return 0
+
+    def read(_service, buffer, _size, _flags):
+        if driver.CM_Get_Device_ID_ListW.call_count == 1:
+            return 0x1A
+        buffer[:] = device_ids
+        return 0
+
+    driver.CM_Get_Device_ID_List_SizeW.side_effect = size
+    driver.CM_Get_Device_ID_ListW.side_effect = read
+    assert win._present_devices(driver, "ctvrcom") == [
+        r"ROOT\PORTS\0001", r"ROOT\PORTS\0002",
+    ]
+    assert driver.CM_Get_Device_ID_List_SizeW.call_count == 2
+
+
+def test_full_refresh_reenumerates_cached_printer_ports():
+    from serial.tools import list_ports
+    from factory.hardware import vcom as V
+    from factory.ui.device_strip import DetectionController
+
+    citizen = _mock.Mock(device="COM7", vid=V.CITIZEN_VID, pid=V.CITIZEN_PID)
+    with _mock.patch.object(HWStatus, "_PORTS_CACHE", {}), \
+         _mock.patch.object(list_ports, "comports", side_effect=[[], [citizen]]):
+        assert V.match_citizen_port(HWStatus._cached_port_objects()) is None
+        controller = DetectionController()
+        refreshed = []
+        controller.finished.connect(lambda _: refreshed.append(
+            V.match_citizen_port(HWStatus._cached_port_objects())))
+        controller._finish({})
+        assert refreshed == ["COM7"]
 
 
 def test_send_bytes_explicit_port_uses_serial():

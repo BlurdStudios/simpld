@@ -28,6 +28,7 @@ States
 """
 from __future__ import annotations
 
+import sys
 import time
 
 from . import config as _config
@@ -168,13 +169,10 @@ def _detail_printer(cfg: dict) -> tuple[str, str]:
         return "demo", "simulated"
     port = str(cfg.get("printer_port") or "").strip()
     if not port:
-        objs = _cached_port_objects()
-        if objs:
-            try:
-                from .vcom import match_citizen_port
-                port = match_citizen_port(objs) or ""
-            except Exception:
-                port = ""
+        from .vcom import find_vcom_port
+        # A timed cache can outlive a Windows unplug or COM renumbering.
+        ports = None if sys.platform == "win32" else _cached_port_objects() or []
+        port = find_vcom_port(ports) or ""
     if not port:
         try:
             from .vcom import citizen_usb_present
@@ -268,6 +266,10 @@ def device_status(key: str, cfg: dict | None = None) -> dict:
         # request) — it is found automatically once its USB cable is in.
         out["hint"] = ("Connect the label printer — it is found automatically."
                        if key == PRINTER else "Click to detect again.")
+        if (key == PRINTER and sys.platform == "win32"
+                and detail == "printer not connected"):
+            from .vcom import WINDOWS_VCOM_HELP
+            out["hint"] = WINDOWS_VCOM_HELP
     elif state == "demo":
         out["hint"] = "Demo mode is on — this device is simulated."
     elif key == SCANNER and scanner_input_without_landing():
@@ -338,6 +340,7 @@ def cached_scale_port_present(port: str) -> bool | None:
         return None
     if not ok:
         return None  # do not cache failures; retry next tick
+    _PORTS_CACHE.pop("objs", None)
     _PORTS_CACHE["ports"] = list(ports)
     _PORTS_CACHE["ok"] = True
     _PORTS_CACHE["at"] = time.monotonic()
@@ -348,11 +351,8 @@ def cached_scale_port_present(port: str) -> bool | None:
 
 
 def clear_live_caches() -> None:
-    """Test aid: force the next live tick to re-enumerate."""
-    try:
-        _PORTS_CACHE["at"] = 0.0
-    except Exception:
-        pass
+    """Force the next status read to re-enumerate serial ports."""
+    _PORTS_CACHE.clear()
 
 
 

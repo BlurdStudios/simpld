@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging as _logging
 import os
+import sys
 
 from .base import PrinterInterface
 
@@ -20,6 +21,11 @@ _log = _logging.getLogger("simpld.hardware")
 
 VCOM_BAUD = 9600
 WRITE_TIMEOUT_S = 5.0
+WINDOWS_VCOM_HELP = (
+    "Printer VCOM port not found. Check Ports (COM & LPT) in Device Manager. "
+    "If the printer has no COM port, install the Citizen VCOM Driver, "
+    "reconnect the printer, then click Refresh."
+)
 
 # Confirmed on this CL-S621 by a ZPL test label printing: ZPL.
 EMULATION: str | None = "ZPL"
@@ -38,7 +44,7 @@ USB_WRITE_TIMEOUT_MS = 10000
 USB_CHUNK = 16384
 
 
-def match_citizen_port(ports) -> str | None:
+def match_citizen_port(ports, *, allow_description: bool = True) -> str | None:
     """Pick the Citizen's COM port from an already-enumerated port list.
 
     Matches VID/PID first, then the Citizen description. Returns None when
@@ -47,7 +53,7 @@ def match_citizen_port(ports) -> str | None:
     """
     hits = [p.device for p in ports
             if (p.vid, p.pid) == (CITIZEN_VID, CITIZEN_PID)]
-    if not hits:
+    if not hits and allow_description:
         hits = [p.device for p in ports
                 if "citizen" in (p.description or "").lower()]
     if len(hits) == 1:
@@ -57,14 +63,28 @@ def match_citizen_port(ports) -> str | None:
     return None
 
 
-def find_vcom_port() -> str | None:
-    """The Citizen's COM port by USB ID, wherever it is plugged in."""
-    try:
-        from serial.tools import list_ports
-        ports = list(list_ports.comports())
-    except Exception as e:
-        _log.warning("vcom: port enumeration failed (%s)", e)
-        return None
+def find_vcom_port(ports=None) -> str | None:
+    """Resolve the Citizen's COM port, reusing a port list when supplied."""
+    if sys.platform == "win32":
+        try:
+            from .citizen_windows import find_ctvrcom_port
+            port = find_ctvrcom_port(CITIZEN_VID, CITIZEN_PID)
+            if port:
+                return port
+        except OSError as e:
+            _log.warning("vcom: Citizen driver lookup failed (%s)", e)
+    if ports is None:
+        try:
+            from serial.tools import list_ports
+            ports = list(list_ports.comports())
+        except Exception as e:
+            _log.warning("vcom: port enumeration failed (%s)", e)
+            return None
+    if sys.platform == "win32":
+        # A ctvrcom port must pass the driver mapping and live-device checks.
+        ports = [port for port in ports if "ctvrcom" not in (
+            f"{port.description or ''} {getattr(port, 'hwid', '')}".lower())]
+        return match_citizen_port(ports, allow_description=False)
     return match_citizen_port(ports)
 
 
@@ -81,6 +101,8 @@ _USB_TTL_S = 10.0
 def citizen_usb_present() -> bool:
     """A Citizen attached over raw USB right now? Cached 10s so the 5s
     pill poll never scans the bus each tick."""
+    if sys.platform == "win32":
+        return False
     import time
     now = time.monotonic()
     if now - float(_USB_CACHE.get("at", 0.0)) < _USB_TTL_S:
@@ -225,6 +247,8 @@ def send_bytes(port: str, data: bytes, baud: int = VCOM_BAUD) -> None:
     bytes go over raw USB bulk (same as the CUPS backend).
     """
     if not port:
+        if sys.platform == "win32":
+            raise RuntimeError(WINDOWS_VCOM_HELP)
         citizen_usb_send(data)
         return
     try:
@@ -355,7 +379,6 @@ class VcomCitizen(PrinterInterface):
     def _print(self, template_id: str, image, data_label: str) -> bool:
         from . import layout as _layout
         self._require_language()
-        port = self._target()
         lay = _load_layout(template_id)
         dpi = int(lay.get("dpi") or 203)
         stock_w = round(float(lay["stock_w_mm"]) / 25.4 * dpi)
@@ -364,7 +387,9 @@ class VcomCitizen(PrinterInterface):
         # port "" → raw-USB bulk write; a missing printer raises there with
         # an actionable message (never "set the port in Settings" — there
         # is no printer settings UI).
-        send_bytes(port, zpl_bitmap(image, ox, oy, stock_w, stock_h), self.baud)
+        payload = zpl_bitmap(image, ox, oy, stock_w, stock_h)
+        port = self._target()
+        send_bytes(port, payload, self.baud)
         _log.info("vcom: printed %s (%s) on %s", template_id, data_label,
                   port or "USB")
         return True

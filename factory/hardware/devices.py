@@ -37,6 +37,7 @@ object graph (no second copy).
 from __future__ import annotations
 
 import os
+import sys
 import time
 
 from . import config as _config
@@ -272,6 +273,9 @@ def require_printer(cfg: dict | None = None) -> None:
     """
     if printer_configured(cfg) or mock_allowed() or demo_mode(cfg):
         return
+    if sys.platform == "win32":
+        from .vcom import WINDOWS_VCOM_HELP
+        raise RuntimeError(WINDOWS_VCOM_HELP)
     raise RuntimeError(
         "Printer not configured — set the label printer for this PC.")
 

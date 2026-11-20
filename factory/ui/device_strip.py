@@ -193,6 +193,8 @@ class DetectionController(QObject):
             pass
         self._failsafe = None
         HWStatus.clear_detecting()
+        if self._keys is None:
+            HWStatus.clear_live_caches()
         self._busy = False
         thread, worker = self._thread, self._worker
         self._thread = None
