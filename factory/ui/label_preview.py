@@ -521,107 +521,77 @@ class CartonLabelDialog(QDialog):
 
 
 class ClientLabelDialog(QDialog):
-    """Type-3 wide client sticker: one box, one row per coil.
+    """Preview an A4 batch of dispatch stickers and submit it to an office printer."""
 
-    The customer PO and batch come from the dispatch order, the box number is
-    the client-facing 1..N sequence (never the scanned carton code), and the
-    rows are the coils inside the box. The sticker is printed on the dispatch
-    station's wide label printer; the 100x50 Citizen stays on packaging.
-    """
-
-    def __init__(self, parent, detail: dict, printer):
+    def __init__(self, parent, details: list[dict]):
         super().__init__(parent)
-        self._detail, self._printer = dict(detail), printer
-        self._img = LabelArt.render_client_box(self._detail)
-        self.setWindowTitle(
-            f"Client sticker — BOX {int(self._detail.get('client_box_no') or 1)}")
-        self.setMinimumWidth(980)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(16, 16, 16, 16)
-        lay.setSpacing(10)
-        ht = QLabel("Type-3: client box sticker (wide)")
-        ht.setProperty("dialog", "title")
-        lay.addWidget(ht)
-        h_mm = self._img.height / LabelArt.WIDE_DPI * 25.4
-        box = int(self._detail.get("client_box_no") or 1)
-        n = int(self._detail.get("num_coils") or len(self._detail.get("coils") or []))
-        pieces = int(self._detail.get("total_pieces") or 0)
-        hd = QLabel(
-            f"BOX {box} · {n} coil{'s' if n != 1 else ''} · "
-            f"{pieces:,} pcs · {LabelArt.WIDE_WIDTH_MM:.0f} × {h_mm:.0f} mm")
-        hd.setProperty("dialog", "desc")
-        hd.setWordWrap(True)
-        lay.addWidget(hd)
+        from PySide6.QtWidgets import QScrollArea, QWidget
+        from factory import client_sticker_a4 as a4
 
-        preview = QLabel()
-        preview.setAlignment(Qt.AlignCenter)
-        px = pil_to_pixmap(self._img, max_width=920)
-        if px is not None and px.height() > 430:
-            px = px.scaledToHeight(430, Qt.SmoothTransformation)
-        if px is not None:
-            preview.setPixmap(px)
-        lay.addWidget(preview, 1)
+        self._stickers = a4.sticker_images(details)
+        self.setWindowTitle("Dispatch stickers")
+        self.setMinimumSize(560, 540)
+        lay = QVBoxLayout(self)
+        sheet_images = a4.previews(self._stickers)
+        heading = QLabel(f"{len(details)} sticker(s) on {len(sheet_images)} A4 sheet(s)")
+        heading.setProperty("dialog", "title")
+        lay.addWidget(heading)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        holder = QWidget()
+        pages = QVBoxLayout(holder)
+        for sheet in sheet_images:
+            preview = QLabel()
+            preview.setAlignment(Qt.AlignCenter)
+            preview.setPixmap(QPixmap.fromImage(sheet).scaledToWidth(460, Qt.SmoothTransformation))
+            pages.addWidget(preview)
+        scroll.setWidget(holder)
+        lay.addWidget(scroll, 1)
 
         row = QHBoxLayout()
-        row.setSpacing(8)
-        self.btn_print = QPushButton("PRINT CLIENT STICKER")
-        self.btn_print.setMinimumHeight(56)
-        style_button(self.btn_print, "success")
-        self.btn_png = QPushButton("Save PNG")
-        self.btn_png.setMinimumHeight(56)
-        style_button(self.btn_png, "secondary")
-        self.btn_queue = QPushButton("Queue")
-        self.btn_queue.setMinimumHeight(56)
-        style_button(self.btn_queue, "secondary")
-        self.btn_queue.setToolTip("Show pending print jobs for this printer.")
-        self.btn_close = QPushButton("Close")
-        self.btn_close.setMinimumHeight(56)
-        style_button(self.btn_close, "secondary")
-        row.addWidget(self.btn_print, 2)
-        row.addWidget(self.btn_png, 1)
-        row.addWidget(self.btn_queue, 1)
-        row.addWidget(self.btn_close, 1)
-        lay.addLayout(row)
-        self.btn_close.clicked.connect(self.accept)
+        self.btn_print = QPushButton("Print A4")
+        style_button(self.btn_print, "primary")
         self.btn_print.clicked.connect(self.do_print)
-        self.btn_png.clicked.connect(self.save_png)
-        self.btn_queue.clicked.connect(
-            lambda: _open_queue(self, _queue_name_of(self._printer)))
+        save = QPushButton("Save PDF")
+        style_button(save, "secondary")
+        save.clicked.connect(self.save_pdf)
+        close = QPushButton("Close")
+        style_button(close, "secondary")
+        close.clicked.connect(self.reject)
+        row.addWidget(self.btn_print)
+        row.addWidget(save)
+        row.addStretch()
+        row.addWidget(close)
+        lay.addLayout(row)
 
-    def save_png(self):
+    def save_pdf(self):
         from PySide6.QtWidgets import QFileDialog
-        box = int(self._detail.get("client_box_no") or 1)
+        from factory import client_sticker_a4 as a4
+
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save sticker PNG", f"client-box-{box}.png",
-            "PNG image (*.png)")
+            self, "Save dispatch stickers", "dispatch-stickers.pdf", "PDF (*.pdf)")
         if not path:
             return
+        if not path.lower().endswith(".pdf"):
+            path += ".pdf"
         try:
-            self._img.save(path, "PNG")
-        except Exception as e:
-            return QMessageBox.warning(self, "Save PNG", str(e))
-        from factory.ui.toast import toast
-        toast(self, f"Sticker saved to {path}")
+            a4.save_pdf(path, self._stickers)
+        except Exception as exc:
+            QMessageBox.warning(self, "Save PDF", str(exc))
+        else:
+            from factory.ui.toast import toast
+            toast(self, "Dispatch stickers saved.")
 
     def do_print(self):
-        queue = _queue_name_of(self._printer)
-        if not _preflight(queue, self):
-            return
-        payload = {"detail": dict(self._detail)}
+        from factory import client_sticker_a4 as a4
+
         with _printing_state(self.btn_print):
             try:
-                ok = bool(self._printer.print_client_label(payload))
-            except Exception as e:
-                return QMessageBox.warning(
-                    self, "Could not print", str(e).strip() or
-                    "Could not print. Check the printer and try again.")
-        if not ok:
-            return QMessageBox.warning(
-                self, "Could not print",
-                "Could not print. Check the printer and try again.")
-        from factory.ui.toast import toast
-        toast(self, f"Client sticker BOX {int(self._detail.get('client_box_no') or 1)}"
-                    " sent to the printer.")
+                if not a4.print_with_dialog(self, self._stickers):
+                    return
+            except Exception as exc:
+                return QMessageBox.warning(self, "Could not print", str(exc))
         self.accept()
 
 

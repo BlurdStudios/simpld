@@ -503,7 +503,7 @@ _WIDE_HEAD = ("S.no", "No of pcs", "Gross Wt (kgs)",
 
 
 def render_client_box(detail: dict, width_mm: float = WIDE_WIDTH_MM,
-                      dpi: int = WIDE_DPI):
+                      dpi: int = WIDE_DPI, *, minimum_rows: int = 0):
     """Type-3 wide client sticker (one per box, one row per coil).
 
     Layout (from the Vasavi photo): logo + company title, header grid with
@@ -516,7 +516,8 @@ def render_client_box(detail: dict, width_mm: float = WIDE_WIDTH_MM,
 
     rows = list(detail.get("coils") or [])
     n = len(rows)
-    h_mm = wide_label_height_mm(n)
+    n_draw = max(1, n, minimum_rows)
+    h_mm = wide_label_height_mm(n_draw)
     W, H = label_px(width_mm, h_mm, dpi)
     img = Image.new("RGB", (W, H), "white")
     d = ImageDraw.Draw(img)
@@ -609,7 +610,6 @@ def render_client_box(detail: dict, width_mm: float = WIDE_WIDTH_MM,
     total_h = px(9)
     body_top = t_top + head_h
     body_bot = t_bottom - total_h
-    n_draw = max(1, n)
     body_row_h = (body_bot - body_top) / n_draw
 
     xs = [left + (right - left) * sum(_WIDE_COLS[:i])

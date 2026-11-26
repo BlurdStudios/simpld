@@ -23,7 +23,6 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QCombo
 from PySide6.QtCore import Qt
 from factory import data_access as DA
 from factory.db import bare_carton_no
-from factory.hardware import mock as HW
 from factory.hardware import devices as DEV
 from factory.hardware import status as HWStatus
 from factory.ui.label_preview import ClientLabelDialog
@@ -116,6 +115,7 @@ class DispatchPage(QWidget):
         self.order_id: int | None = None
         self._rows: list[dict] = []
         self._loaded: list[dict] = []
+        self._sticker_batches: dict[int, list[int]] = {}
         self._alert = None
 
         root = QVBoxLayout(self)
@@ -171,7 +171,7 @@ class DispatchPage(QWidget):
         self.btn_sticker.setMinimumWidth(96)
         style_button(self.btn_sticker, "secondary")
         self.btn_sticker.setToolTip(
-            "Print the wide client sticker for the selected box.")
+            "Preview queued dispatch stickers for A4 printing.")
         scan.addWidget(self.btn_sticker)
         self.btn_unscan = QPushButton("Remove")
         self.btn_unscan.setMinimumHeight(48)
@@ -187,8 +187,8 @@ class DispatchPage(QWidget):
         self.btn_test_scan.setMinimumWidth(104)
         style_button(self.btn_test_scan, "outline")
         self.btn_test_scan.setToolTip(
-            "Testing aid: load the next Ready box as if its QR was scanned.\n"
-            "Enable/disable in About (admin). It does not change printer mode.")
+            "Load the next Ready box and show its QR code text.\n"
+            "Click Sticker to preview the label.")
         scan.addWidget(self.btn_test_scan)
         root.addLayout(scan)
 
@@ -305,6 +305,8 @@ class DispatchPage(QWidget):
     # ----- data -----
     def refresh(self, select_id: int | None = None):
         self._sync_test_scan()
+        if select_id is None:
+            select_id = self.order_id
         try:
             orders = [o for o in DA.list_orders()
                       if o.get("status") != "cancelled"]
@@ -365,6 +367,10 @@ class DispatchPage(QWidget):
             self._set_progress(f"Connection issue — {self._err(e)}", "err")
             return
         self._loaded = prog.get("items", [])
+        pending = self._sticker_batches.get(self.order_id)
+        if pending:
+            loaded_ids = {item["id"] for item in self._loaded}
+            pending[:] = [carton_id for carton_id in pending if carton_id in loaded_ids]
         unit = str(prog.get("piece_unit") or "reel")
         wpr = int(prog.get("wrappers_per_reel") or 0)
         self.table.blockSignals(True)
@@ -455,10 +461,13 @@ class DispatchPage(QWidget):
                     self.btn_complete.setText("Complete dispatch")
             self.btn_cancel.setEnabled(bool(loading and can))
             self.btn_unscan.setEnabled(bool(loading and can and has_sel))
-            self.btn_sticker.setEnabled(bool(can and has_sel))
+            pending = len(self._sticker_batches.get(self.order_id, []))
+            self.btn_sticker.setText(f"Sticker ({pending})" if pending else "Sticker")
+            self.btn_sticker.setEnabled(bool(can and o and (pending or has_sel)))
             self.btn_sticker.setToolTip(
-                "Print the wide client sticker for the selected box."
-                if (can and has_sel) else "Select a loaded box first.")
+                "Preview the queued stickers on A4." if pending
+                else "Reprint the selected box on A4." if has_sel
+                else "Scan or select a loaded box first.")
             self.btn_new.setEnabled(can)
             self.btn_slip.setEnabled(bool(can and o))
             if not can:
@@ -673,7 +682,7 @@ class DispatchPage(QWidget):
             self.say(f"Order {o['order_no']} created.", ok=True)
         self.refresh(select_id=o["id"])
 
-    def do_scan(self):
+    def do_scan(self, *, test: bool = False):
         if not self._can_dispatch():
             return self.say("Dispatcher or admin only.", ok=False)
         if self.order_id is None:
@@ -693,12 +702,18 @@ class DispatchPage(QWidget):
             return self.say(f"Connection issue: {self._err(e)}"
                             " Refresh the order before retrying — the scan may have landed.",
                             ok=False)
-        self.scan.clear()
+        if test:
+            self.scan.selectAll()
+        else:
+            self.scan.clear()
         self.scan.setFocus()
         # A landed scan is the only honest proof the keyboard wedge is reaching
         # this app — flip the scanner pill to active (see hardware/status.py).
         HWStatus.note_scan()
         self.devices.refresh()
+        pending = self._sticker_batches.setdefault(self.order_id, [])
+        if ct["id"] not in pending:
+            pending.append(ct["id"])
         self.refresh_loaded(select_carton_id=ct["id"])
         n = int(ct.get("num_reels") or 0)
         box_no = int(ct.get("client_box_no") or 0)
@@ -712,23 +727,12 @@ class DispatchPage(QWidget):
         self.say(msg, ok=True, kind=alert[1] if alert else None)
         if self.on_stock_changed:
             self.on_stock_changed()
-        # New wrapper orders print the wide client sticker from the dispatch
-        # station. Legacy bundle/reel orders have no client sticker, so they
-        # stay on the scan-only path (the Sticker button can still preview).
-        cur = self.selected_order() or {}
-        auto = (str(cur.get("piece_unit") or "reel") == "wrapper"
-                and cur.get("required_pieces") is not None)
-        if auto:
-            self._open_client_sticker(ct["id"])
 
     def do_test_scan(self) -> None:
         """Testing aid: scan the next Ready box for this order without a scanner.
 
-        Uses the same payload/path as a real keyboard-wedge scan
-        (`VASAVI:<carton_no>` -> scan_into_order), so it exercises product
-        matching, client box numbering, the progress alerts, and the wide
-        sticker preview exactly like a physical QR. It does not touch the
-        printer/scale selection: a real configured printer still prints.
+        Loads and selects the box using the normal scan path, leaving the
+        QR text visible so the operator can test the Sticker button manually.
         """
         if not DEV.mock_qr_enabled():
             return self.say("Test scan is off for this PC. Enable it in About.",
@@ -757,14 +761,18 @@ class DispatchPage(QWidget):
                 "Pack another box first.", ok=False, kind="warning")
         box = candidates[0]
         self.scan.setText(DA.qr_payload(str(box.get("carton_no") or "")))
-        self.do_scan()
+        self.do_scan(test=True)
 
     def _open_client_sticker(self, carton_id: int) -> None:
-        """Preview + print the wide sticker for one loaded box."""
+        """Preview the order's pending batch or reprint a selected box."""
+        order_id = self.order_id
+        pending = list(self._sticker_batches.get(order_id, []))
         try:
-            DEV.require_printer()
-            detail = DA.client_label_detail(self.order_id, carton_id)
-            ClientLabelDialog(self, detail, HW.printer).exec()
+            details = [DA.client_label_detail(order_id, cid) for cid in (pending or [carton_id])]
+            if ClientLabelDialog(self, details).exec() == ClientLabelDialog.DialogCode.Accepted:
+                self._sticker_batches.pop(order_id, None)
+                self._update_buttons()
+                self.say(f"{len(details)} sticker(s) sent to the office printer.", ok=True)
         except RuntimeError as e:
             self.say(f"Box loaded. Sticker not printed: {e}",
                      ok=False, kind="warning")
@@ -776,12 +784,15 @@ class DispatchPage(QWidget):
                      ok=False, kind="warning")
 
     def print_sticker(self):
-        """Reprint the wide client sticker for the selected loaded box."""
+        """Print the pending A4 batch or reprint the selected loaded box."""
         if not self._can_dispatch():
             return self.say("Dispatcher or admin only.", ok=False)
         if self.order_id is None:
             return self.say("Create/select an order first.", ok=False, kind="warning")
         cid = self.selected_carton_id()
+        pending = self._sticker_batches.get(self.order_id, [])
+        if pending:
+            cid = pending[0]
         if cid is None:
             return self.say("Select a loaded box row first.", ok=False, kind="warning")
         self._open_client_sticker(cid)
@@ -887,6 +898,7 @@ class DispatchPage(QWidget):
             return self.say(f"Connection issue: {self._err(e)}"
                             " Refresh before retrying.", ok=False)
         self.say("Order cancelled — boxes back to Ready.", ok=True)
+        self._sticker_batches.pop(self.order_id, None)
         self.refresh(select_id=self.order_id)
         if self.on_stock_changed:
             self.on_stock_changed()

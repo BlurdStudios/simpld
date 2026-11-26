@@ -102,6 +102,71 @@ def test_dispatch_scan_selects_new_box_and_enables_sticker():
         app.processEvents()
 
 
+def test_dispatch_test_scan_shows_qr_and_waits_for_sticker_button():
+    from factory import data_access as DA, services as S
+    from factory.ui import page_dispatch as dispatch
+
+    _fresh_db()
+    _login("admin")
+    app = _app()
+    product = S.create_product("DEMO LABEL PRODUCT", 100)
+    job = S.create_job_for_product(product["id"], core_wt=0.280)
+    reel = S.create_reel(job["id"], gross=10, core=0.280)
+    box = S.pack_carton(job["id"], [reel["id"]])
+    S.create_dispatch_order("CUSTOMER", job["id"], required_pieces=100)
+    page = dispatch.DispatchPage()
+    try:
+        with _mock.patch.object(dispatch.DEV, "mock_qr_enabled", return_value=True):
+            page.refresh()
+            with _mock.patch.object(page, "_open_client_sticker") as open_sticker:
+                page.btn_test_scan.click()
+                open_sticker.assert_not_called()
+                assert page.scan.text() == DA.qr_payload(box["carton_no"])
+                assert page.selected_carton_id() == box["id"]
+                assert page.btn_sticker.isEnabled()
+                page.btn_sticker.click()
+                open_sticker.assert_called_once_with(box["id"])
+    finally:
+        page.close()
+        app.processEvents()
+
+
+def test_dispatch_a4_batch_is_retained_until_print_submission():
+    from PySide6.QtWidgets import QDialog
+    from factory import data_access as DA, services as S
+    from factory.ui import page_dispatch as dispatch
+
+    _fresh_db()
+    _login("admin")
+    app = _app()
+    product = S.create_product("A4 LABEL PRODUCT", 100)
+    job = S.create_job_for_product(product["id"], core_wt=0.280)
+    boxes = []
+    for _ in range(3):
+        reel = S.create_reel(job["id"], gross=10, core=0.280)
+        boxes.append(S.pack_carton(job["id"], [reel["id"]]))
+    S.create_dispatch_order("CUSTOMER", job["id"], required_pieces=300)
+    page = dispatch.DispatchPage()
+    try:
+        with _mock.patch.object(dispatch.ClientLabelDialog, "exec") as preview:
+            for box in boxes:
+                page.scan.setText(DA.qr_payload(box["carton_no"]))
+                page.scan.returnPressed.emit()
+            preview.assert_not_called()
+            assert page._sticker_batches[page.order_id] == [box["id"] for box in boxes]
+            assert page.btn_sticker.text() == "Sticker (3)"
+            preview.return_value = QDialog.DialogCode.Rejected
+            page.btn_sticker.click()
+            assert page.btn_sticker.text() == "Sticker (3)"
+            preview.return_value = QDialog.DialogCode.Accepted
+            page.btn_sticker.click()
+            assert page.order_id not in page._sticker_batches
+            assert page.btn_sticker.text() == "Sticker"
+    finally:
+        page.close()
+        app.processEvents()
+
+
 def _select_job(pg, job_id):
     pg.refresh_jobs()
     for i in range(pg.job_combo.count()):

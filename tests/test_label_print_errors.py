@@ -45,11 +45,6 @@ class _RaisingPrinter:
         self.calls.append(("carton", payload))
         raise RuntimeError(self._msg)
 
-    def print_client_label(self, payload):
-        self.calls.append(("client", payload))
-        raise RuntimeError(self._msg)
-
-
 def _assert_warning_shows_real_error(dialog, method_name, printer_msg):
     from unittest import mock as _mock
     from PySide6.QtWidgets import QDialog, QMessageBox
@@ -94,10 +89,12 @@ def test_carton_dialog_shows_actual_exception():
 
 
 def test_client_dialog_shows_actual_exception():
+    from unittest import mock
+    from factory import client_sticker_a4
     _fresh_db()
     from factory.ui.label_preview import ClientLabelDialog
     _, host = _app_host()
-    msg = "Wide printer 'TSC TTP-244' refused the job — test offline"
+    msg = "Office printer refused the job — test offline"
     detail = {
         "customer": "ERR CLIENT", "customer_po": "PO-1", "batch_no": "B1",
         "product_name": "ERR PRODUCT", "packed_at": "2026-10-10 10:00:00",
@@ -107,8 +104,9 @@ def test_client_dialog_shows_actual_exception():
         "total_pieces": 100, "total_gross": 1.0, "total_tare": 0.1,
         "total_net": 0.9,
     }
-    d = ClientLabelDialog(host, detail, _RaisingPrinter(msg))
-    _assert_warning_shows_real_error(d, "do_print", msg)
+    d = ClientLabelDialog(host, [detail])
+    with mock.patch.object(client_sticker_a4, "print_with_dialog", side_effect=RuntimeError(msg)):
+        _assert_warning_shows_real_error(d, "do_print", msg)
     host.close()
 
 
