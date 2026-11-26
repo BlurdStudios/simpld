@@ -343,12 +343,17 @@ class DispatchPage(QWidget):
         if i < 0 or not self._rows:
             self.order_id = None
             return
-        self.order_id = self.order_combo.itemData(i)
+        order_id = self.order_combo.itemData(i)
+        if order_id != self.order_id:
+            self.table.clearSelection()
+        self.order_id = order_id
         self.refresh_loaded()
 
-    def refresh_loaded(self):
+    def refresh_loaded(self, select_carton_id: int | None = None):
         if self.order_id is None:
             return
+        if select_carton_id is None:
+            select_carton_id = self.selected_carton_id()
         try:
             prog = DA.order_progress(self.order_id)
         except ValueError as e:
@@ -382,6 +387,8 @@ class DispatchPage(QWidget):
             self.table.setItem(r, 4, QTableWidgetItem(f"{pieces:,}" if pieces else ""))
             self.table.setItem(r, 5, QTableWidgetItem(f"{float(it.get('total_net') or 0):.3f}"))
             self.table.setItem(r, 6, QTableWidgetItem(str(it.get("scanned_at") or "")[:16]))
+            if it["id"] == select_carton_id:
+                self.table.selectRow(r)
         self.table.blockSignals(False)
         for o in self._rows:
             if o["id"] == self.order_id:
@@ -692,7 +699,7 @@ class DispatchPage(QWidget):
         # this app — flip the scanner pill to active (see hardware/status.py).
         HWStatus.note_scan()
         self.devices.refresh()
-        self.refresh_loaded()
+        self.refresh_loaded(select_carton_id=ct["id"])
         n = int(ct.get("num_reels") or 0)
         box_no = int(ct.get("client_box_no") or 0)
         msg = f"Box {box_no} loaded"

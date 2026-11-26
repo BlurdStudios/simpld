@@ -72,6 +72,36 @@ def _page():
     return PackagingPage()
 
 
+def test_dispatch_scan_selects_new_box_and_enables_sticker():
+    from factory import data_access as DA, services as S
+    from factory.ui.page_dispatch import DispatchPage
+
+    _fresh_db()
+    _login("admin")
+    app = _app()
+    job = S.create_job("STICKER JOB", core_wt=0.280)
+    boxes = []
+    for _ in range(2):
+        reel = S.create_reel(job["id"], gross=10, core=0.280)
+        boxes.append(S.pack_carton(job["id"], [reel["id"]]))
+    order = S.create_dispatch_order("CUSTOMER", job["id"], required_bundles=2)
+    S.scan_into_order(order["id"], boxes[0]["carton_no"])
+    page = DispatchPage()
+    try:
+        assert not page.btn_sticker.isEnabled()
+        page.scan.setText(DA.qr_payload(boxes[1]["carton_no"]))
+        page.scan.returnPressed.emit()
+        assert page.selected_carton_id() == boxes[1]["id"]
+        assert page.btn_sticker.isEnabled()
+        page.refresh_loaded()
+        with _mock.patch.object(page, "_open_client_sticker") as open_sticker:
+            page.btn_sticker.click()
+            open_sticker.assert_called_once_with(boxes[1]["id"])
+    finally:
+        page.close()
+        app.processEvents()
+
+
 def _select_job(pg, job_id):
     pg.refresh_jobs()
     for i in range(pg.job_combo.count()):
