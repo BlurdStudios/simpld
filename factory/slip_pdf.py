@@ -31,7 +31,7 @@ SECTION_H_MM = 2 * RH_MM  # section bar + column header
 FOOTER_RESERVE_MM = 12.0  # footer line lives in the bottom 8mm + gap
 TOTALS_GAP_MM = 3.0
 TOTALS_LINE_MM = 6.0
-TOTALS_LINES = 5  # reel totals, box totals, legacy totals, bundles, batches
+TOTALS_LINES = 3  # header and two count rows
 # Order packing summary totals: grand totals + batches (2 lines).
 ORDER_TOTALS_LINES = 2
 _BODY_USABLE_MM = PRINTABLE_H_MM - TOP_H_MM - FOOTER_RESERVE_MM
@@ -110,12 +110,8 @@ def order_batch_line(summary: dict) -> str:
     return "Batches: " + ("; ".join(parts) if parts else "—")
 
 
-def totals_height_mm(slip: dict) -> float:
-    """Vertical space the last-page totals block needs (mm)."""
-    h = TOTALS_GAP_MM + TOTALS_LINES * TOTALS_LINE_MM
-    if (slip.get("totals") or {}).get("legacy_cartons"):
-        h += TOTALS_LINE_MM  # one-line note under the totals
-    return h
+def totals_height_mm() -> float:
+    return TOTALS_GAP_MM + TOTALS_LINES * TOTALS_LINE_MM
 
 
 def _body_height_mm(page_rows: list[dict], start_sec: str | None = None) -> float:
@@ -136,7 +132,7 @@ def page_fits_mm(slip: dict, page_rows: list[dict], is_last: bool) -> bool:
     reserved footer area. Tests assert this for every paginated page."""
     used = _body_height_mm(page_rows)
     if is_last:
-        used += totals_height_mm(slip)
+        used += totals_height_mm()
     return used <= _BODY_USABLE_MM + 1e-9
 
 
@@ -304,43 +300,26 @@ def get_slip(job_id: int, path: str | None = None) -> dict:
 
 
 def paginate(slip: dict) -> list[list[dict]]:
-    """Split rows into pages that physically fit the printable area.
-
-    Capacity is computed in millimetres from the same geometry paint_page
-    uses (top block + per-section headers + rows + footer reserve, plus the
-    totals block on the last page) — not a fixed row count. A section that
-    starts or continues on a page costs one section-bar row plus one column
-    header row; every body row costs one row height.
-    """
-    rows = slip["rows"]
-    if not rows:
+    """Fit reels and boxes on separate pages, reserving the final summary."""
+    sections = [[row for row in slip["rows"] if _row_kind(row) == kind]
+                for kind in ("Reel", "Box")]
+    sections = [rows for rows in sections if rows]
+    if not sections:
         return [[]]
-    totals_h = totals_height_mm(slip)
-    pages: list[list[dict]] = []
-    i, n = 0, len(rows)
-    while i < n:
-        # If everything left fits on one last page (with totals), take it.
-        rest_h = _body_height_mm(rows[i:], None)
-        if rest_h + totals_h <= _BODY_USABLE_MM:
-            pages.append(rows[i:])
-            break
-        # Otherwise fill one non-last page greedily up to the usable height.
-        cur: list[dict] = []
-        used = 0.0
-        cur_sec: str | None = None
-        while i < n:
-            kind = _row_kind(rows[i])
-            need = RH_MM + (SECTION_H_MM if kind != cur_sec else 0.0)
-            if cur and used + need > _BODY_USABLE_MM + 1e-9:
-                break
-            cur.append(rows[i])
-            used += need
-            cur_sec = kind
-            i += 1
-        if not cur:  # single row never overflows (guard against no progress)
-            cur.append(rows[i])
-            i += 1
-        pages.append(cur)
+
+    capacity = int((_BODY_USABLE_MM - SECTION_H_MM) / RH_MM)
+    final_capacity = int((_BODY_USABLE_MM - SECTION_H_MM - totals_height_mm()) / RH_MM)
+    pages = []
+    for index, rows in enumerate(sections):
+        last_section = index == len(sections) - 1
+        start = 0
+        while start < len(rows):
+            remaining = len(rows) - start
+            count = min(capacity, remaining)
+            if last_section and final_capacity < remaining <= capacity:
+                count -= 1  # Keep a detail row with the final summary.
+            pages.append(rows[start:start + count])
+            start += count
     return pages
 
 
@@ -373,15 +352,20 @@ def paint_page(p, area, dpi: int, slip: dict, page_rows: list[dict],
     QPrinter (fullPage False) the painter origin is already the printable
     top-left, so callers pass QRectF(0, 0, w, h); for a QImage preview the
     origin is the paper top-left, so callers pass the inset rect. Either
-    way paint_page draws strictly inside area — the right border is drawn
-    1px inside the edge so the pen is never clipped.
+    way paint_page insets the table by half a grid stroke to avoid clipping.
     """
-    from PySide6.QtCore import Qt, QRectF
-    from PySide6.QtGui import QFontMetrics
+    from PySide6.QtCore import QLineF, Qt, QRectF
+    from PySide6.QtGui import QFontMetrics, QPen
     mm = dpi / 25.4
     x, y, W, H = area.x(), area.y(), area.width(), area.height()
-    right = x + W - 1
-    footer_top = y + H - FOOTER_RESERVE_MM * mm
+    # One device pixel is visible in the preview but almost invisible in
+    # a high-resolution PDF or print. Keep the grid a fixed physical width.
+    grid_pen = QPen(Qt.GlobalColor.black)
+    grid_pen.setWidthF(0.24 * mm)
+    p.setPen(grid_pen)
+    x += grid_pen.widthF() / 2
+    W -= grid_pen.widthF()
+    right = x + W
 
     def text(r, s, font, align=Qt.AlignLeft | Qt.AlignVCenter):
         p.setFont(font)
@@ -434,11 +418,11 @@ def paint_page(p, area, dpi: int, slip: dict, page_rows: list[dict],
     f_sec = _font(dpi, 9, True)
 
     def hline(y0, x0=None, x1=None):
-        p.drawLine(int(x0 if x0 is not None else x), int(y0),
-                   int(x1 if x1 is not None else right), int(y0))
+        p.drawLine(QLineF(x if x0 is None else x0, y0,
+                         right if x1 is None else x1, y0))
 
     def vline(x0, y0, y1):
-        p.drawLine(int(x0), int(y0), int(x0), int(y1))
+        p.drawLine(QLineF(x0, y0, x0, y1))
 
     def section_bar(title: str):
         nonlocal y
@@ -530,30 +514,24 @@ def paint_page(p, area, dpi: int, slip: dict, page_rows: list[dict],
             vline(x, y0, y1)
             vline(right, y0, y1)
 
-    # totals live on the last page only (like the old print). Reel, box
-    # and legacy weights stay separate; box weights are never added to
-    # reel totals.
     if page_no == page_count:
-        t = slip["totals"]
+        totals = slip["totals"]
+        summary_right = x + min(W, 60 * mm) - 1
+        divider = x + (summary_right - x) * 0.7
         y += TOTALS_GAP_MM * mm
-        lines = [
-            f"Reel totals: {t['reels']} reels  ·  Gross {t['gross']:.3f}Kgs"
-            f"  ·  Core {t['core']:.3f}Kgs  ·  Net {t['net']:.3f}Kgs",
-            f"Box totals: {t.get('boxes', 0)} boxes"
-            f"  ·  Box Wt {t.get('box_wt', 0.0):.3f}Kgs",
-            f"Legacy box totals: {t.get('legacy_cartons', 0)} boxes"
-            f"  ·  Stored Wt {t.get('legacy_box_wt', 0.0):.3f}Kgs"
-            "  (listed separately, not added)",
-            f"Total boxes:  {t['bundles']}",
-            job_batch_line(slip),
-        ]
-        if t.get("legacy_cartons"):
-            lines.append(
-                "Note: boxes are weighed independently;"
-                " reel weights count each reel once.")
-        for line in lines:
-            text(QRectF(x, y, W, TOTALS_LINE_MM * mm), line, f_bold)
-            y += TOTALS_LINE_MM * mm
+        summary_top = y
+        row_height = TOTALS_LINE_MM * mm
+        hline(y, x, summary_right)
+        for label, count in (("Summary", "Count"),
+                             ("Total reels", totals["reels"]),
+                             ("Total boxes", totals["bundles"])):
+            text(QRectF(x + 2 * mm, y, divider - x - 4 * mm, row_height), label, f_bold)
+            text(QRectF(divider + 1, y, summary_right - divider - 2, row_height),
+                 count, f_bold, Qt.AlignCenter)
+            y += row_height
+            hline(y, x, summary_right)
+        for edge in (x, divider, summary_right):
+            vline(edge, summary_top, y)
 
     # footer, old format with backslash; the body (+ totals) always ends
     # above footer_top because paginate() reserves FOOTER_RESERVE_MM.

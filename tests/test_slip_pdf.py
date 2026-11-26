@@ -104,12 +104,12 @@ def test_pagination_fits_printable_height():
     from factory import slip_pdf as SP
     p, job = _job_with_cartons(45)
     slip = SP.get_slip(job["id"], DB.DB_PATH)
-    # 45 reels + 45 legacy carton rows = 90 rows. Height-fit pages: the
-    # section change costs a header, so pages split 40/38/12.
+    # Each of the two 45-row sections starts on its own page.
     assert len(slip["rows"]) == 90, len(slip["rows"])
     pages = SP.paginate(slip)
-    assert len(pages) == 3, [len(x) for x in pages]
-    assert [len(x) for x in pages] == [40, 38, 12], [len(x) for x in pages]
+    assert len(pages) == 4, [len(x) for x in pages]
+    assert all(len({row["kind"] for row in page}) == 1 for page in pages)
+    assert [len(x) for x in pages] == [40, 5, 40, 5], [len(x) for x in pages]
     assert sum(len(x) for x in pages) == 90
     _assert_pages_fit(slip, pages)
 
@@ -123,7 +123,7 @@ def test_save_pdf_full_text_and_layout():
     with open(out, "rb") as f:
         head = f.read(5)
     assert head == b"%PDF-", head
-    assert os.path.getsize(out) > 5000, "90-row 3-page PDF should have substance"
+    assert os.path.getsize(out) > 5000, "90-row PDF should have substance"
     slip = SP.get_slip(job["id"], DB.DB_PATH)
     pages = SP.paginate(slip)
     _assert_pages_fit(slip, pages)
@@ -134,8 +134,8 @@ def test_save_pdf_full_text_and_layout():
         assert r["roll_label"] in txt, r["roll_label"]
     for b in slip["box_rows"]:
         assert DB.bare_carton_no(b["carton_no"]) in txt, b["carton_no"]
-    assert "Reel totals" in txt and "Box totals" in txt
-    assert "Legacy box totals" in txt and "Total boxes" in txt
+    assert "Total reels" in txt and "Total boxes" in txt
+    assert "Legacy box totals" not in txt
     assert txt.count("Page Nos.:") == len(pages), txt.count("Page Nos.:")
     for banned in ("qualified identity", "NOT added",
                    "independent boxes + legacy linked"):
@@ -149,7 +149,7 @@ def test_preview_matches_print_pages():
     slip, imgs = SP.preview_images(job["id"], DB.DB_PATH)
     pages = SP.paginate(slip)
     # Same renderer, same pagination: preview page count == PDF page count.
-    assert len(imgs) == len(pages) == 3, (len(imgs), len(pages))
+    assert len(imgs) == len(pages) == 4, (len(imgs), len(pages))
     assert slip["totals"]["bundles"] == 45
     assert slip["totals"]["reels"] == 45
     assert slip["totals"]["legacy_cartons"] == 45
@@ -204,7 +204,7 @@ def test_section_transition_paginates_before_footer():
     SP.save_pdf(job["id"], out, p)
     txt = _pdf_text(out)
     assert "C0001" in txt
-    assert "Reel totals" in txt and "Total boxes" in txt
+    assert "Total reels" in txt and "Total boxes" in txt
     assert txt.count("Page Nos.:") == 2
 
 

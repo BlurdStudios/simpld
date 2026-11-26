@@ -781,26 +781,22 @@ class PackingSlipDialog(QDialog):
                     f"Bundle {r.get('bundle_no', '')} · weighed box (independent)"))
         ll.addWidget(self.table, 1)
         t = self._slip["totals"]
-        tot_text = (f"Reels: {t['reels']}  ·  Gross {t['gross']:.3f}"
-                    f"  ·  Core {t['core']:.3f}  ·  Net {t['net']:.3f} Kg"
-                    f"  |  Boxes (independent): {t.get('boxes', 0)}"
-                    f"  ·  Box {t.get('box_wt', 0.0):.3f} Kg"
-                    f"  |  Total boxes: {t['bundles']}")
-        if t.get("legacy_cartons"):
-            tot_text += (f"  ·  {t['legacy_cartons']} legacy reel-linked box(es)"
-                         " (rolls in table, weights in reel totals only)")
-        for b in self._slip.get("batches") or []:
-            tot_text += (f"  |  {b.get('label') or '?'}:"
-                         f" {int(b.get('reels') or 0)} reels"
-                         f" · {int(b.get('boxes') or 0)} boxes")
-        wpr = self._slip.get("wrappers_per_reel")
-        # No piece count: omit the clause entirely (blank, no "unknown").
-        if wpr is not None:
-            tot_text += f"  |  No of Pieces: {int(wpr)}"
-        tot = QLabel(tot_text)
-        tot.setProperty("count", True)
-        tot.setWordWrap(True)
-        ll.addWidget(tot)
+        summary = QTableWidget(2, 2)
+        summary.setHorizontalHeaderLabels(["Summary", "Count"])
+        summary.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        summary.verticalHeader().hide()
+        summary.verticalHeader().setDefaultSectionSize(32)
+        summary.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        summary.setSelectionMode(QAbstractItemView.NoSelection)
+        summary.setFocusPolicy(Qt.NoFocus)
+        summary.setFixedSize(220, 104)
+        for row, (label, quantity) in enumerate((("Total reels", t["reels"]),
+                                                 ("Total boxes", t["bundles"]))):
+            summary.setItem(row, 0, QTableWidgetItem(label))
+            count = QTableWidgetItem(str(quantity))
+            count.setTextAlignment(Qt.AlignCenter)
+            summary.setItem(row, 1, count)
+        ll.addWidget(summary, 0, Qt.AlignLeft)
         split.addWidget(left)
 
         # ---- right: print preview (same art as printer/PDF) ----

@@ -255,9 +255,8 @@ def test_multipage_pdf_and_preview():
     assert abs(slip["totals"]["legacy_box_wt"] - 0.0) < 0.001
     assert abs(slip["totals"]["box_wt"] - 11.0) < 0.001
     pages = SP.paginate(slip)
-    # Height-fit: 45 reels fill page 1 (40) then 5 reels + 2 boxes + totals
-    # share page 2 — the box section header is counted, not crammed.
-    assert len(pages) == 2 and len(pages[0]) == 40 and len(pages[1]) == 7
+    # Boxes start on their own page after the reels.
+    assert [len(page) for page in pages] == [40, 5, 2]
     _assert_pages_fit(slip, pages)
     out = os.path.join(tempfile.mkdtemp(prefix="simpld-slipev-"), "big.pdf")
     SP.save_pdf(job["id"], out, p)
@@ -269,14 +268,14 @@ def test_multipage_pdf_and_preview():
         assert r["roll_label"] in txt, r["roll_label"]
     for b in slip["box_rows"]:
         assert DB.bare_carton_no(b["carton_no"]) in txt, b["carton_no"]
-    assert "Reel totals" in txt and "Box totals" in txt
-    assert "Legacy box totals" in txt and "Total boxes" in txt
-    assert txt.count("Page Nos.:") == 2
+    assert "Total reels" in txt and "Total boxes" in txt
+    assert "Legacy box totals" not in txt
+    assert txt.count("Page Nos.:") == 3
     for banned in ("qualified identity", "NOT added",
                    "independent boxes + legacy linked"):
         assert banned not in txt, banned
     _, imgs = SP.preview_images(job["id"], p)
-    assert len(imgs) == 2 and all(not im.isNull() for im in imgs)
+    assert len(imgs) == 3 and all(not im.isNull() for im in imgs)
 
 
 def test_wrappers_snapshot_unknown_and_known():
@@ -425,8 +424,8 @@ def test_legacy_long_ids_last_page_totals_in_pdf():
     for b in slip["box_rows"]:
         assert DB.bare_carton_no(b["carton_no"]) in txt, b["carton_no"]
     # Full separate totals on the last page.
-    assert "Reel totals" in txt and "Box totals" in txt
-    assert "Legacy box totals" in txt and "Total boxes" in txt
+    assert "Total reels" in txt and "Total boxes" in txt
+    assert "Legacy box totals" not in txt
     assert txt.count("Page Nos.:") == len(pages)
     # Overflowing text is clipped with an ellipsis inside its cell (long
     # job name, 5-member roll list) — never past the border.
@@ -459,8 +458,8 @@ def test_prefetched_slip_dict_renders_without_local_db():
     txt = _pdf_text(out)
     assert slip["reel_rows"][0]["roll_label"] in txt
     assert DB.bare_carton_no(b1["carton_no"]) in txt
-    assert "Reel totals" in txt and "Box totals" in txt
-    assert "Legacy box totals" in txt and "Total boxes" in txt
+    assert "Total reels" in txt and "Total boxes" in txt
+    assert "Legacy box totals" not in txt
     assert txt.count("Page Nos.:") == len(pages)
     slip2, imgs = SP.preview_images(job["id"], bogus, slip=slip)
     assert len(imgs) == len(pages) and all(not im.isNull() for im in imgs)
